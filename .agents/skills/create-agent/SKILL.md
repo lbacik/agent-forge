@@ -108,6 +108,12 @@ since shallow clones can't fetch an arbitrary commit by SHA):
   changed since the templates here were written. If upstream diverged from
   `assets/Dockerfile.template` in a way that matters (new COPY paths, new
   runtime step), follow upstream and tell the user.
+- `docker/managed-settings.json` — the template copies it to
+  `/etc/claude-code/managed-settings.json` (Meta model pricing; without it
+  `total_cost_usd` is ~4x too high). Refs older than upstream PR #143
+  (including tags up to v0.2.3) don't have it, and the `COPY` fails the
+  build. For such a ref, drop that step and tell the user that USD figures
+  use the CLI's default-model rates.
 
 ### 4. Analyze the target stack
 

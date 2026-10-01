@@ -38,6 +38,11 @@ services:
     volumes:
       - agent_data:/data
     restart: unless-stopped
+    # No core dumps: a crashing process writes core.<pid> into its cwd, often
+    # /data/repo, and the untracked file stops the agent with
+    # working_tree_dirty on every later start.
+    ulimits:
+      core: 0
 
 volumes:
   agent_data:

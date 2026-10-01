@@ -71,6 +71,14 @@ RUN pip install --no-cache-dir \
 COPY --from=agent-src package.json ./
 RUN npm install --global @anthropic-ai/claude-code@{{CLAUDE_CODE_VERSION}}
 
+# Managed settings (root-owned, mode 644), as in upstream's Dockerfile: Meta
+# model pricing for the CLI cost ledger. Without it the CLI prices
+# muse-spark-1.3-contributor at its default-model rates (~4x Meta's), which
+# inflates total_cost_usd and the max_budget_usd backstop. The agent user can
+# read the file but cannot change the rates its budget is measured against.
+# Drop this step only if AGENT_SRC_REF predates docker/managed-settings.json.
+COPY --from=agent-src --chmod=644 docker/managed-settings.json /etc/claude-code/managed-settings.json
+
 # ---------------------------------------------------------------------------
 # Skill bundle (run as agent user so paths land in /home/agent). Give the
 # agent user its own npm global prefix first: npm's default global prefix
