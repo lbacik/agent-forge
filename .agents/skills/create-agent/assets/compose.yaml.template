@@ -1,0 +1,43 @@
+# Deploys one simple-coding-agent instance dedicated to {{OWNER}}/{{REPO}}.
+#
+# The image needs files from two places: this directory (Dockerfile,
+# simple-coding-agent-profile.yml) and the simple-coding-agent repository
+# (the Python package, package.json, scripts/install-skills.sh, skills/).
+# `additional_contexts` exposes the latter — fetched straight from GitHub at
+# the ref named by AGENT_SRC_REF — to the Dockerfile's `COPY --from=agent-src`
+# lines without making it this build's main context. Requires Docker Compose
+# v2.17+ with BuildKit. To build from a local checkout instead, replace the
+# URL with its path relative to agent-instances/agent-<name>/ (e.g.
+# ../../../simple-coding-agent).
+#
+# AGENT_SRC_REF (set in .env, default main) is a branch, tag or commit SHA —
+# Docker's git context resolves the URL fragment like `git checkout <ref>`.
+# Change it and rerun `docker compose build` to switch ref, no edit needed
+# here. Tracking `main` means a rebuild picks up new agent code as soon as it
+# lands; pinning a tag freezes the agent's code until AGENT_SRC_REF is bumped
+# by hand. Either way, if that ref bumps its default runtime versions
+# (simple_coding_agent/config.py), update the Dockerfile's claude-agent-sdk /
+# claude-code pins and the matching .env version values together.
+services:
+  agent:
+    build:
+      context: .
+      additional_contexts:
+        agent-src: https://github.com/lbacik/simple-coding-agent.git#${AGENT_SRC_REF:-main}
+    image: simple-coding-agent:{{SHORT_NAME}}
+    env_file:
+      - .env
+    # The model's own shell, as opposed to the profile's commands, sees only
+    # the container environment and otherwise falls back to the target repo's
+    # defaults. Copy here the profile `env:` keys whose repo default would
+    # point the model at a different or missing service (see the create-agent
+    # skill, "The model's shell environment"). Values must match the profile.
+    # Delete the block if nothing needs copying.
+    environment:
+      {{MODEL_SHELL_ENV}}
+    volumes:
+      - agent_data:/data
+    restart: unless-stopped
+
+volumes:
+  agent_data:

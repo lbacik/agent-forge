@@ -1,0 +1,139 @@
+# syntax=docker/dockerfile:1
+#
+# {{HEADER: what this image is for — e.g.
+# simple-coding-agent, built for <owner>/<repo> (<local checkout name>): <stack>
+# whose CI gate (<workflow file>) is <commands>. Explain what is bundled and
+# what is deliberately absent (e.g. "no database, no root entrypoint").}}
+#
+# The repository profile is NOT read from the target repo: it lives next to
+# this Dockerfile (simple-coding-agent-profile.yml), is baked into the image
+# at /opt/agent-profile/, and PROFILE_PATH in .env points the agent at it.
+#
+# Base agent runtime (Python/Node/gh/claude-code) mirrors the generic
+# simple-coding-agent Dockerfile; see that repo for version-pin rationale.
+
+FROM python:3.12-slim
+
+# ---------------------------------------------------------------------------
+# System packages
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    gnupg \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js {{NODE_MAJOR}} — the claude-code CLI needs >= 20. {{If the target
+# also uses Node, explain why this major matches its CI.}}
+RUN curl -fsSL https://deb.nodesource.com/setup_{{NODE_MAJOR}}.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# {{STACK BLOCK: the target's toolchain (language runtime, package manager,
+# system libraries, bundled services). One commented RUN per concern, with the
+# reason for each version / package. Remove this block if Node alone suffices.}}
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Dedicated agent user (UID 1000)
+# ---------------------------------------------------------------------------
+RUN useradd --uid 1000 --create-home --shell /bin/bash agent
+
+# ---------------------------------------------------------------------------
+# Application code, pulled from the simple-coding-agent repository via a named
+# build context (`agent-src` in compose.yaml — remote main). This
+# Dockerfile's own build context is this directory, for the profile.
+# ---------------------------------------------------------------------------
+WORKDIR /app
+COPY --from=agent-src pyproject.toml ./
+COPY --from=agent-src simple_coding_agent/ ./simple_coding_agent/
+
+# Versions must equal CLAUDE_AGENT_SDK_VERSION / CLAUDE_CODE_VERSION in .env:
+# the agent verifies the installed runtime against them at startup.
+RUN pip install --no-cache-dir \
+    "claude-agent-sdk=={{SDK_VERSION}}" \
+    "PyYAML>=6.0,<7" \
+    && pip install --no-cache-dir -e .
+
+COPY --from=agent-src package.json ./
+RUN npm install --global @anthropic-ai/claude-code@{{CLAUDE_CODE_VERSION}}
+
+# ---------------------------------------------------------------------------
+# Skill bundle (run as agent user so paths land in /home/agent). Give the
+# agent user its own npm global prefix first: npm's default global prefix
+# (/usr/lib/node_modules) is root-owned, and install-skills.sh does
+# `npm install --global agent-installer` as the agent user.
+# ---------------------------------------------------------------------------
+COPY --from=agent-src scripts/install-skills.sh /usr/local/bin/install-skills.sh
+RUN chmod +x /usr/local/bin/install-skills.sh
+COPY --from=agent-src skills/ /opt/simple-coding-agent-skills/
+ENV PROJECT_SKILLS_DIR=/opt/simple-coding-agent-skills
+
+RUN mkdir -p /home/agent/.npm-global && chown agent:agent /home/agent/.npm-global
+ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global \
+    PATH=/home/agent/.npm-global/bin:$PATH
+
+USER agent
+RUN /usr/local/bin/install-skills.sh
+USER root
+
+# ---------------------------------------------------------------------------
+# Git identity for everything that commits in the container: the model's
+# commits in /data/repo and any profile command that runs `git commit` (e.g. a
+# test suite that builds throwaway repos). Neither upstream nor the profile
+# sets one, and without it `git commit` exits 128 ("Author identity unknown").
+# Written to the agent's global config, which profile commands see through
+# HOME=/home/agent in the profile's env:. Matches the Co-Authored-By trailer.
+# ---------------------------------------------------------------------------
+RUN git config --file /home/agent/.gitconfig user.name "Claude Code" \
+    && git config --file /home/agent/.gitconfig user.email "noreply@anthropic.com" \
+    && chown agent:agent /home/agent/.gitconfig
+
+# ---------------------------------------------------------------------------
+# Repository profile, loaded via PROFILE_PATH (see .env / .env.example).
+# ---------------------------------------------------------------------------
+COPY simple-coding-agent-profile.yml /opt/agent-profile/simple-coding-agent-profile.yml
+
+# ---------------------------------------------------------------------------
+# Persistent data volume: /data is owned by the agent user
+# ---------------------------------------------------------------------------
+RUN mkdir -p /data && chown agent:agent /data
+VOLUME /data
+
+# ---------------------------------------------------------------------------
+# Control socket runtime dir. The agent's ControlServer.start() does
+# `RUNTIME_DIR.mkdir(parents=True, exist_ok=True)` against the hardcoded
+# /run/simple-coding-agent at startup; /run is root-owned in the base image,
+# so as the unprivileged `agent` user that mkdir raises PermissionError,
+# which crashes startup (and the agent's own exception-logging path around
+# it currently throws a second, unrelated TypeError, masking the real cause).
+# Pre-creating and chowning it here avoids that failure entirely.
+# ---------------------------------------------------------------------------
+RUN mkdir -p /run/simple-coding-agent && chown agent:agent /run/simple-coding-agent
+
+ENV HOME=/home/agent
+ENV DATA_DIR=/data
+
+# Default shape: run the agent directly as `agent`.
+USER agent
+ENTRYPOINT ["python", "-m", "simple_coding_agent"]
+
+# Bundled-services shape instead (see references/bundled-services.md): stay
+# root, install `gosu` in the system packages, and replace the two lines above
+# with:
+#   COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint.sh
+#   RUN chmod +x /usr/local/bin/agent-entrypoint.sh
+#   ENTRYPOINT ["/usr/local/bin/agent-entrypoint.sh"]
