@@ -167,7 +167,9 @@ first: it starts a fresh container that shares the volume.
 `docker logs <container>`). This is the only place for events that have no
 issue number: startup and runtime-version checks, polling, errors between
 attempts. It's where to look when the container exits or restarts before
-claiming an issue. Use `--since`/`--tail` to keep it small. The output
+claiming an issue. For a `provenance_verification_failed` startup event, follow
+`references/log-layout.md#diagnosing-provenance_verification_failed`.
+Use `--since`/`--tail` to keep it small. The output
 disappears when the container is removed (`compose down`, rebuild), and the
 volume's files don't. On a remote context, check the resolver's `image` line
 and the container's start time against what you expect: a container that
