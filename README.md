@@ -44,7 +44,9 @@ configuration separately if needed.
 - Access to the target repository and a GitHub token with read/write permissions
   for its contents, issues, and pull requests.
 - The model API credentials required by the generated configuration
-  (`META_API_KEY` in the current template).
+  (`META_API_KEY` for the default Meta backend; from simple-coding-agent
+  v0.3.2, `MODEL_API_KEY` with `MODEL_BASE_URL`/`MODEL_AUTH_MODE` selects
+  another backend, see `.env.example`).
 
 ## Workflow
 

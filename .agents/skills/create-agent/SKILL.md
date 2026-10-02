@@ -241,7 +241,8 @@ block and say so in the report.
 
 **.env.example / .env** — `assets/env.example.template`. For `.env`:
 
-- Copy `GITHUB_TOKEN`, `META_API_KEY`, `MAX_BUDGET_USD`, `MAX_TURNS`,
+- Copy `GITHUB_TOKEN`, the model credential (`META_API_KEY`, or
+  `MODEL_API_KEY` — see the next item), `MAX_BUDGET_USD`, `MAX_TURNS`,
   `MAX_BUDGET_TOKENS`, `SOFT_THRESHOLD_PERCENTAGE` from an
   existing instance's `.env`: `agent-instances/agent-*/.env` first, else
   `../simple-coding-agent-env/agent-*/.env`. If they disagree, ask which to
@@ -251,6 +252,16 @@ block and say so in the report.
   upstream default 0.2 leaves too few tokens for the handoff turns). Copy with
   shell tools (grep/sed into the file) so secrets never appear in your output;
   when showing the result, redact values.
+- Model backend: the template defaults to Meta (`META_API_KEY`, `MODEL_*`
+  commented out). If the source instance sets `MODEL_API_KEY` or other
+  `MODEL_*` keys (`MODEL_BASE_URL`, `MODEL_AUTH_MODE`, `MODEL_NAME`), copy
+  them together with its credential and uncomment the matching template
+  lines; never leave one of them present but empty unless meant (an empty
+  `MODEL_BASE_URL` selects the Anthropic API, an empty `MODEL_AUTH_MODE`
+  fails startup). These keys need `AGENT_SRC_REF` v0.3.2 or later; older
+  refs ignore them and require `META_API_KEY`. On a non-Meta backend the
+  managed-settings pricing doesn't apply, so `MAX_BUDGET_USD` must be raised
+  to the backend's rates — ask the user for the value.
 - `TARGET_REPO`, `PROFILE_PATH=/opt/agent-profile/simple-coding-agent-profile.yml`,
   `AGENT_SRC_REF` (from step 3 — `main` unless the user pinned a tag), and an
   empty `CLAUDE_CODE_BUILD_VERSION=` (set only if the user asks for a specific
