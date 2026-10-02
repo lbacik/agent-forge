@@ -9,7 +9,9 @@ image**. Full working example: `../simple-coding-agent-env/agent-jsonhub-api/` (
 
 - Dockerfile installs the service binaries and `gosu`, stays `USER root`, and
   uses `agent-entrypoint.sh` as ENTRYPOINT.
-- `agent-entrypoint.sh` (runs as root, `set -e`):
+- `agent-entrypoint.sh` (runs as root, `set -e`): before it execs the agent
+  it must run `. /etc/agent-runtime.env` (the image's expected claude-code
+  version, which the agent's startup provenance check reads):
   1. initialize the data dir on first start (ephemeral — not the `/data`
      volume; the profile resets state per attempt anyway),
   2. start the daemon bound to `127.0.0.1` in the background,

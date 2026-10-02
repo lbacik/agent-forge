@@ -67,8 +67,13 @@ start them.
 
 Review the generated `.env` and supply any missing credentials before starting
 the agent. `AGENT_SRC_REF` selects the upstream agent branch, tag, or commit and
-defaults to `main`. Runtime version pins in the Dockerfile and `.env` must match
-the selected upstream version.
+defaults to `main`. Runtime versions are not pinned per instance: upstream at
+`AGENT_SRC_REF` decides `claude-agent-sdk` (its `pyproject.toml`) and, by
+default, `claude-code` (its `config.py`), resolved at build time. To upgrade,
+move upstream or `AGENT_SRC_REF` and rebuild. The optional
+`CLAUDE_CODE_BUILD_VERSION` in `.env` installs a different `claude-code` at the
+next build; do not set `CLAUDE_CODE_VERSION` or `CLAUDE_AGENT_SDK_VERSION`
+there.
 
 ### 2. Build
 

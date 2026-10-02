@@ -2,7 +2,7 @@
 #
 # The image needs files from two places: this directory (Dockerfile,
 # simple-coding-agent-profile.yml) and the simple-coding-agent repository
-# (the Python package, package.json, scripts/install-skills.sh, skills/).
+# (the Python package, scripts/install-skills.sh, skills/, docker/).
 # `additional_contexts` exposes the latter — fetched straight from GitHub at
 # the ref named by AGENT_SRC_REF — to the Dockerfile's `COPY --from=agent-src`
 # lines without making it this build's main context. Requires Docker Compose
@@ -15,13 +15,16 @@
 # Change it and rerun `docker compose build` to switch ref, no edit needed
 # here. Tracking `main` means a rebuild picks up new agent code as soon as it
 # lands; pinning a tag freezes the agent's code until AGENT_SRC_REF is bumped
-# by hand. Either way, if that ref bumps its default runtime versions
-# (simple_coding_agent/config.py), update the Dockerfile's claude-agent-sdk /
-# claude-code pins and the matching .env version values together.
+# by hand. Either way, runtime versions (claude-agent-sdk, claude-code) are
+# derived from that same ref at build time: to upgrade, move upstream or
+# AGENT_SRC_REF and rebuild. CLAUDE_CODE_BUILD_VERSION (optional, .env)
+# overrides the claude-code version for the next build only.
 services:
   agent:
     build:
       context: .
+      args:
+        CLAUDE_CODE_BUILD_VERSION: ${CLAUDE_CODE_BUILD_VERSION:-}
       additional_contexts:
         agent-src: https://github.com/lbacik/simple-coding-agent.git#${AGENT_SRC_REF:-main}
     image: simple-coding-agent:{{SHORT_NAME}}

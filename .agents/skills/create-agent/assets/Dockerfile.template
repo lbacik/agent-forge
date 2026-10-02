@@ -61,15 +61,27 @@ WORKDIR /app
 COPY --from=agent-src pyproject.toml ./
 COPY --from=agent-src simple_coding_agent/ ./simple_coding_agent/
 
-# Versions must equal CLAUDE_AGENT_SDK_VERSION / CLAUDE_CODE_VERSION in .env:
-# the agent verifies the installed runtime against them at startup.
-RUN pip install --no-cache-dir \
-    "claude-agent-sdk=={{SDK_VERSION}}" \
-    "PyYAML>=6.0,<7" \
+# Runtime versions come from upstream at AGENT_SRC_REF, never from this file:
+#  - claude-agent-sdk is whatever upstream's pyproject.toml pins (installed by
+#    `pip install -e .`); do not pin it here, or pip would downgrade/upgrade it
+#    away from what the agent's config.py expects.
+#  - claude-code is the version config.py expects (_DEFAULT_CLAUDE_CODE_VERSION),
+#    read at build time. Optional override: CLAUDE_CODE_BUILD_VERSION in .env
+#    (build-time only; needs a rebuild).
+# The agent verifies the installed runtime at startup against
+# CLAUDE_CODE_VERSION, so the image records the version it installed in
+# /etc/agent-runtime.env and the entrypoint sources it (an empty ENV would be
+# rejected by the agent, and .env must not be able to override it). Do not set
+# CLAUDE_CODE_VERSION or CLAUDE_AGENT_SDK_VERSION in .env.
+ARG CLAUDE_CODE_BUILD_VERSION=""
+RUN pip install --no-cache-dir "PyYAML>=6.0,<7" \
     && pip install --no-cache-dir -e .
 
-COPY --from=agent-src package.json ./
-RUN npm install --global @anthropic-ai/claude-code@{{CLAUDE_CODE_VERSION}}
+RUN set -eu; \
+    version="${CLAUDE_CODE_BUILD_VERSION:-$(sed -n 's/^_DEFAULT_CLAUDE_CODE_VERSION = "\([^"]*\)"$/\1/p' simple_coding_agent/config.py)}"; \
+    test -n "$version" || { echo "cannot determine claude-code version" >&2; exit 1; }; \
+    npm install --global "@anthropic-ai/claude-code@${version}"; \
+    echo "export CLAUDE_CODE_VERSION=${version}" > /etc/agent-runtime.env
 
 # Managed settings (root-owned, mode 644), as in upstream's Dockerfile: Meta
 # model pricing for the CLI cost ledger. Without it the CLI prices
@@ -137,11 +149,13 @@ ENV DATA_DIR=/data
 
 # Default shape: run the agent directly as `agent`.
 USER agent
-ENTRYPOINT ["python", "-m", "simple_coding_agent"]
+ENTRYPOINT ["sh", "-c", ". /etc/agent-runtime.env && exec python -m simple_coding_agent \"$@\"", "agent"]
 
 # Bundled-services shape instead (see references/bundled-services.md): stay
 # root, install `gosu` in the system packages, and replace the two lines above
 # with:
 #   COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint.sh
 #   RUN chmod +x /usr/local/bin/agent-entrypoint.sh
+# and have agent-entrypoint.sh run `. /etc/agent-runtime.env` before it execs
+# the agent (as the agent user).
 #   ENTRYPOINT ["/usr/local/bin/agent-entrypoint.sh"]
