@@ -117,6 +117,20 @@ docker compose down
 This preserves the named volume. Adding `-v` deletes the volume and its agent
 data.
 
+To run an instance with an alternative configuration, such as `.env.claude` for
+the Anthropic API, copy `.env`, change the differing settings and set
+`AGENT_ENV_FILE=.env.claude` in the copy. Then pass the file to every command:
+
+```bash
+docker compose --env-file .env.claude build
+docker compose --env-file .env.claude up -d
+```
+
+`--env-file` alone replaces `.env` only for interpolation in `compose.yaml`;
+`AGENT_ENV_FILE` makes the container load the same file. Both configurations
+share the container and the `agent_data` volume unless you also pass a separate
+project name with `-p`.
+
 ### 4. Debug problems
 
 Ask your coding assistant to use the

@@ -267,6 +267,13 @@ block and say so in the report.
   empty `CLAUDE_CODE_BUILD_VERSION=` (set only if the user asks for a specific
   claude-code version).
 - Ask before adding any other setting the user didn't ask for.
+- Alternative configurations (e.g. `.env.claude` for the Anthropic backend):
+  only if the user asks. Copy `.env`, change what differs and set
+  `AGENT_ENV_FILE=.env.claude` in the copy; leave `AGENT_ENV_FILE` unset in
+  `.env`. `--env-file` alone only swaps the interpolation file, while
+  compose's `env_file: ${AGENT_ENV_FILE:-.env}` decides what the container
+  loads. Every command then takes `--env-file .env.claude`. Without `-p` both
+  configurations share one container and the `agent_data` volume.
 
 ### 6. Verify the token
 

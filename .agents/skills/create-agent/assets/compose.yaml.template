@@ -28,8 +28,13 @@ services:
       additional_contexts:
         agent-src: https://github.com/lbacik/simple-coding-agent.git#${AGENT_SRC_REF:-main}
     image: simple-coding-agent:{{SHORT_NAME}}
+    # Runtime settings for the container. `--env-file` only swaps the file used
+    # for ${...} interpolation above, not this one: an alternative file (e.g.
+    # .env.claude for another model backend) must also set
+    # AGENT_ENV_FILE=<its own name>, then
+    # `docker compose --env-file .env.claude up -d` uses it for both.
     env_file:
-      - .env
+      - ${AGENT_ENV_FILE:-.env}
     # The model's own shell, as opposed to the profile's commands, sees only
     # the container environment and otherwise falls back to the target repo's
     # defaults. Copy here the profile `env:` keys whose repo default would
