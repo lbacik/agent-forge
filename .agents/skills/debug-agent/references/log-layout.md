@@ -18,6 +18,7 @@ before assuming anything.
 - [State files](#state-files-datastate)
 - [Attempt directory](#attempt-directory-datalogsissuestarted_at)
 - [agent_output.json events](#agent_outputjson-events)
+- [Diagnosing `provenance_verification_failed`](#diagnosing-provenance_verification_failed)
 - [jq recipes](#jq-recipes)
 
 ## Tree
@@ -166,8 +167,71 @@ Events that signal trouble:
 | `final_check_failed` | `check_*.log`. The model's changes didn't turn the gate green |
 | `cost_soft_threshold_crossed` / `cost_soft_threshold_handoff_context_injected` | expected before a `handoff` outcome |
 | `limits_checked` | running `estimated_cost_usd`, `turns`, `elapsed_seconds` against the limits. The last one shows how close the run got |
-| `provenance_verification_failed`, `git_workspace_unrecoverable`, `continuation_branch_missing`, `working_tree_dirty` | git/branch state problems in `repo/` |
+| `provenance_verification_failed` | Startup, stdout only: see [Diagnosing `provenance_verification_failed`](#diagnosing-provenance_verification_failed) |
+| `git_workspace_unrecoverable`, `continuation_branch_missing`, `working_tree_dirty` | git/branch state problems in `repo/` |
 | `consecutive_error_limit_reached` | stdout only. The agent has stopped picking up issues (see `state/consecutive_errors.json`) |
+
+## Diagnosing `provenance_verification_failed`
+
+The agent refuses to start when the installed runtime differs from the pinned
+one (upstream `provenance.py`, emitted from `__main__.py`). Typical `detail`:
+`Claude Agent SDK version does not match the pinned runtime` or
+`Claude Code CLI version does not match the pinned runtime`. The event has no
+issue number, so it exists only in container stdout, phase `startup`; the
+container then exits or restarts, so no attempt dir exists.
+
+```bash
+cd agent-instances/agent-<name>
+docker compose logs --tail 50 agent | grep provenance_verification_failed
+```
+
+All commands below are read-only and work on a stopped container: they run a
+throwaway container of the instance's image (the `image` line of the resolver
+output; add `DOCKER_CONTEXT=<ctx>` for a remote context).
+
+### Three-way version comparison
+
+```bash
+IMG=<image>   # from locate-agent.sh
+
+# 1. Installed in the image
+docker run --rm --entrypoint sh $IMG -c \
+  'pip show claude-agent-sdk | grep -i ^version; claude --version'
+
+# 2. Expected by the agent: the container environment wins ...
+docker compose config | grep -E 'CLAUDE_(AGENT_SDK|CODE)_VERSION'
+grep -E 'CLAUDE_(AGENT_SDK|CODE)_VERSION' .env
+# ... otherwise upstream config.py defaults at the ref the image was built from
+docker run --rm --entrypoint sh $IMG -c \
+  'grep -rn "_DEFAULT_CLAUDE_" "$(python -c "import simple_coding_agent.config as c; print(c.__file__)")"'
+
+# 3. Pinned by upstream: SDK in pyproject.toml, CLI in package.json
+docker run --rm --entrypoint sh $IMG -c \
+  'grep -n "claude-agent-sdk" /app/pyproject.toml; grep -n "claude-code" /app/package.json /app/Dockerfile'
+```
+
+If `/app` lacks those files, read them from GitHub `lbacik/simple-coding-agent`
+at the `AGENT_SRC_REF` the image was built from. The mismatching pair is the
+one where "installed" differs from "expected".
+
+### Timeline check
+
+Compare when the image was built with when the instance files last changed:
+
+```bash
+docker image inspect --format '{{.Created}}' $IMG
+ls -l --time-style=full-iso .env Dockerfile 2>/dev/null || stat -f '%Sm %N' .env Dockerfile
+```
+
+A `.env` or Dockerfile newer than the image means the image is stale.
+
+### Usual causes and fixes
+
+| Cause | Sign | Owner | Fix |
+|---|---|---|---|
+| `.env` changed without a rebuild | `.env` newer than image; installed differs from env | instance | `docker compose build`, then `up -d` |
+| Instance-level SDK pin silently overridden by upstream's exact `pyproject.toml` pin | The Dockerfile's `pip install claude-agent-sdk==X` runs, then installing `/app` re-resolves the SDK to upstream's version; installed = upstream pin, env/Dockerfile say X | instance | Align `CLAUDE_AGENT_SDK_VERSION` (and the Dockerfile pin) with upstream's `pyproject.toml` pin, or install the agent first and pin afterwards; rebuild |
+| Upstream's own claude-code sources disagree (`package.json` / Dockerfile vs `config.py`) | Upstream `package.json`/Dockerfile CLI version differs from `config.py` default, and the instance sets no env | upstream | Short term, set both `CLAUDE_*_VERSION` in the instance `.env` and install the matching CLI; rebuild. Real fix: align the sources in `simple-coding-agent` |
 
 ## jq recipes
 
