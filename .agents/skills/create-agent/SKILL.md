@@ -93,14 +93,15 @@ Shallow-clone that same ref into the scratchpad and read, at that commit
 clone without `--depth 1` or `--branch` and `git checkout <sha>` instead,
 since shallow clones can't fetch an arbitrary commit by SHA):
 
-- `simple_coding_agent/config.py` — `_DEFAULT_CLAUDE_AGENT_SDK_VERSION` and
-  `_DEFAULT_CLAUDE_CODE_VERSION`. These are the versions the Dockerfile must
-  install and `.env` must pin. **Take them from `config.py`, not from the
-  upstream `Dockerfile`** — the upstream Dockerfile has lagged behind before,
-  and the agent verifies the installed runtime against these values at startup.
-  Also note the profile's allowed keys in `load_repository_profile`
-  (currently `setup, check, base_branch, timeout, setup_timeout, env`) — an
-  unknown key makes the agent refuse the profile.
+- `simple_coding_agent/config.py` — the profile's allowed keys in
+  `load_repository_profile` (currently
+  `setup, check, base_branch, timeout, setup_timeout, env`); an unknown key
+  makes the agent refuse the profile. Do **not** copy runtime versions from it:
+  the Dockerfile derives them at build time (see "Runtime versions" in step 5).
+  To upgrade the agent and its runtime, move upstream or `AGENT_SRC_REF` and
+  rebuild. The Dockerfile reads `_DEFAULT_CLAUDE_CODE_VERSION` from `config.py`
+  with a `sed` pattern tied to its current `NAME = "x"` formatting; if upstream
+  reformats it, the build fails loudly and the pattern needs updating.
 - `simple_coding_agent/command_runner.py` — profile commands run with a
   minimal environment: only `PATH` (os.defpath + `PROFILE_EXTRA_PATH`) plus the
   profile's `env:`. No HOME, no shell profile, credentials stripped.
@@ -180,6 +181,24 @@ Rules that come from how CommandRunner works:
   profile only waits for them and resets them.
 - Header comment: which CI files it mirrors, what was left out and why.
 
+**Runtime versions.** Upstream at `AGENT_SRC_REF` is the single source. No
+version numbers are copied into the instance:
+
+- `claude-agent-sdk` is decided only by upstream's `pyproject.toml` (installed
+  by `pip install -e .`). Never pin it in the Dockerfile or `.env`; upstream
+  pins it exactly, so an instance pin would be overwritten anyway.
+- `claude-code` defaults to `_DEFAULT_CLAUDE_CODE_VERSION` in upstream's
+  `config.py`, read at build time (not `package.json` / upstream's Dockerfile,
+  which can disagree with it).
+- Optional `CLAUDE_CODE_BUILD_VERSION` in `.env` picks another claude-code
+  version at build time only. The image records the matching expected version
+  (`/etc/agent-runtime.env`, sourced by the entrypoint), so editing `.env` without rebuilding cannot
+  cause `provenance_verification_failed`. Never put `CLAUDE_CODE_VERSION` or
+  `CLAUDE_AGENT_SDK_VERSION` in `.env`; the image's recorded value is the
+  source of truth.
+- Upgrade: move upstream or change `AGENT_SRC_REF`, then `docker compose build`
+  (and recreate the container).
+
 **compose.yaml** — `assets/compose.yaml.template`, image tag
 `simple-coding-agent:<short-name>`. Its `agent-src` context URL reads the ref
 from `AGENT_SRC_REF` in `.env` (`${AGENT_SRC_REF:-main}`) — nothing to fill in
@@ -233,8 +252,9 @@ block and say so in the report.
   shell tools (grep/sed into the file) so secrets never appear in your output;
   when showing the result, redact values.
 - `TARGET_REPO`, `PROFILE_PATH=/opt/agent-profile/simple-coding-agent-profile.yml`,
-  `AGENT_SRC_REF` (from step 3 — `main` unless the user pinned a tag), and the
-  two runtime pins from step 3.
+  `AGENT_SRC_REF` (from step 3 — `main` unless the user pinned a tag), and an
+  empty `CLAUDE_CODE_BUILD_VERSION=` (set only if the user asks for a specific
+  claude-code version).
 - Ask before adding any other setting the user didn't ask for.
 
 ### 6. Verify the token

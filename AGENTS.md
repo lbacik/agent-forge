@@ -20,7 +20,8 @@ reference material; make this project's instance changes here.
 
 For requests to create or configure an agent for a repository, read and use
 [create-agent](.agents/skills/create-agent/SKILL.md). It owns the scaffolding,
-stack analysis, runtime pins, credentials, and validation workflow. For instances
+stack analysis, runtime versions (derived from upstream, not pinned per
+instance), credentials, and validation workflow. For instances
 with bundled services, also read its
 [bundled-services reference](.agents/skills/create-agent/references/bundled-services.md).
 
