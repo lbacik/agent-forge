@@ -222,10 +222,14 @@ block and say so in the report.
 
 **.env.example / .env** — `assets/env.example.template`. For `.env`:
 
-- Copy `GITHUB_TOKEN`, `META_API_KEY`, `MAX_BUDGET_USD`, `MAX_TURNS` from an
+- Copy `GITHUB_TOKEN`, `META_API_KEY`, `MAX_BUDGET_USD`, `MAX_TURNS`,
+  `MAX_BUDGET_TOKENS`, `SOFT_THRESHOLD_PERCENTAGE` from an
   existing instance's `.env`: `agent-instances/agent-*/.env` first, else
   `../simple-coding-agent-env/agent-*/.env`. If they disagree, ask which to
-  use. If there is none, ask the user to fill those values in. Copy with
+  use. If there is none, ask the user to fill those values in. An instance
+  that predates the token settings may lack the last two: use
+  `MAX_BUDGET_TOKENS=4000000` and `SOFT_THRESHOLD_PERCENTAGE=0.3` (the
+  upstream default 0.2 leaves too few tokens for the handoff turns). Copy with
   shell tools (grep/sed into the file) so secrets never appear in your output;
   when showing the result, redact values.
 - `TARGET_REPO`, `PROFILE_PATH=/opt/agent-profile/simple-coding-agent-profile.yml`,

@@ -79,3 +79,17 @@ Upstream agent fixes belong in the separate `simple-coding-agent` checkout.
 
 Keep [README.md](README.md) aligned with changes to the user workflow or instance
 layout.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues (`lbacik/agent-forge`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
