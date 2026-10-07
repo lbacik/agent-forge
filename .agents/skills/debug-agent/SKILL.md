@@ -175,6 +175,26 @@ volume's files don't. On a remote context, check the resolver's `image` line
 and the container's start time against what you expect: a container that
 exited long ago may still be running an image built before the latest fix.
 
+### Instances behind a LiteLLM gateway
+
+An instance whose env file sets `COMPOSE_FILE=compose.yaml:compose.litellm.yaml`
+sends model traffic to a LiteLLM gateway on the external network
+`GATEWAY_NETWORK` (`MODEL_BASE_URL`, usually `http://litellm:4000`). Read
+those keys with `grep -E '^(COMPOSE_FILE|GATEWAY_NETWORK|MODEL_BASE_URL|MODEL_NAME)=' .env`,
+never the whole file. The overlay doesn't change the compose project,
+container or volume names.
+
+For backend failures (401, unknown model, model mismatch, timeouts, a
+container that can't resolve `litellm`), check the gateway's side too, on the
+same docker context: `docker network inspect <GATEWAY_NETWORK>` shows whether
+the agent and the gateway are attached, and `docker logs --since <run start>
+<gateway container>` shows the request from the gateway's view. Compare a low
+`prompt_cache.main_hit_rate` in `token_budget_reconciled`, or a
+`prompt_cache_ineffective` warning, with an earlier good run: caching depends on
+the gateway's LiteLLM version, so check whether its image changed. The gateway
+is separate shared infrastructure; don't restart or reconfigure it without the
+user's approval, and report gateway-side causes as such.
+
 ## 3. Choose which run(s) to inspect
 
 Every attempt gets its own directory, `logs/<issue>/<started_at>/`. One issue
