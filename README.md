@@ -28,7 +28,8 @@ agent-forge/
         ├── simple-coding-agent-profile.yml
         ├── .env.example
         ├── .env
-        └── agent-entrypoint.sh   # Optional, for bundled services
+        ├── agent-entrypoint.sh   # Optional, for bundled services
+        └── compose.litellm.yaml  # Optional, joins a LiteLLM gateway network
 ```
 
 **Create all instances inside `agent-instances/`.** The entire directory is
@@ -46,7 +47,12 @@ configuration separately if needed.
 - The model API credentials required by the generated configuration
   (`META_API_KEY` for the default Meta backend; from simple-coding-agent
   v0.3.2, `MODEL_API_KEY` with `MODEL_BASE_URL`/`MODEL_AUTH_MODE` selects
-  another backend, see `.env.example`).
+  another backend, see `.env.example`). For `muse-*` models `create-agent`
+  recommends a LiteLLM gateway, which restores Meta prompt caching: the gateway
+  runs separately on a shared Docker network, the agent holds only its master
+  key as `MODEL_API_KEY`, and `COMPOSE_FILE` in `.env` adds
+  `compose.litellm.yaml` to attach the agent to that network. Anthropic models
+  connect directly.
 
 ## Workflow
 
@@ -130,6 +136,10 @@ docker compose --env-file .env.claude up -d
 `AGENT_ENV_FILE` makes the container load the same file. Both configurations
 share the container and the `agent_data` volume unless you also pass a separate
 project name with `-p`.
+
+An instance that uses a LiteLLM gateway needs no extra flags: `COMPOSE_FILE`
+in its env file makes every `docker compose` command load
+`compose.litellm.yaml` as well.
 
 ### 4. Debug problems
 

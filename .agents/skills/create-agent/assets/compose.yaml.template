@@ -19,6 +19,9 @@
 # derived from that same ref at build time: to upgrade, move upstream or
 # AGENT_SRC_REF and rebuild. CLAUDE_CODE_BUILD_VERSION (optional, .env)
 # overrides the claude-code version for the next build only.
+#
+# A LiteLLM model backend adds compose.litellm.yaml through COMPOSE_FILE in
+# the env file; this file alone keeps the agent on its default network.
 services:
   agent:
     build:

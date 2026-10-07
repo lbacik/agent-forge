@@ -36,6 +36,7 @@ The output is always these files in `agent-instances/agent-<name>/`:
 | `.env.example` | `assets/env.example.template` |
 | `.env` | same as `.env.example` + real secrets (ignored with all of `agent-instances/`) |
 | `agent-entrypoint.sh` | only for the bundled-services shape |
+| `compose.litellm.yaml` | only for the LiteLLM backend: `assets/compose.litellm.yaml.template` |
 
 The whole point of the profile is that the agent's `check:` must be red exactly
 when the target repo's CI gate would be red. Everything else follows from that.
@@ -61,6 +62,11 @@ can determine by reading the repository.
   tag v1.4.0" — use that as `AGENT_SRC_REF` instead; see step 3. It's not a
   one-time choice: it lands in `.env` as an ordinary setting, so it can be
   changed later (and the image rebuilt) without touching any other file.
+- Ask which model the agent should use and recommend its route as
+  `references/model-backend.md` ("Choosing the route") says; read it now.
+  Offer the model an existing instance uses as an option.
+  The choice decides the `.env` model settings, `MAX_BUDGET_USD` and whether
+  `compose.litellm.yaml` is generated (step 5).
 
 ### 2. Get the target's source
 
@@ -252,16 +258,12 @@ block and say so in the report.
   upstream default 0.2 leaves too few tokens for the handoff turns). Copy with
   shell tools (grep/sed into the file) so secrets never appear in your output;
   when showing the result, redact values.
-- Model backend: the template defaults to Meta (`META_API_KEY`, `MODEL_*`
-  commented out). If the source instance sets `MODEL_API_KEY` or other
-  `MODEL_*` keys (`MODEL_BASE_URL`, `MODEL_AUTH_MODE`, `MODEL_NAME`), copy
-  them together with its credential and uncomment the matching template
-  lines; never leave one of them present but empty unless meant (an empty
-  `MODEL_BASE_URL` selects the Anthropic API, an empty `MODEL_AUTH_MODE`
-  fails startup). These keys need `AGENT_SRC_REF` v0.3.2 or later; older
-  refs ignore them and require `META_API_KEY`. On a non-Meta backend the
-  managed-settings pricing doesn't apply, so `MAX_BUDGET_USD` must be raised
-  to the backend's rates — ask the user for the value.
+- Model backend: set up the route chosen in step 1 as described in
+  `references/model-backend.md` ("Settings per route"). The template defaults
+  to Meta (`META_API_KEY`, `MODEL_*` commented out); for another route,
+  uncomment the matching template block and copy its values from a source
+  instance that uses the same route, else ask. Set `MAX_BUDGET_USD` by that
+  reference's "Budget" rule.
 - `TARGET_REPO`, `PROFILE_PATH=/opt/agent-profile/simple-coding-agent-profile.yml`,
   `AGENT_SRC_REF` (from step 3 — `main` unless the user pinned a tag), and an
   empty `CLAUDE_CODE_BUILD_VERSION=` (set only if the user asks for a specific
@@ -273,7 +275,9 @@ block and say so in the report.
   `.env`. `--env-file` alone only swaps the interpolation file, while
   compose's `env_file: ${AGENT_ENV_FILE:-.env}` decides what the container
   loads. Every command then takes `--env-file .env.claude`. Without `-p` both
-  configurations share one container and the `agent_data` volume.
+  configurations share one container and the `agent_data` volume. A LiteLLM
+  alternative (`.env.litellm`) also carries `COMPOSE_FILE` and
+  `GATEWAY_NETWORK`, and needs `compose.litellm.yaml` in the instance.
 
 ### 6. Verify the token
 
@@ -299,7 +303,9 @@ contents, pull requests and issues need read & write.
 - Profile: load it with the agent's own loader from the cloned agent source
   (`python3 -c "from simple_coding_agent.config import load_repository_profile; ..."`
   with that clone on `sys.path`; needs PyYAML).
-- `docker compose config -q` in `agent-instances/agent-<name>/`.
+- `docker compose config -q` in `agent-instances/agent-<name>/` (with
+  `--env-file` for an alternative configuration). For LiteLLM, check that
+  `docker compose config` lists the gateway network on the `agent` service.
 - The split-environment check: in the built image, as `agent` in a target
   clone and *without* the profile's `env:`, run the app's config dump or
   boot command (e.g. `php bin/console debug:dotenv`, `manage.py diffsettings`,
@@ -309,11 +315,15 @@ contents, pull requests and issues need read & write.
   then the profile's `setup` + `check` inside the built image against the
   target clone. That's the only real proof the profile is green on a clean
   tree; if the user declines, say clearly that it wasn't run.
+- LiteLLM backend: with the built image, offer the gateway check from
+  `references/model-backend.md` ("Verifying the gateway"). Prompt caching
+  can only be confirmed on the first real attempt; say so.
 
 ### 8. Report
 
 Tell the user in their language: files created, stack decisions and the reasons
-for them (runtime version, included/excluded checks, bundled services), which
+for them (runtime version, included/excluded checks, bundled services), the
+model and its route (and, for LiteLLM, the gateway network), which
 `simple-coding-agent` ref the image builds from (`main`, or the pinned tag —
 and if pinned, that rebuilds won't pick up new agent code until `AGENT_SRC_REF`
 in `.env` is bumped or changed back to `main`, then rebuilt — no other file

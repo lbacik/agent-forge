@@ -1,0 +1,20 @@
+# Optional layer for compose.yaml: attaches the agent to the external Docker
+# network of a LiteLLM gateway, so MODEL_BASE_URL=http://litellm:4000 resolves.
+# The gateway is separate infrastructure with its own compose project; this
+# file only joins its network and never starts it.
+#
+# Enabled from the env file, so the usual commands stay unchanged:
+#   COMPOSE_FILE=compose.yaml:compose.litellm.yaml
+#   GATEWAY_NETWORK=<the gateway's network name>
+# Without COMPOSE_FILE, `docker compose` reads compose.yaml alone and the agent
+# keeps only its project's default network.
+services:
+  agent:
+    networks:
+      - default
+      - gateway
+
+networks:
+  gateway:
+    name: ${GATEWAY_NETWORK:?set GATEWAY_NETWORK to the LiteLLM gateway's network}
+    external: true
