@@ -180,7 +180,9 @@ exited long ago may still be running an image built before the latest fix.
 An instance whose env file sets `COMPOSE_FILE=compose.yaml:compose.litellm.yaml`
 sends model traffic to a LiteLLM gateway on the external network
 `GATEWAY_NETWORK` (`MODEL_BASE_URL`, usually `http://litellm:4000`). Read
-those keys with `grep -E '^(COMPOSE_FILE|GATEWAY_NETWORK|MODEL_BASE_URL|MODEL_NAME)=' .env`,
+those keys from the instance's env file (`.env`, or the file a run was started
+with via `--env-file`, e.g. `.env.litellm`) with
+`grep -E '^(COMPOSE_FILE|GATEWAY_NETWORK|MODEL_BASE_URL|MODEL_NAME)=' <file>`,
 never the whole file. The overlay doesn't change the compose project,
 container or volume names.
 
@@ -191,7 +193,8 @@ the agent and the gateway are attached, and `docker logs --since <run start>
 <gateway container>` shows the request from the gateway's view. Compare a low
 `prompt_cache.main_hit_rate` in `token_budget_reconciled`, or a
 `prompt_cache_ineffective` warning, with an earlier good run: caching depends on
-the gateway's LiteLLM version, so check whether its image changed. The gateway
+the gateway's LiteLLM version (`LITELLM_VERSION`), so check whether its image
+tag changed. The gateway
 is separate shared infrastructure; don't restart or reconfigure it without the
 user's approval, and report gateway-side causes as such.
 

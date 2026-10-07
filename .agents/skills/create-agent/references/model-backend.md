@@ -68,6 +68,12 @@ startup. `MODEL_API_KEY`, when set, takes precedence over `META_API_KEY`.
   LiteLLM settings in `.env.litellm` with `AGENT_ENV_FILE=.env.litellm`, and
   run every command with `--env-file .env.litellm` (step 5, "Alternative
   configurations").
+- Without the env file, the same layering is
+  `docker compose -f compose.yaml -f compose.litellm.yaml ...`;
+  `GATEWAY_NETWORK` must then still be set.
+- Only the shared-network setup is supported. A gateway published on the
+  host's loopback and reached through `host.docker.internal` is not covered
+  yet.
 
 ## Budget
 
@@ -107,12 +113,15 @@ try:
         print("messages", r.status, "model", model,
               "matches" if model == os.environ["MODEL_NAME"] else "MISMATCH")
 except urllib.error.HTTPError as e:
-    print("messages", e.code, e.read()[:300])
+    # A 401 body can echo part of the key; print only the status for it.
+    print("messages", e.code, "" if e.code == 401 else e.read()[:300])
+except urllib.error.URLError as e:
+    print("messages unreachable:", e.reason)
 EOF
 ```
 
 Expect `liveliness 200` and `messages 200 ... matches`. A name resolution
-error means the agent isn't on `GATEWAY_NETWORK`, 401 a wrong master key, and
+error (a traceback from the liveliness request) means the agent isn't on `GATEWAY_NETWORK`, 401 a wrong master key, and
 400/404 naming the model a `MODEL_NAME` without a gateway route. With an
 alternative env file, add `--env-file .env.litellm`.
 
@@ -121,6 +130,5 @@ After the first one, the `token_budget_reconciled` event in that attempt's
 `agent_output.json` has `prompt_cache.main_hit_rate` (expect roughly 0.9
 through the gateway; ~0 means caching isn't working), and a
 `prompt_cache_ineffective` WARNING means the first responses missed. Cache
-behaviour depends on the gateway's LiteLLM version, so repeat this check after
-every gateway upgrade. Tell the user it remains to be checked on the first
-run.
+behaviour depends on the gateway's LiteLLM version (`LITELLM_VERSION`, its
+image tag), so repeat this check after every gateway upgrade.

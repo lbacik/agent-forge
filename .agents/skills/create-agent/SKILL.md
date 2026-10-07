@@ -62,10 +62,9 @@ can determine by reading the repository.
   tag v1.4.0" — use that as `AGENT_SRC_REF` instead; see step 3. It's not a
   one-time choice: it lands in `.env` as an ordinary setting, so it can be
   changed later (and the image rebuilt) without touching any other file.
-- Ask which model the agent should use, and recommend its route from
-  `references/model-backend.md` (read it now): `muse-*` → LiteLLM gateway,
-  `claude-*` → Anthropic API directly, anything else → no recommendation,
-  the user decides. Offer the model an existing instance uses as an option.
+- Ask which model the agent should use and recommend its route as
+  `references/model-backend.md` ("Choosing the route") says; read it now.
+  Offer the model an existing instance uses as an option.
   The choice decides the `.env` model settings, `MAX_BUDGET_USD` and whether
   `compose.litellm.yaml` is generated (step 5).
 
@@ -263,12 +262,8 @@ block and say so in the report.
   `references/model-backend.md` ("Settings per route"). The template defaults
   to Meta (`META_API_KEY`, `MODEL_*` commented out); for another route,
   uncomment the matching template block and copy its values from a source
-  instance that uses the same route (for LiteLLM including `COMPOSE_FILE` and
-  `GATEWAY_NETWORK`), else ask. Never leave a `MODEL_*` key present but empty
-  unless meant. `MODEL_*` needs `AGENT_SRC_REF` v0.3.2 or later. Set
-  `MAX_BUDGET_USD` by that reference's "Budget" rule: Meta pricing follows
-  `MODEL_NAME`, not the route, so a `muse-*` model through LiteLLM keeps it;
-  for other models ask the user for the value.
+  instance that uses the same route, else ask. Set `MAX_BUDGET_USD` by that
+  reference's "Budget" rule.
 - `TARGET_REPO`, `PROFILE_PATH=/opt/agent-profile/simple-coding-agent-profile.yml`,
   `AGENT_SRC_REF` (from step 3 — `main` unless the user pinned a tag), and an
   empty `CLAUDE_CODE_BUILD_VERSION=` (set only if the user asks for a specific
