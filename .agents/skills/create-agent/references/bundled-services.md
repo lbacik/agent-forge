@@ -18,6 +18,9 @@ image**. Full working example: `../simple-coding-agent-env/agent-jsonhub-api/` (
   3. wait until it answers,
   4. on first init, create the users/passwords CI uses,
   5. `exec gosu agent python -m simple_coding_agent`.
+- Compose keeps `init: true`, as in every shape: Docker's init is PID 1 and
+  the entrypoint runs as its child. Keep the `exec`, so the agent replaces the
+  shell and receives the stop signal init forwards.
 - Profile `setup:` waits for the daemon again (cheap, and guards against a
   restart race) and resets it to a clean state (drop/create database) — the
   role CI's ephemeral service containers play. It cannot start daemons: it

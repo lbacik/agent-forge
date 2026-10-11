@@ -110,6 +110,12 @@ docker compose ps
 docker compose logs --tail=100 -f
 ```
 
+The generated `compose.yaml` sets `init: true` so that Docker's init reaps
+processes orphaned by the agent's tools; without it, every attempt eventually
+fails once the container runs out of process IDs. Instances created before
+this setting need `init: true` added to their `agent` service, then
+`docker compose up -d`.
+
 The named `agent_data` volume stores the working repository, state, and attempt
 logs under `/data` in the container. These persist across container recreation.
 

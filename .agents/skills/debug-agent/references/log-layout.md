@@ -19,6 +19,7 @@ before assuming anything.
 - [Attempt directory](#attempt-directory-datalogsissuestarted_at)
 - [agent_output.json events](#agent_outputjson-events)
 - [Diagnosing `provenance_verification_failed`](#diagnosing-provenance_verification_failed)
+- [Diagnosing pids exhaustion (zombie processes)](#diagnosing-pids-exhaustion-zombie-processes)
 - [jq recipes](#jq-recipes)
 
 ## Tree
@@ -96,10 +97,10 @@ Don't delete the file without the user's agreement.
 | outcome | meaning |
 |---|---|
 | `complete` | work finished, final check green, published |
-| `incomplete` | model ran but the final check was still red (see `final_check_failed`), or the work was only partial |
+| `incomplete` | model ran but the final check was still red (see `final_check_failed`), or the work was only partial; also a red baseline check before the model ran (`baseline_check_failed`, not on a continuation). Resets `consecutive_errors`, which can hide [pids exhaustion](#diagnosing-pids-exhaustion-zombie-processes) |
 | `handoff` | cost soft threshold crossed; the model wrote `repo/.agent/handoff/<issue>.md` and a continuation run will pick it up |
 | `no_changes` | model finished without changing anything |
-| `infrastructure_error` | anything outside the model's work: git/workspace, setup, baseline check, SDK/runtime, publishing. Counts toward `consecutive_errors` |
+| `infrastructure_error` | anything outside the model's work: git/workspace, setup, a baseline check that didn't run, SDK/runtime, publishing. Counts toward `consecutive_errors` |
 
 A missing `outcome` (or a missing `attempt.json`) means the run is still
 active or the process died. Check `state/attempt.json` and the container's
@@ -232,6 +233,54 @@ A `.env` or Dockerfile newer than the image means the image is stale.
 | `.env` changed without a rebuild | `.env` newer than image; installed differs from env | instance | `docker compose build`, then `up -d` |
 | Instance-level SDK pin silently overridden by upstream's exact `pyproject.toml` pin | The Dockerfile's `pip install claude-agent-sdk==X` runs, then installing `/app` re-resolves the SDK to upstream's version; installed = upstream pin, env/Dockerfile say X | instance | Align `CLAUDE_AGENT_SDK_VERSION` (and the Dockerfile pin) with upstream's `pyproject.toml` pin, or install the agent first and pin afterwards; rebuild |
 | Upstream's own claude-code sources disagree (`package.json` / Dockerfile vs `config.py`) | Upstream `package.json`/Dockerfile CLI version differs from `config.py` default, and the instance sets no env | upstream | Short term, set both `CLAUDE_*_VERSION` in the instance `.env` and install the matching CLI; rebuild. Real fix: align the sources in `simple-coding-agent` |
+
+## Diagnosing pids exhaustion (zombie processes)
+
+Without an init process the agent itself is PID 1. Processes orphaned by the
+model's tool commands are reparented to it, and it never reaps them. The
+zombies count toward the container cgroup's `pids.max`. Once that is reached,
+every fork or thread spawn fails with `EAGAIN`, and each attempt fails within
+seconds, each one in a different place. The leak grows only while the model
+works; the zombies are mostly `git` and `sh`, all with `PPid: 1`. See
+agent-forge #9.
+
+Signs in the runs:
+
+- several short runs in a row (seconds, not minutes) on different issues
+- `model_execution_finished`: `Claude SDK execution failed: ProcessError`,
+  stdout `Command failed with exit code -6`
+- `attempt_exception`: `GitWorkspaceError: Git command failed`
+- `setup_*`, `baseline_check_*` or `check_*` logs: `Resource temporarily
+  unavailable`, `EAGAIN`, `code: 11`, `failed to spawn thread`,
+  `fork: retry`
+
+A red baseline ends as `incomplete`, which resets `consecutive_errors`. The
+circuit breaker may therefore never trip, and the agent keeps claiming
+`ready-for-agent` issues and failing them.
+
+Confirm on the running container, in one call (add `DOCKER_CONTEXT=<ctx>` for
+a remote context). The paths are for cgroup v2:
+
+```bash
+docker exec -u agent <container> sh -c '
+  cat /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.max
+  grep -l "^State:.Z" /proc/[0-9]*/status | wc -l
+  tr "\0" " " </proc/1/cmdline; echo'
+docker inspect --format '{{.HostConfig.Init}}' <container>
+```
+
+Exhaustion: `pids.current` is close to `pids.max`, the zombie count is in
+the thousands, PID 1 is the agent (`python -m simple_coding_agent`)
+instead of `/sbin/docker-init`, and `HostConfig.Init` is `<nil>` or `false`.
+A `docker exec` that itself fails with `resource temporarily unavailable`
+points the same way. With an init a few transient zombies are normal.
+
+Cause and fix belong to the instance: its `compose.yaml` lacks `init: true` on
+the `agent` service (the create-agent template has it). Add it and recreate
+the container with `docker compose up -d`; no rebuild is needed. Only PID 1
+can reap the zombies: a restart clears them, but only recreation applies the
+fix. Both interrupt an active attempt, so do either only with the user's
+approval.
 
 ## jq recipes
 
