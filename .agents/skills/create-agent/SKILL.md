@@ -105,9 +105,7 @@ since shallow clones can't fetch an arbitrary commit by SHA):
   makes the agent refuse the profile. Do **not** copy runtime versions from it:
   the Dockerfile derives them at build time (see "Runtime versions" in step 5).
   To upgrade the agent and its runtime, move upstream or `AGENT_SRC_REF` and
-  rebuild. The Dockerfile reads `_DEFAULT_CLAUDE_CODE_VERSION` from `config.py`
-  with a `sed` pattern tied to its current `NAME = "x"` formatting; if upstream
-  reformats it, the build fails loudly and the pattern needs updating.
+  rebuild.
 - `simple_coding_agent/command_runner.py` — profile commands run with a
   minimal environment: only `PATH` (os.defpath + `PROFILE_EXTRA_PATH`) plus the
   profile's `env:`. No HOME, no shell profile, credentials stripped.
@@ -193,15 +191,12 @@ version numbers are copied into the instance:
 - `claude-agent-sdk` is decided only by upstream's `pyproject.toml` (installed
   by `pip install -e .`). Never pin it in the Dockerfile or `.env`; upstream
   pins it exactly, so an instance pin would be overwritten anyway.
-- `claude-code` defaults to `_DEFAULT_CLAUDE_CODE_VERSION` in upstream's
-  `config.py`, read at build time (not `package.json` / upstream's Dockerfile,
-  which can disagree with it).
-- Optional `CLAUDE_CODE_BUILD_VERSION` in `.env` picks another claude-code
-  version at build time only. The image records the matching expected version
-  (`/etc/agent-runtime.env`, sourced by the entrypoint), so editing `.env` without rebuilding cannot
-  cause `provenance_verification_failed`. Never put `CLAUDE_CODE_VERSION` or
-  `CLAUDE_AGENT_SDK_VERSION` in `.env`; the image's recorded value is the
-  source of truth.
+- The Claude Code CLI is the one bundled inside that SDK release. The agent
+  runs and verifies only that binary, so the image installs no separate
+  `@anthropic-ai/claude-code`, and `CLAUDE_CODE_VERSION` has no effect
+  (upstream PR #189). Refs older than that PR still need the npm-installed
+  CLI and the `/etc/agent-runtime.env` entrypoint of the earlier templates;
+  for such a ref, tell the user and build from a newer one instead.
 - Upgrade: move upstream or change `AGENT_SRC_REF`, then `docker compose build`
   (and recreate the container).
 
@@ -267,9 +262,7 @@ block and say so in the report.
   instance that uses the same route, else ask. Set `MAX_BUDGET_USD` by that
   reference's "Budget" rule.
 - `TARGET_REPO`, `PROFILE_PATH=/opt/agent-profile/simple-coding-agent-profile.yml`,
-  `AGENT_SRC_REF` (from step 3 — `main` unless the user pinned a tag), and an
-  empty `CLAUDE_CODE_BUILD_VERSION=` (set only if the user asks for a specific
-  claude-code version).
+  and `AGENT_SRC_REF` (from step 3 — `main` unless the user pinned a tag).
 - Ask before adding any other setting the user didn't ask for.
 - Alternative configurations (e.g. `.env.claude` for the Anthropic backend):
   only if the user asks. Copy `.env`, change what differs and set
