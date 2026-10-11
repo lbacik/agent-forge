@@ -15,10 +15,9 @@
 # Change it and rerun `docker compose build` to switch ref, no edit needed
 # here. Tracking `main` means a rebuild picks up new agent code as soon as it
 # lands; pinning a tag freezes the agent's code until AGENT_SRC_REF is bumped
-# by hand. Either way, runtime versions (claude-agent-sdk, claude-code) are
-# derived from that same ref at build time: to upgrade, move upstream or
-# AGENT_SRC_REF and rebuild. CLAUDE_CODE_BUILD_VERSION (optional, .env)
-# overrides the claude-code version for the next build only.
+# by hand. Either way, the runtime (claude-agent-sdk and the Claude Code CLI
+# bundled in it) is derived from that same ref at build time: to upgrade,
+# move upstream or AGENT_SRC_REF and rebuild.
 #
 # A LiteLLM model backend adds compose.litellm.yaml through COMPOSE_FILE in
 # the env file; this file alone keeps the agent on its default network.
@@ -26,8 +25,6 @@ services:
   agent:
     build:
       context: .
-      args:
-        CLAUDE_CODE_BUILD_VERSION: ${CLAUDE_CODE_BUILD_VERSION:-}
       additional_contexts:
         agent-src: https://github.com/lbacik/simple-coding-agent.git#${AGENT_SRC_REF:-main}
     image: simple-coding-agent:{{SHORT_NAME}}
