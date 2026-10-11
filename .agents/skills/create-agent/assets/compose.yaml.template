@@ -49,6 +49,12 @@ services:
     volumes:
       - agent_data:/data
     restart: unless-stopped
+    # Run Docker's init (tini) as PID 1. Without it the agent is PID 1 and
+    # never reaps processes orphaned by the model's tool commands; the zombies
+    # pile up until the cgroup's pids.max is reached, and from then on every
+    # fork fails with EAGAIN and every attempt fails. A bundled-services
+    # entrypoint still execs the agent as usual; tini is its parent.
+    init: true
     # No core dumps: a crashing process writes core.<pid> into its cwd, often
     # /data/repo, and the untracked file stops the agent with
     # working_tree_dirty on every later start.

@@ -209,7 +209,9 @@ version numbers are copied into the instance:
 `simple-coding-agent:<short-name>`. Its `agent-src` context URL reads the ref
 from `AGENT_SRC_REF` in `.env` (`${AGENT_SRC_REF:-main}`) — nothing to fill in
 here; the actual ref is set in `.env.example`/`.env` below. Fill its
-`environment:` block as described next.
+`environment:` block as described next. Keep its `init: true` in every
+shape, bundled-services included: the agent doesn't reap orphaned processes
+as PID 1 (the template comment explains it).
 
 **The model's shell environment.** The profile's `env:` reaches only
 CommandRunner. While the model works, its Bash tool inherits the *container*
@@ -304,8 +306,9 @@ contents, pull requests and issues need read & write.
   (`python3 -c "from simple_coding_agent.config import load_repository_profile; ..."`
   with that clone on `sys.path`; needs PyYAML).
 - `docker compose config -q` in `agent-instances/agent-<name>/` (with
-  `--env-file` for an alternative configuration). For LiteLLM, check that
-  `docker compose config` lists the gateway network on the `agent` service.
+  `--env-file` for an alternative configuration). Check that
+  `docker compose config` shows `init: true` on the `agent` service. For
+  LiteLLM, also check that it lists the gateway network there.
 - The split-environment check: in the built image, as `agent` in a target
   clone and *without* the profile's `env:`, run the app's config dump or
   boot command (e.g. `php bin/console debug:dotenv`, `manage.py diffsettings`,
@@ -315,6 +318,10 @@ contents, pull requests and issues need read & write.
   then the profile's `setup` + `check` inside the built image against the
   target clone. That's the only real proof the profile is green on a clean
   tree; if the user declines, say clearly that it wasn't run.
+- Once the container runs (only if the user starts it), confirm the init
+  process: `docker inspect --format '{{.HostConfig.Init}}' <dir>-agent-1`
+  prints `true`, and `docker exec <dir>-agent-1 cat /proc/1/cmdline` starts
+  with `/sbin/docker-init`.
 - LiteLLM backend: with the built image, offer the gateway check from
   `references/model-backend.md` ("Verifying the gateway"). Prompt caching
   can only be confirmed on the first real attempt; say so.

@@ -240,6 +240,11 @@ each file.
 4. `repo/` is the agent's working clone (branch `agent/issue-<n>`). The handoff
    note for continuations is `repo/.agent/handoff/<issue>.md`.
 
+If several runs in a row fail within seconds, each in a different place, or
+any log shows `Resource temporarily unavailable` / `EAGAIN` / exit code -6,
+suspect pids exhaustion from unreaped zombies before reading further. Follow
+`references/log-layout.md#diagnosing-pids-exhaustion-zombie-processes`.
+
 Tool-call files can number in the hundreds per run. Grep or `jq` over them for
 the thing you need (a command, a path, an error string) instead of reading them
 in order.
