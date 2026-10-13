@@ -30,7 +30,9 @@ startup. `MODEL_API_KEY`, when set, takes precedence over `META_API_KEY`.
 - **Meta direct**: `META_API_KEY` only, all `MODEL_*` commented out.
 - **Anthropic direct**: `MODEL_BASE_URL=` (empty on purpose),
   `MODEL_AUTH_MODE=api_key`, `MODEL_API_KEY=sk-ant-...`, and `MODEL_NAME` as a
-  full model ID, not an alias.
+  full model ID, not an alias. Comment out the template's
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and `CLAUDE_CODE_AUTO_COMPACT_WINDOW`: the
+  CLI knows the window of `claude-*` models.
 - **LiteLLM gateway**: uncomment the template's LiteLLM block:
 
   ```dotenv
@@ -45,6 +47,14 @@ startup. `MODEL_API_KEY`, when set, takes precedence over `META_API_KEY`.
   and write `compose.litellm.yaml` from `assets/compose.litellm.yaml.template`
   (no placeholders). `META_API_KEY` stays empty: the provider key lives only
   in the gateway.
+
+Context window: the Claude Code CLI does not recognise `muse-*` models and
+assumes a 200K window for them, compacting the context against it. The
+template therefore sets `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000` (the real
+window) and `CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000` (the compaction
+threshold); the CLI reads both from the container environment. Keep them for
+`muse-*` models on the Meta and LiteLLM routes; for another non-Anthropic
+model, set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to that model's window.
 
 ### LiteLLM details
 
