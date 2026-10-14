@@ -14,6 +14,13 @@
 
 FROM python:3.12-slim
 
+# Fleet-dashboard discovery, as in upstream's Dockerfile (simple-coding-agent
+# #239): a dashboard lists managed instances with
+#   docker ps --filter "label=io.github.lbacik.simple-coding-agent.role=agent"
+# This image is built from this Dockerfile, not upstream's, so it has to set
+# the label itself.
+LABEL io.github.lbacik.simple-coding-agent.role="agent"
+
 # ---------------------------------------------------------------------------
 # System packages
 # ---------------------------------------------------------------------------
