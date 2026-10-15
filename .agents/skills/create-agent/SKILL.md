@@ -101,8 +101,8 @@ since shallow clones can't fetch an arbitrary commit by SHA):
 
 - `simple_coding_agent/config.py` — the profile's allowed keys in
   `load_repository_profile` (currently
-  `setup, check, base_branch, timeout, setup_timeout, env`); an unknown key
-  makes the agent refuse the profile. Do **not** copy runtime versions from it:
+  `setup, check, base_branch, timeout, setup_timeout, env, model_instructions`);
+  an unknown key makes the agent refuse the profile. Do **not** copy runtime versions from it:
   the Dockerfile derives them at build time (see "Runtime versions" in step 5).
   To upgrade the agent and its runtime, move upstream or `AGENT_SRC_REF` and
   rebuild.
@@ -172,6 +172,8 @@ env:
   PATH: "/usr/local/bin:/usr/bin:/bin"   # plus toolchain dirs if needed
   HOME: "/home/agent"                    # writable cache; also where git finds the image's identity
   # CI's test env vars
+model_instructions: |   # guidance appended to the model's prompt, see below
+  ...
 ```
 
 Rules that come from how CommandRunner works:
@@ -184,6 +186,48 @@ Rules that come from how CommandRunner works:
 - No commands that need root — daemons are started by the entrypoint, the
   profile only waits for them and resets them.
 - Header comment: which CI files it mirrors, what was left out and why.
+
+**Model instructions.** `model_instructions` (a string; `AGENT_SRC_REF`
+v0.4.1+, older refs refuse a profile carrying it) is the one profile key the
+model reads: the agent appends it to every starting prompt, continuations
+included, under "Repository guidance". It is
+guidance, weighed against the issue and the target's `AGENTS.md`, so state
+explicitly when it takes precedence. The prompt already lists the `check:`
+commands and the `env:` names; spend the text on what the model can't see:
+
+- **Branch rule, in every profile.** The agent checks out
+  `agent/issue-<number>`, counts only commits on it, and pushes and opens the
+  pull request itself; its hook blocks the model's push. A model that follows
+  an issue or `AGENTS.md` asking for its own branch (`feat/*`, "push and open
+  a PR") commits there, and the attempt ends `no_changes` with the work
+  stranded in the clone (`agent-jsonhub-web-ui` #94). Copy this block
+  verbatim:
+
+  ```yaml
+  model_instructions: |
+    Branch and publication rules for this agent. They override any branch, push
+    or pull-request instruction in the issue, its comments or AGENTS.md:
+
+    - Work and commit on the branch that is checked out when you start
+      (`agent/issue-<number>`). Do not create, switch or rename branches
+      (`git checkout -b`, `git switch`, `git branch -m`), even if the issue names
+      a branch. Only commits on this branch count; commits anywhere else are
+      discarded and the attempt ends as "no changes".
+    - Do not push and do not open a pull request. The agent runs the completion
+      gate, pushes this branch and opens the pull request against `main` itself.
+    - If the issue asks for a branch name or for something to be stated in the
+      pull request, put that information in your final summary instead.
+  ```
+
+  Replace `main` with the profile's `base_branch`, and name the target's own
+  conflicting rule when it has one (e.g. "including its rule 10").
+- **What the gate implies**, after the branch rule: why a command is guarded
+  (an empty-repo bootstrap), where the toolchain's environment lives (a venv
+  outside the checkout), which tests must skip because the image lacks a
+  service or tool. `agent-instances/agent-dashboard/` is an example.
+
+Comment the block in the profile with the reason for each rule, as for every
+other key.
 
 **Runtime versions.** Upstream at `AGENT_SRC_REF` is the single source. No
 version numbers are copied into the instance:
