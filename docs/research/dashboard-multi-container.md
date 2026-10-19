@@ -57,8 +57,8 @@ rows are sorted by attention rank, then name, so Workers of one Pool are not gua
    template sets no `container_name`, so Compose generates `<project>-<service>-<n>` where the project defaults
    to the instance directory name (`agent-<name>`). For services `worker-1..N` this yields
    `agent-<name>-worker-1-1`, which is unique and keeps Workers adjacent when ranks tie. Avoid fixed
-   `container_name:` values copied across Instances, and avoid `deploy.replicas > 1` on a single service only if
-   Worker identity per container is needed (it is, per the map), since replicas share one env/token.
+   `container_name:` values copied across Instances, and do not use `deploy.replicas`/`--scale` on one service, since replicas would share one env and token (the map
+   requires a token per Worker).
 4. `N=1` naming changes: today's single service is `agent`, giving `agent-<name>-agent-1`. If the service is
    renamed to `worker-1`, the container name changes for existing deployments (row resets, history under the old
    name vanishes from the dashboard until the volume's container is recreated; data in the volume is untouched).
