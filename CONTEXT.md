@@ -29,8 +29,8 @@ The issues of the target repository that Workers may claim, selected by the upst
 _Avoid_: Backlog
 
 **Conflict requeue**:
-Returning an issue to the Queue because the pull request a Worker already published for it can no longer merge into the base branch; the next attempt only brings that pull request up to date and does no new work.
-_Avoid_: Retry, re-label, continuation (a continuation resumes unfinished work)
+Returning an issue to the Queue because the pull request a Worker already published for it has merge conflicts with the base branch; the next attempt only brings that pull request up to date and does no new work.
+_Avoid_: Retry, re-label, continuation (a continuation resumes unfinished work); a pull request merely behind the base branch is not a Conflict requeue
 
 **Conflict attempt**:
 The attempt a Worker makes after a Conflict requeue: it brings the already published pull request up to date with the base branch, publishes only when the result passes the repository's check, and does no new work on the issue.
