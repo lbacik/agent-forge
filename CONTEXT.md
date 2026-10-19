@@ -9,7 +9,7 @@ The deployment directory `agent-instances/agent-<name>/` for one target reposito
 _Avoid_: Agent (ambiguous between the deployment and a running process)
 
 **Worker**:
-One running simple-coding-agent container of an Instance, with its own data volume and its own GitHub identity.
+One running simple-coding-agent container of an Instance, with its own data volume and its own Worker id.
 _Avoid_: Replica, agent, node
 
 **Pool**:
@@ -17,12 +17,20 @@ The set of Workers of one Instance that take issues from the same queue. Its Wor
 _Avoid_: Fleet (reserved for all Instances seen by the dashboard), cluster
 
 **Worker identity**:
-The dedicated GitHub account (and its token) that a Worker acts as; it is what marks an issue as claimed by that Worker.
+The GitHub account (and its token) that a Worker acts as. The Workers of a Pool may share one Worker identity or each have their own.
 _Avoid_: Agent name, bot
 
+**Worker id**:
+The name that tells apart Workers acting as the same Worker identity; unique among all of them, across Instances.
+_Avoid_: Worker name, replica index
+
 **Claim**:
-A Worker's exclusive hold on one Queue issue, held while its Worker identity is the issue's only assignee. A Worker that finds anyone else assigned yields.
+A Worker's exclusive hold on one Queue issue: the issue is assigned to its Worker identity, carries its Claim marker, and shows no other claimant (another assignee or another Worker's Claim marker). A Worker that finds another claimant yields.
 _Avoid_: Lock, lease
+
+**Claim marker**:
+The mark on an issue naming the Worker that holds its Claim; present only while the Claim is held.
+_Avoid_: Lock label
 
 **Queue**:
 The issues of the target repository that Workers may claim, selected by the upstream-defined labels.
