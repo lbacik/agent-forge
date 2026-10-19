@@ -31,3 +31,7 @@ _Avoid_: Backlog
 **Conflict requeue**:
 Returning an issue to the Queue because the pull request a Worker already published for it can no longer merge into the base branch; the next attempt only brings that pull request up to date and does no new work.
 _Avoid_: Retry, re-label, continuation (a continuation resumes unfinished work)
+
+**Conflict attempt**:
+The attempt a Worker makes after a Conflict requeue: it brings the already published pull request up to date with the base branch, publishes only when the result passes the repository's check, and does no new work on the issue.
+_Avoid_: Conflict-only attempt, resolver run
