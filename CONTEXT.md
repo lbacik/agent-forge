@@ -33,7 +33,7 @@ The mark on an issue naming the Worker that holds its Claim; present only while 
 _Avoid_: Lock label
 
 **Queue**:
-The issues of the target repository that Workers may claim, selected by the upstream-defined labels.
+The issues of the target repository that Workers may claim, selected by the upstream-defined labels. Workers of several Instances may take from one Queue; the Claim settles between them as it does within a Pool.
 _Avoid_: Backlog
 
 **Conflict requeue**:
