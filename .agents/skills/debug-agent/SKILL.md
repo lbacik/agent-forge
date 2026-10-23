@@ -25,7 +25,7 @@ Run the bundled resolver. It finds `agent-instances/` from its own location, so
 it works from any working directory (`AGENT_INSTANCES_DIR` overrides it):
 
 ```bash
-.claude/skills/debug-agent/scripts/locate-agent.sh [--context <ctx>] <name-fragment> [issue-number]
+.claude/skills/debug-agent/scripts/locate-agent.sh [--context <ctx>] [--worker <n|worker-id>] <name-fragment> [issue-number]
 ```
 
 `<name-fragment>` is the full directory name or any unambiguous part of it
@@ -36,6 +36,23 @@ and image, volume, where to read `/data` from, the contents of
 number, that issue's runs with their outcomes. If the fragment is ambiguous
 (e.g. `jsonhub` matches three agents), it exits with code 4 and lists the
 matches. Ask the user which one they mean; don't pick for them.
+
+### Which Worker
+
+An Instance is one Compose project with one or more Workers. The first Worker
+is service `agent` with volume `agent_data`; further Workers are services
+`agent-2..N` with volumes `data_2..N`. Each Worker has its own `/data`
+volume, its own container, and its own GitHub identity, told apart by its
+worker id `<short-name>-<n>` (the instance directory without the `agent-`
+prefix, e.g. `cli-2` for `agent-cli` worker 2).
+
+The helpers address one Worker: pass `--worker <n|worker-id>` (a number like
+`2`, or a worker id like `cli-2`). The default is the first Worker, so an
+Instance with one Worker behaves exactly as before. With N>=2 and no
+`--worker`, `locate-agent.sh` lists every Worker with its container and
+volume instead of guessing; re-run it with `--worker` to see one Worker's
+state and runs. A Worker's attempt results carry its worker id, so the run
+you read tells you which Worker produced it.
 
 If the user is already inside an `agent-instances/agent-*/` directory and names
 no agent, that directory is the agent.
@@ -59,11 +76,16 @@ the **compose project = directory name**. From that:
 
 | Thing | Pattern | Example for `agent-instances/agent-jsonhub-cli/` |
 |---|---|---|
-| Volume | `<dir>_agent_data` | `agent-jsonhub-cli_agent_data` |
-| Host path of `/data` (local only) | `~/OrbStack/docker/volumes/<dir>_agent_data/` | `/Users/lukasz/OrbStack/docker/volumes/agent-jsonhub-cli_agent_data/` |
-| Local cache of `/data/logs` (remote) | `~/.cache/simple-coding-agent-env/<ctx>/<dir>/logs/` | `~/.cache/simple-coding-agent-env/rpi5/agent-jsonhub-cli/logs/` |
-| Container | `<dir>-agent-1` | `agent-jsonhub-cli-agent-1` |
-| Compose service | `agent` | `docker compose -f agent-instances/agent-jsonhub-cli/compose.yaml exec agent …` |
+| Volume (first Worker) | `<dir>_agent_data` | `agent-jsonhub-cli_agent_data` |
+| Volume (Worker N>=2) | `<dir>_data_<n>` | `agent-jsonhub-cli_data_2` |
+| Host path of `/data` (local only) | `~/OrbStack/docker/volumes/<volume>/` | `/Users/lukasz/OrbStack/docker/volumes/agent-jsonhub-cli_agent_data/` |
+| Local cache of `/data/logs` (remote, first Worker) | `~/.cache/simple-coding-agent-env/<ctx>/<dir>/logs/` | `~/.cache/simple-coding-agent-env/rpi5/agent-jsonhub-cli/logs/` |
+| Local cache of `/data/logs` (remote, Worker N>=2) | `~/.cache/simple-coding-agent-env/<ctx>/<dir>/<worker-id>/logs/` | `~/.cache/simple-coding-agent-env/rpi5/agent-jsonhub-cli/jsonhub-cli-2/logs/` |
+| Container (first Worker) | `<dir>-agent-1` | `agent-jsonhub-cli-agent-1` |
+| Container (Worker N>=2) | `<dir>-agent-<n>-1` | `agent-jsonhub-cli-agent-2-1` |
+| Compose service (first Worker) | `agent` | `docker compose -f agent-instances/agent-jsonhub-cli/compose.yaml exec agent …` |
+| Compose service (Worker N>=2) | `agent-<n>` | `docker compose -f agent-instances/agent-jsonhub-cli/compose.yaml exec agent-2 …` |
+| Worker id (Worker N>=2) | `<short-name>-<n>` | `jsonhub-cli-2` |
 
 Always match against the `agent-instances/agent-*/` directories on disk, never against
 `docker volume ls`. There are stale volumes from old project names, such as
@@ -84,7 +106,7 @@ A remote volume has no host path. Copy the run you picked (step 3) into the
 local cache, then read it with Read, Grep and `jq` exactly as in local mode:
 
 ```bash
-.claude/skills/debug-agent/scripts/fetch-run.sh --context <ctx> <name-fragment> <issue> [<run>|latest|all]
+.claude/skills/debug-agent/scripts/fetch-run.sh [--context <ctx>] [--worker <n|worker-id>] <name-fragment> <issue> [<run>|latest|all]
 ```
 
 It prints the local path of each attempt dir. Use that as `$A` in the recipes
@@ -93,7 +115,10 @@ stopped (`docker cp`), and falls back to a throwaway container if the
 container was removed. Finished runs are cached and reused. An unfinished run
 (active, or the process died) is fetched again on each call. A run is about
 1 MB and 160 files on average, so fetching costs one SSH round trip, not a
-noticeable transfer.
+noticeable transfer. Pass `--worker <n|worker-id>` to fetch a run from that
+Worker (default: the first Worker). A fetch for Worker 2+ caches under a
+per-Worker subdirectory (`…/<dir>/<worker-id>/logs/…`); the first Worker's
+cache path is unchanged.
 
 Don't read a remote run file by file through `docker exec`. Every call is an
 SSH round trip (about 0.3–1 s on `rpi5`), so a `jq` loop over a few hundred
@@ -253,8 +278,9 @@ in order.
 
 Tell the user:
 
-- which agent, on which docker context, and which run(s) you looked at:
-  issue, UTC timestamp, outcome
+- which agent, on which docker context, which Worker (`--worker`, worker id),
+  and which run(s) you looked at: issue, UTC timestamp, outcome. A Worker's
+  attempt results carry its worker id, so quote it when you name the run.
 - the root cause, backed by a quote from the specific file and event
   (e.g. `check_stderr.log`, or event `final_check_failed`)
 - whether the cause is in the target repo, the agent instance config
