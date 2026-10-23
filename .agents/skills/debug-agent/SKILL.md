@@ -227,13 +227,23 @@ Work from the summary down to the detail. `references/log-layout.md` explains
 each file.
 
 1. `attempt.json`: `outcome`, `duration_seconds`, `model_stop_reason`,
-   `model_usage` (cost/tokens). If it has no `outcome`, the run is either still
-   in progress (check `state/attempt.json`) or the process died mid-run
-   (check `docker compose logs` and the container's exit code; 137 means it
-   was killed, e.g. by OOM or `docker stop`).
+   `model_usage` (cost/tokens), plus `attempt_kind` (`ordinary` when missing;
+   `conflict` for a merge-conflict requeue). If it has no `outcome`, the run
+   is either still in progress (check `state/attempt.json`) or the process
+   died mid-run (check `docker compose logs` and the container's exit code;
+   137 means it was killed, e.g. by OOM or `docker stop`). A conflict attempt
+   maps its marker outcome to the lifecycle outcome (`success` → `complete`,
+   `skipped` → `no_changes`, `rebase_conflict` / `check_failed` /
+   `model_limit` / `resolution_failed` / `no_change` → `incomplete`,
+   `setup_failed` / `error` / `push_failed` → `infrastructure_error`); see
+   `references/log-layout.md`. Note the singular/plural split: the marker
+   outcome is `no_change`, the lifecycle outcome for `skipped` is
+   `no_changes`.
 2. `agent_output.json`: the ordered event stream, JSON lines. Find the first
    `level` = `ERROR`/`WARNING`, or the `*_failed` / `attempt_exception` /
-   `model_execution_finished` event. Its `detail` usually names the cause.
+   `model_execution_finished` / `conflict_escalated` event. Its `detail`
+   usually names the cause. For a conflict run also look for
+   `conflict_requeue_detected` and `conflict_attempt_claimed`.
 3. Only then open the specific files the events point to: `setup_*`,
    `baseline_check_*`, `check_*` logs, or the `NNNN_tool_call.json` /
    `NNNN_tool_result.json` pair around the failure.
@@ -247,7 +257,76 @@ suspect pids exhaustion from unreaped zombies before reading further. Follow
 
 Tool-call files can number in the hundreds per run. Grep or `jq` over them for
 the thing you need (a command, a path, an error string) instead of reading them
-in order.
+in order. Conflict attempts run little or no model work, so an empty tool-call
+sequence is normal: the marker in the issue's result comment is the outcome,
+not missing evidence.
+
+### Conflict requeue: PR has conflicts but was not requeued
+
+When the user asks why a conflicting agent PR did not come back as a
+conflict attempt, work through this list and name the first match. The
+detector (`conflict_requeue_detected`) only fires with
+`MAX_CONFLICT_ATTEMPTS=N > 0`; at `0` no pull-request query runs and a
+labelled issue waits untouched.
+
+1. Setting: `grep -E '^MAX_CONFLICT_ATTEMPTS='` in the instance `.env`
+   (commented out means `0`, the default). At `0` nothing else matters.
+2. Mergeability: only an open, non-draft PR reporting `CONFLICTING`
+   qualifies. `UNKNOWN` means GitHub is still computing it and this poll
+   skips the issue; a draft never qualifies.
+3. Issue state: open, unassigned, non-empty body, no open blocker, and none
+   of the queue labels. Assigned issues, issues carrying `ready-for-agent`
+   or `round-finished` (they take the ordinary/continuation path and the
+   stale `merge-conflict` is cleared at claim), issues already carrying
+   `merge-conflict`, and issues another worker claimed first (`claimed-by:*`
+   labels) are never relabelled. At claim time the same precedence decides
+   the attempt kind: with `ready-for-agent` or `round-finished` alongside
+   `merge-conflict` the run is an ordinary/continuation attempt (no
+   `conflict_attempt_claimed` event) and the stale label is cleared.
+4. `ready-for-human`: the detector never labels it and the queue never
+   claims from it, even with a hand-applied `merge-conflict`. Only a human
+   removing the label requeues the issue, with the full budget.
+5. Confirm with `conflict_requeue_detected` in the issue's
+   `agent_output.json` (INFO, `detail` names the issue, PR and sha). Its
+   absence plus one of the above is the answer; do not treat the missing
+   requeue as an agent failure.
+
+### Conflict attempt failed or escalated
+
+When the user asks about a conflict attempt's failure, or how close the
+issue is to a human handoff, read the GitHub result comment plus the local
+run, newest first:
+
+1. Marker: `<!-- conflict-attempt: outcome=<...> sha=<...|none> ... -->`
+   gives `outcome` (`success`, `skipped`, or a failure kind:
+   `rebase_conflict`, `check_failed`, `setup_failed`, `error`,
+   `push_failed`, `model_limit`, `resolution_failed`, `no_change`), the
+   pushed sha, `reason` for `skipped` (`no_open_pr`, `draft`,
+   `not_conflicting`, `base_mismatch`), and `files` / `fix_commits` /
+   `extra_files`. The visible `**Conflict attempts**: k/N` line is the
+   standing; the hidden `<!-- conflict-escalation -->` plus the
+   `### Human handoff` section means this attempt escalated.
+2. Why it pushed nothing: only `success` with a new sha pushes. Every other
+   outcome leaves the remote branch untouched so the PR stays `CONFLICTING`
+   (check `check_*.log` for `check_failed`, `setup_*.log` for
+   `setup_failed`, the conflicting-files listing for `rebase_conflict`,
+   `publication_failed` for `push_failed`, and a `success` whose sha equals
+   the PR head for `no_change`). A recovered run (restart mid-attempt)
+   always publishes a conflict `error` with the `<!-- requeue-source:
+   conflict -->` marker and counts toward the budget.
+3. How far from escalation: `N - k` from the newest `k/N` line, where `N`
+   is `MAX_CONFLICT_ATTEMPTS`. A pushed-sha `success`, a `skipped` result,
+   an ordinary attempt result, or the latest escalation comment resets or
+   stops the streak; removing `ready-for-human` requeues with the full
+   budget. Correlate with `conflict_escalated` (WARNING) or
+   `conflict_escalation_failed` in `agent_output.json`, and with
+   `state/attempt.json` (`attempt_kind: conflict`,
+   `requeue_source: conflict`) while the attempt is active.
+
+The resolvers already handle both kinds: `locate-agent.sh` prints
+`attempt_kind` per run (missing means `ordinary`), and `fetch-run.sh`'s
+finished check (presence of `outcome`) applies to conflict attempts
+unchanged.
 
 ## 5. Report
 
