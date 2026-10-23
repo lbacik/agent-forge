@@ -307,6 +307,18 @@ block and say so in the report.
   reference's "Budget" rule.
 - `TARGET_REPO`, `PROFILE_PATH=/opt/agent-profile/simple-coding-agent-profile.yml`,
   and `AGENT_SRC_REF` (from step 3 — `main` unless the user pinned a tag).
+- Conflict requeue is opt-in and off by default: leave `MAX_CONFLICT_ATTEMPTS`
+  commented out (`0`) unless the user asks for it. With N > 0, every poll
+  reads the open pull requests and the Queue claims an issue carrying the
+  `merge-conflict` label ahead of other work — the Worker applies the label
+  itself on a conflicting `agent/issue-N` branch, and a human may also apply
+  it by hand. The Conflict attempt that follows rebases the branch onto the
+  base and force-pushes only when setup plus one profile check are green, with
+  no model call; after N consecutive failed Conflict attempts the Worker adds
+  `ready-for-human` and never removes it, so a human hands the issue back by
+  removing the label. The setting is independent of `PR_AUTO_MERGE` (conflicts
+  block manual merges too) and needs `AGENT_SRC_REF` v0.6.0+. Say in the report
+  whether it was left off or set to N.
 - Ask before adding any other setting the user didn't ask for.
 - Alternative configurations (e.g. `.env.claude` for the Anthropic backend):
   only if the user asks. Copy `.env`, change what differs and set
