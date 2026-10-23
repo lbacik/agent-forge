@@ -1,8 +1,16 @@
 # Shared resolution for locate-agent.sh and fetch-run.sh. Source it, don't run it.
 #
-# Input:  $fragment (agent name fragment), $context (docker context, may be empty)
-# Output: root dir project volume context mode container container_state image
+# Input:  $fragment (agent name fragment), $context (docker context, may be empty),
+#         $worker (--worker value <n|worker-id>, may be empty for the first Worker)
+# Output: root dir project short service worker_num worker_id volume
+#         context mode container container_state image
 #         host_data (local mode) / cache_data (remote mode)
+#
+# Worker layout (one Compose project per Instance): the first Worker is service
+# `agent` with volume `agent_data`; further Workers are `agent-<n>` with volumes
+# `data_<n>`. A worker-id is `<short-name>-<n>` where short-name is the instance
+# directory without the `agent-` prefix. The first Worker is the default, so an
+# Instance with one Worker resolves exactly as before.
 #
 # Resolution is anchored on the agent-instances/agent-*/ directories on disk, never on
 # `docker volume ls`, because stale volumes from old project names exist
@@ -52,7 +60,68 @@ dir=$1
 project=$dir
 override=$(grep -h '^COMPOSE_PROJECT_NAME=' "$root/$dir/.env" 2>/dev/null | tail -1 | cut -d= -f2- || true)
 [ -n "$override" ] && project=$override
-volume="${project}_agent_data"
+
+# Short name: directory without the agent- prefix (e.g. agent-foo -> foo).
+# It is what worker ids are built from: <short-name>-<n>.
+short=${dir#agent-}
+[ -z "$short" ] && short=$dir
+
+# Resolve --worker <n|worker-id> to a worker number. Default is the first Worker.
+worker_arg=${worker:-}
+worker_num=1
+if [ -n "$worker_arg" ]; then
+  case "$worker_arg" in
+    agent) worker_num=1 ;;
+    agent-[0-9]*)
+      num=${worker_arg#agent-}
+      case "$num" in ''|*[!0-9]*)
+        echo "error: invalid --worker '$worker_arg': expected <n> or $short-<n> (e.g. 2 or $short-2)" >&2
+        exit 1
+        ;;
+      esac
+      while case "$num" in 0?*) true ;; *) false ;; esac; do num=${num#0}; done
+      [ -z "$num" ] && num=0
+      worker_num=$num
+      ;;
+    *[!0-9]*)
+      num=${worker_arg##*-}
+      prefix=${worker_arg%-*}
+      case "$num" in ''|*[!0-9]*)
+        echo "error: invalid --worker '$worker_arg': expected <n> or $short-<n> (e.g. 2 or $short-2)" >&2
+        exit 1
+        ;;
+      esac
+      if [ "$prefix" != "$short" ] && [ "$prefix" != "$dir" ]; then
+        echo "error: invalid --worker '$worker_arg': expected <n> or $short-<n> (e.g. 2 or $short-2)" >&2
+        exit 1
+      fi
+      while case "$num" in 0?*) true ;; *) false ;; esac; do num=${num#0}; done
+      [ -z "$num" ] && num=0
+      worker_num=$num
+      ;;
+    *)
+      num=$worker_arg
+      while case "$num" in 0?*) true ;; *) false ;; esac; do num=${num#0}; done
+      [ -z "$num" ] && num=0
+      worker_num=$num
+      ;;
+  esac
+  case "$worker_num" in ''|*[!0-9]*|0)
+    echo "error: invalid --worker '$worker_arg': worker number must be >= 1" >&2
+    exit 1
+    ;;
+  esac
+fi
+
+if [ "$worker_num" -eq 1 ]; then
+  service=agent
+  volume="${project}_agent_data"
+  worker_id=""
+else
+  service="agent-$worker_num"
+  volume="${project}_data_$worker_num"
+  worker_id="$short-$worker_num"
+fi
 
 # Local mode = OrbStack, whose volumes are readable on the host. Any other
 # context is remote: /data is reachable only through the Docker API.
@@ -63,11 +132,16 @@ if [ "$context" = orbstack ]; then
   host_data="$HOME/OrbStack/docker/volumes/$volume"
 else
   mode=remote
-  cache_data="${AGENT_LOG_CACHE:-$HOME/.cache/simple-coding-agent-env}/$context/$project"
+  base_cache=${AGENT_LOG_CACHE:-$HOME/.cache/simple-coding-agent-env}
+  if [ "$worker_num" -eq 1 ]; then
+    cache_data="$base_cache/$context/$project"
+  else
+    cache_data="$base_cache/$context/$project/$worker_id"
+  fi
 fi
 
 container=$(docker ps -a --filter "label=com.docker.compose.project=$project" \
-  --filter "label=com.docker.compose.service=agent" --format '{{.Names}}' 2>/dev/null | head -1 || true)
+  --filter "label=com.docker.compose.service=$service" --format '{{.Names}}' 2>/dev/null | head -1 || true)
 container_state=unknown
 image=""
 if [ -n "$container" ]; then
@@ -87,7 +161,7 @@ data_sh() {
   elif [ -n "$image" ]; then
     docker run --rm --entrypoint sh -u agent -w /data -v "$volume:/data:ro" "$image" -c "$1"
   else
-    echo "error: no container for project $project on context $context, cannot read $volume" >&2
+    echo "error: no container for project $project service $service on context $context, cannot read $volume" >&2
     return 5
   fi
 }

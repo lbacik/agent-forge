@@ -1,8 +1,15 @@
-# Agent data layout (`/data` = `~/OrbStack/docker/volumes/<dir>_agent_data/`)
+# Agent data layout (`/data` = `~/OrbStack/docker/volumes/<dir>_agent_data/` for the first Worker)
+
+Each Worker of an Instance has its own `/data` volume: the first Worker uses
+`<dir>_agent_data`, further Workers use `<dir>_data_<n>` (services `agent`
+and `agent-<n>`). Pass `--worker <n|worker-id>` to `locate-agent.sh` and
+`fetch-run.sh` to address one Worker (default: the first Worker). A worker id
+is `<short-name>-<n>` (e.g. `cli-2` for `agent-cli`).
 
 For a remote agent, `/data/logs/...` is read from the local cache that
-`scripts/fetch-run.sh` fills, `~/.cache/simple-coding-agent-env/<ctx>/<dir>/logs/...`.
-The layout below is the same.
+`scripts/fetch-run.sh` fills: `~/.cache/simple-coding-agent-env/<ctx>/<dir>/logs/...`
+for the first Worker, `~/.cache/simple-coding-agent-env/<ctx>/<dir>/<worker-id>/logs/...`
+for Worker 2+. The layout below is the same per Worker.
 
 This layout was checked against upstream simple-coding-agent
 (`observability.py`, `attempt_state.py`, `operating.py`, `lifecycle.py`,
@@ -105,6 +112,12 @@ Don't delete the file without the user's agreement.
 A missing `outcome` (or a missing `attempt.json`) means the run is still
 active or the process died. Check `state/attempt.json` and the container's
 exit status or `docker compose logs`.
+
+A Worker's attempt results carry its worker id (`<short-name>-<n>`, e.g.
+`cli-2`): check the summary and the published result comment for it before
+you attribute a run, especially when several Workers share one Queue. A run
+fetched without `--worker` is always the first Worker's; runs of Worker 2+
+are only under their per-Worker cache subdirectory.
 
 `model_execution_finished` in `agent_output.json` gives the model-side status:
 `succeeded`, `model_limit_reached`, `infrastructure_error` or
@@ -287,7 +300,9 @@ approval.
 ## jq recipes
 
 Set `A=~/OrbStack/docker/volumes/<dir>_agent_data/logs/<issue>/<started_at>` first
-(remote: the path `fetch-run.sh` printed).
+(for Worker 2+, the volume is `<dir>_data_<n>`; remote: the path
+`fetch-run.sh [--worker <n|worker-id>]` printed, which for Worker 2+ is under
+`~/.cache/simple-coding-agent-env/<ctx>/<dir>/<worker-id>/logs/…`).
 
 ```bash
 # event histogram
@@ -310,7 +325,8 @@ for f in $(jq -r 'select(.event=="tool_call" and (.detail|startswith("Bash ")))|
 jq -r 'select(.event=="limits_checked")|.detail' $A/agent_output.json | tail -1
 
 # outcomes of every run of one issue (cross-run: only after the user agreed;
-# remote: run `fetch-run.sh ... <issue> all` first and loop over the cache dir)
+# remote: run `fetch-run.sh [--worker <n|worker-id>] ... <issue> all` first and
+# loop over that Worker's cache dir; each Worker has its own volume/cache)
 for d in ~/OrbStack/docker/volumes/<dir>_agent_data/logs/<issue>/*/; do
   printf '%s ' "$(basename $d)"; jq -r '.outcome // "<none>"' $d/attempt.json 2>/dev/null || echo '<no attempt.json>'; done
 ```
