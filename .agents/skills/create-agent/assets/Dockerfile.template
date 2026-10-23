@@ -22,7 +22,12 @@ FROM python:3.12-slim
 LABEL io.github.lbacik.simple-coding-agent.role="agent"
 
 # ---------------------------------------------------------------------------
-# System packages
+# System packages. procps (ps, pkill) is not in upstream's image: the model
+# reaches for `pkill -f <server>` to stop a process it started, and without
+# it the call fails silently and the process keeps running. A Bash call that
+# times out is moved to the background instead of killed, and the agent
+# defers the run's result while that task is alive, so one stray dev server
+# can hold an attempt until MODEL_TIMEOUT.
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -30,6 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     gnupg \
     jq \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js {{NODE_MAJOR}} — npm installs the skill installer (agent-installer).
@@ -80,7 +86,7 @@ RUN pip install --no-cache-dir "PyYAML>=6.0,<7" \
 
 # Managed settings (root-owned, mode 644), as in upstream's Dockerfile: Meta
 # model pricing for the CLI cost ledger. Without it the CLI prices
-# muse-spark-1.3-contributor at its default-model rates (~4x Meta's), which
+# muse-spark-1.3-contributor at its default-model rates (50-250x Meta's), which
 # inflates total_cost_usd and the max_budget_usd backstop. The agent user can
 # read the file but cannot change the rates its budget is measured against.
 # Drop this step only if AGENT_SRC_REF predates docker/managed-settings.json.

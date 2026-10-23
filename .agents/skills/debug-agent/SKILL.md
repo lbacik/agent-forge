@@ -142,8 +142,10 @@ container's live runtime, not its files:
   the agent does, so run those only when the user asks
 - process state: whether MySQL/Redis from `agent-entrypoint.sh` are up
   (bundled-services instances: `agent-jsonhub-api`, `agent-paysubscriptions`).
-  The images have no `ps`, so use `ls /proc/[0-9]*/cmdline` or the service's
-  own client, e.g. `mysqladmin ping`, `redis-cli ping`
+  Images built from the create-agent template before it added `procps` have
+  no `ps`, so check with `command -v ps` first, and otherwise use
+  `ls /proc/[0-9]*/cmdline` or the service's own client, e.g.
+  `mysqladmin ping`, `redis-cli ping`
 - reproducing a profile command exactly as the agent runs it: same `PATH`,
   toolchain, and the `agent` user
 - paths outside `/data`, e.g. `/opt/agent-profile/`, `/var/lib/mysql`, `/tmp`
