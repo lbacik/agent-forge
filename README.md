@@ -81,6 +81,24 @@ Claude Code CLI is the one bundled in that SDK release. To upgrade, move
 upstream or `AGENT_SRC_REF` and rebuild; do not set `CLAUDE_AGENT_SDK_VERSION`
 in `.env`.
 
+**Conflict requeue (optional, off by default).** When the published pull
+request of an issue falls behind its base branch and reports a conflict, the
+issue can come back to the Queue on its own instead of waiting for a human.
+To enable it, uncomment `MAX_CONFLICT_ATTEMPTS` in `.env` and set it to N:
+`0` (the default) turns the path off entirely, and N is the number of
+consecutive failed Conflict attempts on one issue before the Worker escalates
+it with the `ready-for-human` label. A Conflict attempt is cheap: with no
+model call, the Worker rebases the issue's `agent/issue-N` branch onto the
+base, runs setup plus one profile check, and force-pushes only when green.
+The Queue claims an issue carrying the `merge-conflict` label ahead of other
+work; the Worker applies that label itself when it sees a conflicting branch,
+and a human may also apply it by hand with the same effect. After N
+consecutive failures the Worker adds `ready-for-human` and never removes it —
+hand the issue back by removing the label, which requeues it with a fresh
+budget. The setting is independent of `PR_AUTO_MERGE`: conflicts block manual
+merges too. It needs an upstream agent that contains the feature
+(`AGENT_SRC_REF` v0.6.0 or newer; `main` tracks upstream).
+
 ### 2. Build
 
 Run Compose commands from the instance directory:
