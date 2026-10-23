@@ -80,7 +80,7 @@ RUN pip install --no-cache-dir "PyYAML>=6.0,<7" \
 
 # Managed settings (root-owned, mode 644), as in upstream's Dockerfile: Meta
 # model pricing for the CLI cost ledger. Without it the CLI prices
-# muse-spark-1.3-contributor at its default-model rates (~4x Meta's), which
+# muse-spark-1.3-contributor at its default-model rates (50-250x Meta's), which
 # inflates total_cost_usd and the max_budget_usd backstop. The agent user can
 # read the file but cannot change the rates its budget is measured against.
 # Drop this step only if AGENT_SRC_REF predates docker/managed-settings.json.
