@@ -22,7 +22,7 @@ FROM python:3.12-slim
 LABEL io.github.lbacik.simple-coding-agent.role="agent"
 
 # ---------------------------------------------------------------------------
-# System packages. procps (ps, pkill) is not in upstream's image: the model
+# System packages. procps (ps, pkill), as in upstream's image (v0.8.0): the model
 # reaches for `pkill -f <server>` to stop a process it started, and without
 # it the call fails silently and the process keeps running. A Bash call that
 # times out is moved to the background instead of killed, and the agent
