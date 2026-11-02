@@ -57,6 +57,29 @@ you read tells you which Worker produced it.
 If the user is already inside an `agent-instances/agent-*/` directory and names
 no agent, that directory is the agent.
 
+### Pool status
+
+To answer "which Worker works on what" for the whole Instance at once, run
+the read-only overview helper (from anywhere; it resolves the agent dir
+itself):
+
+```bash
+.claude/skills/debug-agent/scripts/pool-status.sh [--context <ctx>] [--github] <name-fragment>
+```
+
+It prints one block per Worker — container state, intake state, active issue
+and `pending_next_issue` — from `agentctl status` via one `docker exec` per
+running Worker (one SSH round trip each on a remote context; a stopped
+container is reported, not an error). It works for a single-Worker Instance
+too. With `--github` (needs `gh`) it also compares the live attempts with
+the `claimed-by:<worker-id>` labels and assignees in the repository
+(`TARGET_REPO` from the Instance `.env`; no GitHub call is made without the
+flag), flagging orphaned claims (a label whose Worker has no active attempt
+on that issue, or names no Worker of the Instance — remove stale labels by
+hand) and claims without labels (a Worker active on an issue that lacks its
+label; expected while `WORKER_ID` is unset, so reported as a note instead of
+a flag). Nothing is changed on Docker or GitHub.
+
 ### Which docker context
 
 Without `--context` the resolver uses `orbstack`, which is local mode. Pass
