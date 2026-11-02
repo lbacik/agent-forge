@@ -39,7 +39,9 @@ if [ -n "$1" ]; then
   if [ -d "logs/$1" ]; then
     for r in $(ls "logs/$1" | sort); do
       o=$(sed -n "s/.*\"outcome\": *\"\([^\"]*\)\".*/\1/p" "logs/$1/$r/attempt.json" 2>/dev/null || true)
-      echo "  $r  outcome=${o:-<none: still running or crashed before finishing>}"
+      k=$(sed -n "s/.*\"attempt_kind\": *\"\([^\"]*\)\".*/\1/p" "logs/$1/$r/attempt.json" 2>/dev/null || true)
+      if [ -f "logs/$1/$r/attempt.json" ] && [ -z "$k" ]; then k=ordinary; fi
+      echo "  $r  outcome=${o:-<none: still running or crashed before finishing>} attempt_kind=${k:-<none>}"
     done
   else
     echo "  (none)"

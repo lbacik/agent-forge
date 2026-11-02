@@ -19,6 +19,7 @@ before assuming anything.
 - [Attempt directory](#attempt-directory-datalogsissuestarted_at)
 - [agent_output.json events](#agent_outputjson-events)
 - [Diagnosing `provenance_verification_failed`](#diagnosing-provenance_verification_failed)
+- [Conflict attempts (merge-conflict requeue)](#conflict-attempts-merge-conflict-requeue)
 - [Diagnosing pids exhaustion (zombie processes)](#diagnosing-pids-exhaustion-zombie-processes)
 - [jq recipes](#jq-recipes)
 
@@ -75,12 +76,26 @@ often as `consecutive_errors.json` does.
 `attempt.json`, the active-attempt checkpoint:
 ```json
 {"branch": "agent/issue-44", "issue_number": 44, "phase": "model_running",
- "started_at": "2026-09-23T19:58:45.329884Z", "updated_at": "2026-09-23T19:58:55.346933Z"}
+ "started_at": "2026-09-23T19:58:45.329884Z", "updated_at": "2026-09-23T19:58:55.346933Z",
+ "attempt_kind": "ordinary", "requeue_source": "human"}
 ```
 `phase` moves forward only: `claimed` → `setup` → `model_running` → `pushing`
 → `publishing`. If the file is present while the container is stopped, the run
 was interrupted. On restart the agent resumes or recovers from this phase.
 Don't delete the file without the user's agreement.
+
+`attempt_kind` is `ordinary` (the model-driven implementation path) or
+`conflict` (a conflict attempt that only brings the already-published
+`agent/issue-N` branch up to date: rebase onto the base, setup plus one
+profile check, force-push only when green, at most one narrow model
+resolution session and no `code-review`). Checkpoints written before the
+kind existed carry no kind and read as `ordinary`. `requeue_source` is
+`human` (the issue carried `ready-for-agent` at claim), `automatic` (a
+`round-finished` continuation) or `conflict` (a `merge-conflict` requeue: no
+continuation index, transparent to the automatic-continuation count). Only
+startup recovery of a retained conflict attempt stamps its result comment
+with the `<!-- requeue-source: conflict -->` marker; an ordinary conflict
+result carries no requeue-source marker.
 
 ## Attempt directory (`/data/logs/<issue>/<started_at>/`)
 
@@ -108,7 +123,20 @@ exit status or `docker compose logs`.
 
 `model_execution_finished` in `agent_output.json` gives the model-side status:
 `succeeded`, `model_limit_reached`, `infrastructure_error` or
-`handoff_requested`.
+`handoff_requested`. Conflict attempts run little or no model work, so this
+event may be absent; the result comment marker (see
+[Conflict attempts](#conflict-attempts-merge-conflict-requeue)) is the
+authoritative outcome instead.
+
+`attempt_kind` is written to `attempt.json` at claim time for conflict
+attempts (`"attempt_kind": "conflict"`) even if the checkpoint is later
+lost; ordinary attempts leave the archive untouched, so a missing kind
+means `ordinary` (including archives written before the kind existed).
+Lifecycle outcomes for a conflict marker outcome: `success` → `complete`,
+`skipped` → `no_changes`, `rebase_conflict` / `check_failed` / `model_limit`
+/ `resolution_failed` / `no_change` → `incomplete` (the branch stays
+published but conflicting, and the consecutive-error guard does not trip),
+`setup_failed` / `error` / `push_failed` → `infrastructure_error`.
 
 ### Command logs
 `setup_*`, `baseline_check_*` and `check_*` hold the concatenated stdout and
@@ -171,6 +199,104 @@ Events that signal trouble:
 | `provenance_verification_failed` | Startup, stdout only: see [Diagnosing `provenance_verification_failed`](#diagnosing-provenance_verification_failed) |
 | `git_workspace_unrecoverable`, `continuation_branch_missing`, `working_tree_dirty` | git/branch state problems in `repo/` |
 | `consecutive_error_limit_reached` | stdout only. The agent has stopped picking up issues (see `state/consecutive_errors.json`) |
+| `conflict_requeue_detected` (INFO) | the detector labelled the issue `merge-conflict`: `detail` = `issue #N; pull request #M (<sha>) reports merge conflicts`. Carries the issue number, so it is in that issue's `agent_output.json` |
+| `conflict_attempt_claimed` (INFO) | a `merge-conflict` claim routed to a conflict attempt: `detail` = `issue #N; merge-conflict requeue`. Expect `attempt_kind: conflict` in `state/attempt.json` and `attempt.json` |
+| `conflict_escalated` (WARNING) | the attempt whose failure reached `MAX_CONFLICT_ATTEMPTS` handed the issue to a human: `detail` names the issue and `ready-for-human`. The issue's result comment carries the escalation section plus `<!-- conflict-escalation -->` |
+| `conflict_escalation_failed` (WARNING) | labelling `ready-for-human` failed. The posted escalation comment still stops the streak, so the next poll requeues instead of looping |
+| `archive_attempt_kind_failed` (WARNING) | `attempt_kind: conflict` could not be written to `attempt.json` at claim time. The checkpoint still carries the kind |
+
+## Conflict attempts (merge-conflict requeue)
+
+With `MAX_CONFLICT_ATTEMPTS=N > 0` (`.env`, default `0` disables the path with
+no pull-request query) every poll reads the open pull requests and labels an
+issue `merge-conflict` when its `agent/issue-N` branch reports `CONFLICTING`.
+The labelled issue is claimed ahead of automatic continuations and new work;
+the conflict attempt rebases the branch onto the base, runs setup plus one
+profile check and force-pushes only when green, with no model call except for
+one narrow resolution session after a real rebase conflict (never the
+`code-review` skill). After N consecutive failed conflict attempts on one
+issue the agent adds `ready-for-human` and never removes it; a human removing
+it requeues the issue with the full budget.
+
+### Detection
+
+The detector (`conflict_requeue_detected`, upstream `github_tracker.py`)
+labels only an open, unassigned issue with a non-empty body and no open
+blocker that carries none of the queue labels (`ready-for-agent`,
+`round-finished`, `ready-for-human`, `merge-conflict`); an already-queued
+issue is never relabelled and `ready-for-human` is never labelled by the
+detector. The pull request must be open, non-draft and report `CONFLICTING`:
+`UNKNOWN` (GitHub still computing mergeability) is skipped this poll and a
+draft never qualifies. A human may also apply `merge-conflict` by hand. The
+detector never counts any budget and never removes the label; the claim
+snapshot clears a stale `merge-conflict` when the issue is claimed through
+the ordinary or continuation path instead (an issue carrying
+`ready-for-agent` or `round-finished` alongside `merge-conflict` takes that
+path, never the conflict attempt).
+
+A conflicting PR that was not requeued is therefore one of: the setting is
+`0`; the PR reports `UNKNOWN` or is a draft / not `CONFLICTING`; the issue
+is assigned, has an empty body or an open blocker, or carries a precedence
+label (`ready-for-agent`, `round-finished`, `ready-for-human` or the label
+already); the issue carries `ready-for-human` (out of scope for detection
+and claiming until a human removes it). With a pool of workers sharing one
+login, `PEER_LOGINS` decides whose conflict comments count toward the budget.
+
+### Attempt and result comment
+
+A conflict claim emits `conflict_attempt_claimed` and checkpoints
+`attempt_kind: conflict` with `requeue_source: conflict`. The attempt dir
+carries the same `attempt_kind` in its `attempt.json` (see above). A run
+interrupted by a restart recovers as a conflict error (`error` outcome,
+`requeue-source: conflict` marker), never as an ordinary result, so the
+streak keeps counting; an ordinary marker would stop it.
+
+Every conflict attempt posts exactly one `## Conflict Attempt Result:
+<outcome>` comment carrying the `<!-- agent-attempt: <started_at> -->`
+dedup marker and the conflict-attempt marker:
+
+`<!-- conflict-attempt: outcome=<outcome> sha=<sha|none> [reason=<reason>] [files=<a,b>] [fix_commits=<x,y>] [extra_files=<p,q>] -->`
+
+Marker outcomes: `success` (rebased, checked and pushed as `<sha>`),
+`skipped` (entry check, with a `reason`), and the failure kinds
+`rebase_conflict`, `check_failed`, `setup_failed`, `error`, `push_failed`,
+`model_limit` (the single resolution session hit its turn/time/token limit),
+`resolution_failed` (the resolution rewrote the PR's own commits instead of
+adding fixes on top), and `no_change` (a `success`-path push that left the
+remote head unchanged: clean rebase plus green check, but nothing new
+reached the pull request). `skipped` reasons: `no_open_pr` (no open PR for
+the branch), `draft` (never publishes draft work), `not_conflicting` (the
+re-read PR no longer reports `CONFLICTING`), `base_mismatch` (the PR targets
+another base). Only `success` with a new `<sha>` pushes; every other outcome
+leaves the remote branch untouched so the pull request stays `CONFLICTING`.
+A `success` marker with `sha=none` counts as a failure toward the streak.
+Note the singular/plural split: the marker outcome is `no_change`, while
+the lifecycle outcome for a `skipped` marker is `no_changes`.
+
+Every result carries the `**Conflict attempts**: k/N` standing line (omitted
+only when the budget is `0`). The visible header names the conflict outcome,
+not the lifecycle outcome; the lifecycle outcome mapping is in
+[`attempt.json`](#attempt-directory-datalogsissuestarted_at).
+
+### Standing and escalation
+
+The streak is derived newest-first from the agent's own result comments (plus
+pool-peer logins): consecutive failures count, and it stops at a pushed-sha
+`success`, a `skipped` result, an ordinary attempt result, or the latest
+`<!-- conflict-escalation -->` comment. The budget is enforced at escalation
+time, never at claim time, so lowering N escalates on the next failure.
+
+The attempt whose failure reaches N escalates exactly once: its own comment
+gains the `### Human handoff` section (the failure tail or reason in a
+collapsed section, a link to the pull request, and the line telling the
+human to remove `ready-for-human` for N more attempts) plus the hidden
+`<!-- conflict-escalation -->` marker, the issue gains `ready-for-human`,
+and `agent_output.json` gains `conflict_escalated` (WARNING). A label failure
+is `conflict_escalation_failed` (WARNING) but the posted escalation comment
+still stops the streak. Removing `ready-for-human` requeues with the full
+budget; the agent never removes it. How far the issue is from escalation is
+`N - k` from the newest comment's `k/N` line (a `0/N` success or `skipped`
+reset the count; check the marker when the line is absent at budget `0`).
 
 ## Diagnosing `provenance_verification_failed`
 
@@ -313,4 +439,19 @@ jq -r 'select(.event=="limits_checked")|.detail' $A/agent_output.json | tail -1
 # remote: run `fetch-run.sh ... <issue> all` first and loop over the cache dir)
 for d in ~/OrbStack/docker/volumes/<dir>_agent_data/logs/<issue>/*/; do
   printf '%s ' "$(basename $d)"; jq -r '.outcome // "<none>"' $d/attempt.json 2>/dev/null || echo '<no attempt.json>'; done
+
+# conflict attempts: kind and outcome per run (missing kind means ordinary)
+for d in ~/OrbStack/docker/volumes/<dir>_agent_data/logs/<issue>/*/; do
+  printf '%s ' "$(basename $d)"; jq -r '"\(.outcome // "<none>") kind=\(.attempt_kind // "ordinary")"' $d/attempt.json 2>/dev/null || echo '<no attempt.json>'; done
+
+# conflict detector and escalation events for one run
+jq -c 'select(.event=="conflict_requeue_detected" or .event=="conflict_attempt_claimed" or .event=="conflict_escalated" or .event=="conflict_escalation_failed")' $A/agent_output.json
+
+# active checkpoint kind and requeue source (only while an attempt is active)
+jq -r '{attempt_kind, requeue_source, phase, issue_number}' ~/OrbStack/docker/volumes/<dir>_agent_data/state/attempt.json
+
+# conflict-attempt markers in the issue's GitHub comments (needs gh; newest first)
+# outcome/sha/reason/files/fix_commits/extra_files, plus the escalation marker that stops the streak
+gh issue view <issue> --repo <owner>/<repo> --comments --json comments -q '.comments[].body' | grep -o '<!-- conflict-attempt:[^>]*-->'
+gh issue view <issue> --repo <owner>/<repo> --comments --json comments -q '.comments[].body' | grep -c '<!-- conflict-escalation -->'
 ```
