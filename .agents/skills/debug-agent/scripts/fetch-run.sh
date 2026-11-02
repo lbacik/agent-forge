@@ -2,7 +2,14 @@
 # Copy attempt logs of a remote agent into a local cache, so they can be read
 # with Read/Grep/jq exactly like the host path of a local (OrbStack) agent.
 #
-# Usage: fetch-run.sh --context <docker-context> <name-fragment> <issue> [run|latest|all]
+# Usage: fetch-run.sh [--context <docker-context>] [--worker <n|worker-id>] <name-fragment> <issue> [run|latest|all]
+#   --context  docker context the agent runs on (default: orbstack, which is
+#              local - use it only to learn the host path; fetching needs a
+#              remote context)
+#   --worker   which Worker of the instance to fetch from: a number (2) or a
+#              worker id (<short-name>-2). Default is the first Worker.
+#              A fetch for Worker 2+ caches under a per-Worker subdirectory;
+#              the first Worker's cache path is unchanged.
 #   run     an attempt dir name, e.g. 2026-09-25T07-25-10.531403Z
 #   latest  (default) the newest attempt of the issue
 #   all     every attempt of the issue (only for a cross-run view)
@@ -14,11 +21,19 @@
 
 set -eu
 
-[ "${1:-}" = --context ] || { echo "usage: fetch-run.sh --context <ctx> <name-fragment> <issue> [run|latest|all]" >&2; exit 1; }
-context=${2:?--context needs a value}
-fragment=${3:?missing name-fragment}
-issue=${4:?missing issue number}
-which=${5:-latest}
+context=""
+worker=""
+while [ "${1:-}" = --context ] || [ "${1:-}" = --worker ]; do
+  if [ "${1:-}" = --context ]; then
+    context=${2:?--context needs a value}
+  else
+    worker=${2:?--worker needs a value}
+  fi
+  shift 2
+done
+fragment=${1:?usage: fetch-run.sh [--context <ctx>] [--worker <n|worker-id>] <name-fragment> <issue> [run|latest|all]}
+issue=${2:?missing issue number}
+which=${3:-latest}
 
 . "$(dirname "$0")/lib/resolve.sh"
 
