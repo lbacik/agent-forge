@@ -9,7 +9,7 @@ The deployment directory `agent-instances/agent-<name>/` for one target reposito
 _Avoid_: Agent (ambiguous between the deployment and a running process)
 
 **Worker**:
-One running simple-coding-agent container of an Instance, with its own data volume and its own Worker id.
+One running simple-coding-agent container of an Instance, with its own data volume and, when it shares its Worker identity with other Workers, its own Worker id.
 _Avoid_: Replica, agent, node
 
 **Pool**:
