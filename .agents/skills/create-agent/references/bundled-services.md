@@ -25,6 +25,9 @@ image**. Full working example: `../simple-coding-agent-env/agent-jsonhub-api/` (
   runs as `agent`.
 - Profile `env:` sets the connection vars CI sets (e.g. `DATABASE_URL`),
   pointing at `127.0.0.1`.
+- Every Worker of the Instance runs its own copy of the services, inside its
+  memory limit. Set `WORKER_MEM_LIMIT=4g` in `.env` instead of the 3g
+  default (also an estimate; raise it if a service is killed for memory).
 
 ## Lessons from agent-jsonhub-api
 
