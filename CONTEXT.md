@@ -9,7 +9,7 @@ The deployment directory `agent-instances/agent-<name>/` for one target reposito
 _Avoid_: Agent (ambiguous between the deployment and a running process)
 
 **Worker**:
-One running simple-coding-agent container of an Instance, with its own data volume and its own Worker id.
+One running simple-coding-agent container of an Instance, with its own data volume and, when it shares its Worker identity with other Workers, its own Worker id.
 _Avoid_: Replica, agent, node
 
 **Pool**:
@@ -25,7 +25,7 @@ The name that tells apart Workers acting as the same Worker identity; unique amo
 _Avoid_: Worker name, replica index
 
 **Claim**:
-A Worker's exclusive hold on one Queue issue: the issue is assigned to its Worker identity, carries its Claim marker, and shows no other claimant (another assignee or another Worker's Claim marker). A Worker that finds another claimant yields.
+A Worker's exclusive hold on one Queue issue: the issue is assigned to its Worker identity, carries its Claim marker when the Worker has a Worker id, and shows no other claimant (another assignee or another Worker's Claim marker). A Worker that finds another claimant yields.
 _Avoid_: Lock, lease
 
 **Claim marker**:
