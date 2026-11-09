@@ -235,11 +235,11 @@ if [ -n "$claim_lines" ]; then
       fi
     done
     case "$owner" in
-      ok-*) ;;
-      "")
+      (ok-*) ;;
+      ("")
         echo "  orphaned claim: #$num labeled claimed-by:$id, but no such Worker in this Instance (remove the label by hand)"
         ;;
-      *)
+      (*)
         if [ "$owner_active" = "-" ]; then
           where="idle (no active attempt)"
         else
