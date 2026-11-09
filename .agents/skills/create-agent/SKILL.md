@@ -72,9 +72,9 @@ Worker identity, or when a Worker has its own identity.
   same login. Such a Worker's stanza sets `WORKER_ID` and the commit author
   `Claude Code (<worker-id>)`. N=1 on an identity of its own runs without one.
 - **Minimum upstream.** A Worker id needs `AGENT_SRC_REF` `v0.7.0` or newer
-  (lbacik/simple-coding-agent#302); N>=2 on one identity also needs the fix
-  of lbacik/simple-coding-agent#364, not in any tag up to `v0.8.2`
-  (`references/pools.md` says how to check a tag).
+  (lbacik/simple-coding-agent#302); N>=2 on one identity needs `v0.9.0` or
+  newer, the first release with the startup recovery fix of
+  lbacik/simple-coding-agent#364.
 - **Hard rule.** Never run Workers of different Claim protocol versions on
   one Worker identity. Moving an identity to N>=2 follows the order in
   `references/pools.md` (release, stop and drain every Worker on it, upgrade

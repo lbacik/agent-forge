@@ -25,12 +25,10 @@ every Instance needs are in SKILL.md, "Pools"; terms are defined in
 
 - A Worker id needs `AGENT_SRC_REF` `v0.7.0` or newer, the Pool release of
   lbacik/simple-coding-agent#302.
-- N>=2 Workers on one Worker identity also need the startup recovery fix of
-  lbacik/simple-coding-agent#364 (PR #365, merge commit `7b6e34d`, merged
-  after `v0.8.2`). Use the first tag that contains it, or `main` until one is
-  released. A tag contains it when
-  `gh api repos/lbacik/simple-coding-agent/compare/<tag>...7b6e34d --jq .status`
-  prints `behind` or `identical`.
+- N>=2 Workers on one Worker identity need `v0.9.0` or newer, the first
+  release with the startup recovery fix of lbacik/simple-coding-agent#364.
+  Earlier tags can leave a Worker unable to start, with its Claim marker
+  behind, when its Claim is gone.
 - A pinned `AGENT_SRC_REF` older than that must be bumped first; ask the user.
 
 ## Hard rule and the order to N>=2

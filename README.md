@@ -121,8 +121,8 @@ Workers sharing one GitHub login are told apart by their Worker id
 It is set when the instance has two or more Workers or shares its login with
 another instance on the same repository; `create-agent` looks for such an
 instance and asks. Worker ids need simple-coding-agent v0.7.0 or newer, and
-two or more Workers on one login also need the startup recovery fix of
-lbacik/simple-coding-agent#364 (in `main` after v0.8.2). Never run Workers
+two or more Workers on one login need v0.9.0 or newer (the startup recovery
+fix of lbacik/simple-coding-agent#364). Never run Workers
 of different Claim protocol versions on one login: stop and drain every
 Worker on the login, upgrade and set `WORKER_ID` on all of them at once, and
 only then add Workers. The `create-agent` skill describes the order in
