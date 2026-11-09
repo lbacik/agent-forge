@@ -52,15 +52,16 @@ A new Instance with N>=2 on an identity nobody else uses starts all Workers
 together, so step 3 is its first start. A new Instance on an identity another
 Instance already uses must wait until steps 2–3 are done for that Instance.
 `create-agent` never changes existing instances, so tell the user what the
-other Instance needs.
+other Instance needs; the `manage-pool` skill carries it out.
 
 ## Changing N later
 
-Adding or removing a Worker, or changing a Worker id, belongs to the
-`manage-pool` skill (`.agents/skills/manage-pool/`, agent-forge#42); until it
-exists, follow the order above by hand. Losing a Worker's `/data` or changing
-its Worker id strands its Claim marker (`claimed-by:<worker-id>`) and the
-assignment: remove both by hand, there is no automatic cleanup.
+Adding or removing a Worker of an existing Instance, and moving an existing
+login to N>=2, belong to the `manage-pool` skill
+(`.agents/skills/manage-pool/`). A Worker id never changes: a renamed Worker
+is a removed one plus a new one. Losing a Worker's `/data` strands its Claim
+marker (`claimed-by:<worker-id>`) and the assignment: remove both by hand,
+there is no automatic cleanup.
 
 ## Host capacity
 

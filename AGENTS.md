@@ -51,6 +51,13 @@ container. Validate changes using the skill's applicable checks and report which
 checks were run, which passed, and which remain unverified. The repository root
 has no shared application test suite or Compose deployment.
 
+## Managing Pools
+
+To add, remove, stop or resume Workers of an existing instance, or to send
+`agentctl next issue` to one Worker, read and use
+[manage-pool](.agents/skills/manage-pool/SKILL.md). It owns Worker numbering,
+the order for a login's first N>=2, and the Claim checks before removal.
+
 ## Debugging instances
 
 For startup failures, unsuccessful issue attempts, logs, state, or questions

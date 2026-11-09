@@ -4,8 +4,8 @@ Agent Forge is a clean starting point for creating and operating dedicated
 [simple-coding-agent](https://github.com/lbacik/simple-coding-agent) instances
 for GitHub repositories. It follows the same workflow as the sibling
 `../simple-coding-agent-env` project: create an agent with `create-agent`, build
-its Docker image, start it with Docker Compose, and investigate problems with
-`debug-agent`.
+its Docker image, start it with Docker Compose, change its Workers with
+`manage-pool`, and investigate problems with `debug-agent`.
 
 Each instance targets one repository and has its own toolchain, repository
 profile and configuration. It runs one or more Workers (containers), each
@@ -18,6 +18,7 @@ upstream at build time.
 agent-forge/
 ├── .agents/skills/
 │   ├── create-agent/          # Instance scaffolding instructions and templates
+│   ├── manage-pool/           # Add, remove, stop and resume Workers of an instance
 │   └── debug-agent/           # Diagnostics instructions and helper scripts
 ├── .claude -> .agents        # Exposes the same skills to Claude Code
 ├── .gitignore
@@ -126,7 +127,7 @@ fix of lbacik/simple-coding-agent#364). Never run Workers
 of different Claim protocol versions on one login: stop and drain every
 Worker on the login, upgrade and set `WORKER_ID` on all of them at once, and
 only then add Workers. The `create-agent` skill describes the order in
-`references/pools.md`.
+`references/pools.md`; `manage-pool` carries it out for an existing instance.
 
 ### 2. Build
 
@@ -193,7 +194,28 @@ An instance that uses a LiteLLM gateway needs no extra flags: `COMPOSE_FILE`
 in its env file makes every `docker compose` command load
 `compose.litellm.yaml` as well.
 
-### 4. Debug problems
+### 4. Manage a Pool
+
+Ask your coding assistant to use the
+[`manage-pool`](.agents/skills/manage-pool/SKILL.md) skill to change the
+Workers of an existing instance. For example:
+
+```text
+Use manage-pool to add a Worker to agent-instances/agent-repository on the
+rpi5 context.
+```
+
+It covers adding a Worker (on the shared login, or with its own GitHub
+account in `.env.worker-<n>`), removing one, stopping and resuming one Worker
+or the whole Pool, and `agentctl next issue` for a chosen Worker. Every
+change waits for your go-ahead. A new Worker gets the next number never used
+before, so an old `claimed-by:<worker-id>` label cannot match it, and starts
+alone with `docker compose up -d agent-<n>`. A Worker is removed only after
+it has finished its attempt and holds no Claim; its `data_<n>` volume stays
+until you delete it. Moving a login from one Worker to two follows the order
+above, and the skill walks through it.
+
+### 5. Debug problems
 
 Ask your coding assistant to use the
 [`debug-agent`](.agents/skills/debug-agent/SKILL.md) skill. Include the instance,
@@ -230,5 +252,5 @@ sibling project and are read from there when it is available.
 The operating workflow remains the same:
 
 ```text
-create-agent → docker compose build → docker compose up -d → debug-agent
+create-agent → docker compose build → docker compose up -d → manage-pool → debug-agent
 ```
