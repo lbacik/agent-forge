@@ -1,9 +1,12 @@
 # A login's first N>=2
 
-Read this when a Worker identity goes from one Worker to two or more: a
+Read this when a Worker identity goes from one Worker to two or more (a
 second Worker for an Instance whose Workers have no Worker id yet, or a
-Worker on a login another Instance already uses. Decided in agent-forge#34;
-`create-agent/references/pools.md` states the same order for new Instances.
+Worker on a login another Instance already uses), or when Workers that share
+a login need a newer upstream. Decided in agent-forge#34. This file is the
+single source of the hard rule, the minimum upstream and the order;
+`create-agent` applies them to new Instances. Commands follow the
+conventions of `SKILL.md`, section 1.
 
 ## Hard rule
 
@@ -20,6 +23,8 @@ stopped and no Claim held.
   lbacik/simple-coding-agent#302.
 - N>=2 Workers on one Worker identity need `v0.9.0` or newer, the first
   release with the startup recovery fix of lbacik/simple-coding-agent#364.
+  Earlier tags can leave a Worker unable to start, with its Claim marker
+  behind, when its Claim is gone.
 
 Ask the user which ref to move to: a tag `v0.9.0` or newer, or `main`
 (whose current upstream is newer). Verify the result on the running Workers,
@@ -30,24 +35,24 @@ never from the ref alone: the `agent version:` line of `agentctl status`.
 Each step finishes on every Worker before the next one starts.
 
 1. **Every Worker on the login.** This Instance's Workers on the shared env
-   file, plus other Instances on the same repository, listed without
-   reading tokens:
+   file, plus other Instances on the same repository, listed by file name
+   so no token is read (count each directory once; `.env.example` matches
+   too):
 
    ```bash
-   grep -liE "^TARGET_REPO=[\"']?<owner>/<repo>[\"']?[[:space:]]*$" agent-instances/*/.env
+   grep -liE "^TARGET_REPO=[\"']?<owner>/<repo>[\"']?[[:space:]]*$" agent-instances/*/.env*
    ```
 
-   For each match, ask the user whether it acts as the same login and on
-   which context it runs. Never compare or print tokens. The login itself,
-   printing only the name:
+   For each other Instance, ask the user whether it acts as the same login
+   and on which context it runs. Never compare or print tokens. The login
+   itself, printing only the name:
 
    ```bash
    GH_TOKEN=$(grep -E '^GITHUB_TOKEN=' <env file> | cut -d= -f2- | tr -d "\"'") gh api user -q .login
    ```
 
-2. **Stop and drain.** `agentctl stop` on every Worker of step 1, in every
-   Instance, each on its own context. Wait until every `status` shows
-   `active_attempt: none`. Then
+2. **Drain** (`SKILL.md`, section 2) every Worker of step 1, in every
+   Instance, each on its own context. Then
    `gh issue list --repo <TARGET_REPO> --assignee <login> --state open`
    must be empty. An assignment left with no active attempt behind it is
    stale: the user clears it by hand. Go on only with an empty list.

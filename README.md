@@ -207,13 +207,10 @@ rpi5 context.
 
 It covers adding a Worker (on the shared login, or with its own GitHub
 account in `.env.worker-<n>`), removing one, stopping and resuming one Worker
-or the whole Pool, and `agentctl next issue` for a chosen Worker. Every
-change waits for your go-ahead. A new Worker gets the next number never used
-before, so an old `claimed-by:<worker-id>` label cannot match it, and starts
-alone with `docker compose up -d agent-<n>`. A Worker is removed only after
-it has finished its attempt and holds no Claim; its `data_<n>` volume stays
-until you delete it. Moving a login from one Worker to two follows the order
-above, and the skill walks through it.
+or the whole Pool, and `agentctl next issue` for a chosen Worker, including
+the order above when a login gets its second Worker. Every change waits for
+your go-ahead, a Worker holding a Claim is never removed, and volumes are
+deleted only by you.
 
 ### 5. Debug problems
 

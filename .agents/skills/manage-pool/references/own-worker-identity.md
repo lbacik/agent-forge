@@ -5,7 +5,7 @@ shared login, or when such a Worker is removed. The layout is the one
 `create-agent/references/pools.md` describes ("Worker identities"): the
 first Worker `agent` always uses the shared env file; Worker `agent-<n>`
 adds `.env.worker-<n>`, which holds only its `GITHUB_TOKEN` and overrides the
-shared one.
+shared one. Commands follow the conventions of `SKILL.md`, section 1.
 
 ## Adding
 
@@ -14,9 +14,9 @@ shared one.
    `GITHUB_TOKEN=<token>`, mode 600. The user writes it, or names a file to
    copy it from; copy with shell tools so the token never reaches the
    output.
-3. **Token access.** The check of `create-agent/SKILL.md`, step 6, with the
-   token read from `.env.worker-<n>`. Contents, pull requests and issues need
-   read & write.
+3. **Token access.** The check of `create-agent/SKILL.md`, "Verify the
+   token", with the token read from `.env.worker-<n>`. Contents, pull
+   requests and issues need read & write.
 4. **Login.** Print only the name:
 
    ```bash
@@ -38,8 +38,7 @@ shared one.
    first: editing the shared env file changes every Worker's environment, so
    `docker compose up -d` recreates every Worker, and a recreated Worker
    loses its active attempt. With their go-ahead:
-   1. `agentctl stop` on every running Worker; wait until each `status`
-      shows `active_attempt: none`.
+   1. Drain (`SKILL.md`, section 2) every running Worker.
    2. Set `PEER_LOGINS` in the shared env file.
    3. `docker compose config -q`, then `docker compose up -d` (this also
       starts `agent-<n>`).
@@ -51,11 +50,11 @@ Done when `pool-status.sh` shows `agent-<n>` running and the Worker acts as
 its own login:
 
 ```bash
-DOCKER_CONTEXT=<ctx> docker compose exec -u agent agent-<n> sh -c \
+docker compose exec -u agent agent-<n> sh -c \
   'curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user | jq -r .login'
 ```
 
-If the image lacks `curl`, report this check as not run.
+If the image lacks `curl` or `jq`, report this check as not run.
 
 ## Removing
 

@@ -21,38 +21,20 @@ every Instance needs are in SKILL.md, "Pools"; terms are defined in
   `PEER_LOGINS` in `.env` listing all their logins (see `.env.example`); ask
   the user before setting it.
 
-## Minimum upstream
-
-- A Worker id needs `AGENT_SRC_REF` `v0.7.0` or newer, the Pool release of
-  lbacik/simple-coding-agent#302.
-- N>=2 Workers on one Worker identity need `v0.9.0` or newer, the first
-  release with the startup recovery fix of lbacik/simple-coding-agent#364.
-  Earlier tags can leave a Worker unable to start, with its Claim marker
-  behind, when its Claim is gone.
-- A pinned `AGENT_SRC_REF` older than that must be bumped first; ask the user.
-
 ## Hard rule and the order to N>=2
 
 Never run Workers of different Claim protocol versions on one Worker
-identity. A Worker without `WORKER_ID`, or older than `v0.7.0`, compares only
-the login, so it takes another Worker's Claim for its own; a Worker that gains
-`WORKER_ID` while holding a Claim without a Claim marker no longer recognises
-it as its own. A Worker identity moves to N>=2 Workers in this order
-(agent-forge#34):
-
-1. An upstream release with the Pool support (above).
-2. `agentctl stop` on every Worker acting as that identity, in every
-   Instance. Let active attempts finish, then check that no issue in the
-   repository is still assigned to the login.
-3. Bump `AGENT_SRC_REF` to that release and set `WORKER_ID` on all of them,
-   then rebuild and recreate them all at once.
-4. Only then add Workers.
+identity. The reasons, the minimum upstream (`v0.9.0` for N>=2 on one
+identity) and the order a login moves to N>=2 Workers (release, drain every
+Worker on it, upgrade and set `WORKER_ID` on all at once, then add Workers)
+are in `.agents/skills/manage-pool/references/first-pool-on-a-login.md`.
 
 A new Instance with N>=2 on an identity nobody else uses starts all Workers
-together, so step 3 is its first start. A new Instance on an identity another
-Instance already uses must wait until steps 2–3 are done for that Instance.
-`create-agent` never changes existing instances, so tell the user what the
-other Instance needs; the `manage-pool` skill carries it out.
+together, so its first start is the "upgrade all at once" step. A new
+Instance on an identity another Instance already uses waits until that
+Instance has been drained and upgraded. `create-agent` never changes
+existing instances, so tell the user what the other Instance needs; the
+`manage-pool` skill carries it out.
 
 ## Changing N later
 
