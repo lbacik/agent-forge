@@ -8,8 +8,9 @@ its Docker image, start it with Docker Compose, and investigate problems with
 `debug-agent`.
 
 Each instance targets one repository and has its own toolchain, repository
-profile, configuration, and persistent Docker volume. The agent's source is
-fetched from upstream at build time.
+profile and configuration. It runs one or more Workers (containers), each
+with its own persistent Docker volume. The agent's source is fetched from
+upstream at build time.
 
 ## Project layout
 
@@ -20,16 +21,19 @@ agent-forge/
 │   └── debug-agent/           # Diagnostics instructions and helper scripts
 ├── .claude -> .agents        # Exposes the same skills to Claude Code
 ├── .gitignore
+├── CONTEXT.md                # Domain glossary (Instance, Worker, Pool, ...)
 ├── README.md
+├── docs/adr/                 # Architecture decisions
 └── agent-instances/          # Local instances; ignored by Git
     └── agent-<name>/
         ├── Dockerfile
-        ├── compose.yaml
+        ├── compose.yaml          # One service per Worker: agent, agent-2..N
         ├── simple-coding-agent-profile.yml
         ├── .env.example
         ├── .env
         ├── agent-entrypoint.sh   # Optional, for bundled services
-        └── compose.litellm.yaml  # Optional, joins a LiteLLM gateway network
+        ├── compose.litellm.yaml  # Optional, joins every Worker to a LiteLLM gateway network
+        └── .env.worker-<n>       # Optional, a Worker's own GITHUB_TOKEN
 ```
 
 **Create all instances inside `agent-instances/`.** The entire directory is
@@ -99,6 +103,31 @@ budget. The setting is independent of `PR_AUTO_MERGE`: conflicts block manual
 merges too. It needs an upstream agent that contains the feature
 (`AGENT_SRC_REF` v0.6.0 or newer; `main` tracks upstream).
 
+**Pools (several Workers).** An instance runs one Worker by default; ask
+`create-agent` for N to get a Pool of N Workers taking issues from the same
+Queue. A Pool is one instance and one Compose project, so it runs on one Docker
+context with one model backend; Workers on another host or backend are a
+separate instance (see `docs/adr/0002-one-pool-per-docker-context-without-swarm.md`).
+In `compose.yaml` the first Worker is the service `agent` with the volume
+`agent_data`; further Workers are `agent-2..N` with the volumes `data_2..N`.
+They share one image, built once by the `agent` service, and the settings of
+the `x-worker` anchor, including per-Worker limits (1.5 CPUs, 3g memory — an
+estimate — and 1024 PIDs) that `WORKER_CPUS`, `WORKER_MEM_LIMIT` and
+`WORKER_PIDS_LIMIT` in `.env` override.
+
+Workers sharing one GitHub login are told apart by their Worker id
+(`WORKER_ID`, `<short-name>-<n>`, e.g. `battles-2`), set per Worker in
+`compose.yaml` together with the commit author `Claude Code (<worker-id>)`.
+It is set when the instance has two or more Workers or shares its login with
+another instance on the same repository; `create-agent` looks for such an
+instance and asks. Worker ids need simple-coding-agent v0.7.0 or newer, and
+two or more Workers on one login need v0.9.0 or newer (the startup recovery
+fix of lbacik/simple-coding-agent#364). Never run Workers
+of different Claim protocol versions on one login: stop and drain every
+Worker on the login, upgrade and set `WORKER_ID` on all of them at once, and
+only then add Workers. The `create-agent` skill describes the order in
+`references/pools.md`.
+
 ### 2. Build
 
 Run Compose commands from the instance directory:
@@ -132,8 +161,9 @@ fails once the container runs out of process IDs. Instances created before
 this setting need `init: true` added to their `agent` service, then
 `docker compose up -d`.
 
-The named `agent_data` volume stores the working repository, state, and attempt
-logs under `/data` in the container. These persist across container recreation.
+The named `agent_data` volume (`data_2..N` for further Workers) stores the
+working repository, state, and attempt logs under `/data` in the container.
+These persist across container recreation.
 
 After rebuilding an updated image, run `docker compose up -d` again to apply it.
 To stop the deployment:
@@ -142,8 +172,8 @@ To stop the deployment:
 docker compose down
 ```
 
-This preserves the named volume. Adding `-v` deletes the volume and its agent
-data.
+This preserves the named volumes. Adding `-v` deletes the volumes of every
+Worker and their agent data.
 
 To run an instance with an alternative configuration, such as `.env.claude` for
 the Anthropic API, copy `.env`, change the differing settings and set

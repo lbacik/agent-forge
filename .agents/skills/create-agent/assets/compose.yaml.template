@@ -19,44 +19,107 @@
 # bundled in it) is derived from that same ref at build time: to upgrade,
 # move upstream or AGENT_SRC_REF and rebuild.
 #
+# Workers: every service below is one Worker of this Instance's Pool. All of
+# them run the same image, profile and env file, each with its own /data
+# volume. The first Worker is `agent` (volume agent_data), further Workers
+# are agent-2..N (volumes data_2..N). One Compose project runs on one Docker
+# context with one model backend; Workers elsewhere are separate Instances.
+# Each Worker is its own service because Workers are not identical replicas
+# (own /data, own WORKER_ID): do not use `--scale` or `container_name`.
+#
 # A LiteLLM model backend adds compose.litellm.yaml through COMPOSE_FILE in
-# the env file; this file alone keeps the agent on its default network.
+# the env file; this file alone keeps the Workers on their default network.
+# A Worker added here must also be added there.
+
+# Everything the Workers share. Each service merges it with `<<: *worker`.
+x-worker: &worker
+  # Runtime settings for the container. `--env-file` only swaps the file used
+  # for ${...} interpolation, not this one: an alternative file (e.g.
+  # .env.claude for another model backend) must also set
+  # AGENT_ENV_FILE=<its own name>, then
+  # `docker compose --env-file .env.claude up -d` uses it for both.
+  env_file:
+    - ${AGENT_ENV_FILE:-.env}
+  # The model's own shell, as opposed to the profile's commands, sees only
+  # the container environment and otherwise falls back to the target repo's
+  # defaults. Copy here the profile `env:` keys whose repo default would
+  # point the model at a different or missing service (see the create-agent
+  # skill, "The model's shell environment"). Values must match the profile.
+  # Delete the block if nothing needs copying, together with every
+  # `<<: *worker-environment` line below.
+  environment: &worker-environment
+    {{MODEL_SHELL_ENV}}
+  restart: unless-stopped
+  # Run Docker's init (tini) as PID 1. Without it the agent is PID 1 and
+  # never reaps processes orphaned by the model's tool commands; the zombies
+  # pile up until the cgroup's pids.max is reached, and from then on every
+  # fork fails with EAGAIN and every attempt fails. A bundled-services
+  # entrypoint still execs the agent as usual; tini is its parent.
+  init: true
+  # No core dumps: a crashing process writes core.<pid> into its cwd, often
+  # /data/repo, and the untracked file stops the agent with
+  # working_tree_dirty on every later start.
+  ulimits:
+    core: 0
+  # Per-Worker limits, overridable in .env. A Worker mostly waits on the
+  # model, with bursts during setup and checks (agent-forge#22). The 3g
+  # memory default is unverified: a Worker's peak memory has not been
+  # measured. Raise it for a target whose setup or tests need more, and for
+  # bundled services, which run inside every Worker.
+  cpus: ${WORKER_CPUS:-1.5}
+  mem_limit: ${WORKER_MEM_LIMIT:-3g}
+  pids_limit: ${WORKER_PIDS_LIMIT:-1024}
+
 services:
+  # The first Worker, and the only one that builds: `docker compose build`
+  # builds one image that every Worker runs.
   agent:
+    <<: *worker
     build:
       context: .
       additional_contexts:
         agent-src: https://github.com/lbacik/simple-coding-agent.git#${AGENT_SRC_REF:-main}
     image: simple-coding-agent:{{SHORT_NAME}}
-    # Runtime settings for the container. `--env-file` only swaps the file used
-    # for ${...} interpolation above, not this one: an alternative file (e.g.
-    # .env.claude for another model backend) must also set
-    # AGENT_ENV_FILE=<its own name>, then
-    # `docker compose --env-file .env.claude up -d` uses it for both.
-    env_file:
-      - ${AGENT_ENV_FILE:-.env}
-    # The model's own shell, as opposed to the profile's commands, sees only
-    # the container environment and otherwise falls back to the target repo's
-    # defaults. Copy here the profile `env:` keys whose repo default would
-    # point the model at a different or missing service (see the create-agent
-    # skill, "The model's shell environment"). Values must match the profile.
-    # Delete the block if nothing needs copying.
+    # Worker id: keep this block only when this Worker shares its GitHub
+    # login (Worker identity) with another Worker, of this Instance or of
+    # another Instance on {{OWNER}}/{{REPO}}; otherwise delete it. The id tells
+    # apart Workers acting as one login and names their Claim marker
+    # (`claimed-by:<worker-id>`); the commit author names the Worker in git
+    # history (the email stays the image's).
     environment:
-      {{MODEL_SHELL_ENV}}
+      <<: *worker-environment
+      WORKER_ID: {{SHORT_NAME}}-1
+      GIT_AUTHOR_NAME: "Claude Code ({{SHORT_NAME}}-1)"
+      GIT_COMMITTER_NAME: "Claude Code ({{SHORT_NAME}}-1)"
     volumes:
       - agent_data:/data
-    restart: unless-stopped
-    # Run Docker's init (tini) as PID 1. Without it the agent is PID 1 and
-    # never reaps processes orphaned by the model's tool commands; the zombies
-    # pile up until the cgroup's pids.max is reached, and from then on every
-    # fork fails with EAGAIN and every attempt fails. A bundled-services
-    # entrypoint still execs the agent as usual; tini is its parent.
-    init: true
-    # No core dumps: a crashing process writes core.<pid> into its cwd, often
-    # /data/repo, and the untracked file stops the agent with
-    # working_tree_dirty on every later start.
-    ulimits:
-      core: 0
+
+  # Worker <n>: repeat this stanza for n = 2..N with <n> replaced; delete it
+  # for N=1. It runs the image `agent` builds and never pulls it.
+  agent-<n>:
+    <<: *worker
+    image: simple-coding-agent:{{SHORT_NAME}}
+    pull_policy: never
+    # Only for a Worker with its own Worker identity (its own GITHUB_TOKEN in
+    # .env.worker-<n>, which overrides the shared file); otherwise delete.
+    # The long syntax needs Docker Compose v2.24+.
+    env_file:
+      - ${AGENT_ENV_FILE:-.env}
+      - path: .env.worker-<n>
+        required: false
+    # Worker id, as for `agent`: delete it if no other Worker shares this
+    # Worker's login.
+    environment:
+      <<: *worker-environment
+      WORKER_ID: {{SHORT_NAME}}-<n>
+      GIT_AUTHOR_NAME: "Claude Code ({{SHORT_NAME}}-<n>)"
+      GIT_COMMITTER_NAME: "Claude Code ({{SHORT_NAME}}-<n>)"
+    volumes:
+      - data_<n>:/data
 
 volumes:
+  # The first Worker keeps the single-Worker volume name, so an Instance that
+  # grows to N Workers keeps its existing /data.
   agent_data:
+  # One per further Worker: data_2..N.
+  data_<n>:

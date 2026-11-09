@@ -31,15 +31,55 @@ The output is always these files in `agent-instances/agent-<name>/`:
 | File | Source |
 |---|---|
 | `Dockerfile` | `assets/Dockerfile.template` + a stack block |
-| `compose.yaml` | `assets/compose.yaml.template` |
+| `compose.yaml` | `assets/compose.yaml.template`, one service per Worker |
 | `simple-coding-agent-profile.yml` | written from the target repo's CI |
 | `.env.example` | `assets/env.example.template` |
 | `.env` | same as `.env.example` + real secrets (ignored with all of `agent-instances/`) |
 | `agent-entrypoint.sh` | only for the bundled-services shape |
-| `compose.litellm.yaml` | only for the LiteLLM backend: `assets/compose.litellm.yaml.template` |
+| `compose.litellm.yaml` | only for the LiteLLM backend: `assets/compose.litellm.yaml.template`, every Worker listed |
+| `.env.worker-<n>` | only for a Worker with its own Worker identity (its own `GITHUB_TOKEN`) |
 
 The whole point of the profile is that the agent's `check:` must be red exactly
 when the target repo's CI gate would be red. Everything else follows from that.
+
+## Pools
+
+An Instance runs N Workers (default 1): one image and one profile, each Worker
+its own Compose service with its own `/data` volume. Terms are defined in
+`CONTEXT.md` (Instance, Worker, Pool, Worker identity, Worker id, Claim). Read
+`references/pools.md` when N>=2, when another Instance shares this one's
+Worker identity, or when a Worker has its own identity.
+
+- **One context, one backend.** A Pool is one Instance, one Compose project,
+  so it runs on one Docker context with one model backend
+  (`docs/adr/0002-one-pool-per-docker-context-without-swarm.md`). Workers on
+  another host or behind another backend are a separate Instance.
+- **Layout.** The first Worker is service `agent` with volume `agent_data`,
+  the only one with `build:`; Workers 2..N are `agent-2..N` with volumes
+  `data_2..N` and `pull_policy: never`, so one build serves all. Shared
+  settings live in the `x-worker` anchor. Workers are not identical replicas
+  (own `/data`, own Worker id), so don't use `--scale` or `container_name`.
+- **Worker id scheme.** `<short-name>-<n>`, where `<short-name>` is the
+  instance directory without `agent-` (`agent-battles` worker 2 →
+  `battles-2`; the first Worker is `<short-name>-1`). Only `[a-z0-9-]`, at
+  most 32 characters (upstream refuses anything else at startup). If
+  `<short-name>-<N>` is longer, refuse it and ask the user for a shorter
+  short-name; it also names the directory, which keeps ids unique across
+  Instances.
+- **When a Worker id is rendered.** For every Worker that shares its Worker
+  identity with another Worker: N>=2 on the shared `GITHUB_TOKEN`, or
+  another Instance on the same `TARGET_REPO` that the user says acts as the
+  same login. Such a Worker's stanza sets `WORKER_ID` and the commit author
+  `Claude Code (<worker-id>)`. N=1 on an identity of its own runs without one.
+- **Minimum upstream.** A Worker id needs `AGENT_SRC_REF` `v0.7.0` or newer
+  (lbacik/simple-coding-agent#302); N>=2 on one identity needs `v0.9.0` or
+  newer, the first release with the startup recovery fix of
+  lbacik/simple-coding-agent#364.
+- **Hard rule.** Never run Workers of different Claim protocol versions on
+  one Worker identity. Moving an identity to N>=2 follows the order in
+  `references/pools.md` (release, stop and drain every Worker on it, upgrade
+  and set `WORKER_ID` on all at once, then add Workers). Changing N later
+  belongs to the `manage-pool` skill.
 
 ## Workflow
 
@@ -57,6 +97,20 @@ can determine by reading the repository.
   repo name is not obviously the right short name.
 - Refuse to overwrite an existing `agent-instances/agent-*` directory; ask
   instead. Create `agent-instances/` itself if it doesn't exist yet.
+- Number of Workers N: 1 unless the user asks for more. Check the Worker id
+  scheme in "Pools" against the short name.
+- Look for other Instances on the same repository, listing file names only so
+  no token is read into the output:
+
+  ```bash
+  grep -liE "^TARGET_REPO=[\"']?<owner>/<repo>[\"']?[[:space:]]*$" agent-instances/*/.env 2>/dev/null
+  ```
+
+  For each match, ask the user whether that Instance's `GITHUB_TOKEN` acts as
+  the same GitHub login as this one's. Never compare or print the tokens. A
+  shared Worker identity means a Worker id for every Worker here, and
+  `references/pools.md` ("Hard rule and the order to N>=2") applies to the
+  other Instance too.
 - `AGENT_SRC_REF` (which commit of `simple-coding-agent` the image builds
   from) defaults to `main`. If the user names a tag — e.g. "build it against
   tag v1.4.0" — use that as `AGENT_SRC_REF` instead; see step 3. It's not a
@@ -92,7 +146,8 @@ local checkout. `AGENT_SRC_REF` defaults to `main`; if the user names a tag
 verbatim — it goes straight into the git URL fragment, which Docker's git
 context resolves like `git checkout <ref>` (works for tags, branches and
 commit SHAs alike). Don't ask for one unprompted; only use a non-`main` ref
-when the user gave it.
+when the user gave it. A rendered Worker id needs a minimum ref ("Pools",
+"Minimum upstream"): if a pinned ref is older, ask the user to bump it.
 
 Shallow-clone that same ref into the scratchpad and read, at that commit
 (`git clone --depth 1 --branch <AGENT_SRC_REF> ...` — for a bare commit SHA,
@@ -247,10 +302,26 @@ version numbers are copied into the instance:
 **compose.yaml** — `assets/compose.yaml.template`, image tag
 `simple-coding-agent:<short-name>`. Its `agent-src` context URL reads the ref
 from `AGENT_SRC_REF` in `.env` (`${AGENT_SRC_REF:-main}`) — nothing to fill in
-here; the actual ref is set in `.env.example`/`.env` below. Fill its
-`environment:` block as described next. Keep its `init: true` in every
-shape, bundled-services included: the agent doesn't reap orphaned processes
-as PID 1 (the template comment explains it).
+here; the actual ref is set in `.env.example`/`.env` below. Fill the
+`x-worker` anchor's `environment:` block as described next. Keep its
+`init: true` in every shape, bundled-services included: the agent doesn't
+reap orphaned processes as PID 1 (the template comment explains it). Then
+render the Workers (see "Pools"):
+
+- Keep a Worker's Worker id block only when that Worker gets a Worker id;
+  otherwise delete it.
+- Repeat the `agent-<n>` stanza and its `data_<n>` volume for n = 2..N,
+  replacing `<n>`; for N=1 delete both. Delete the stanza's `env_file` unless
+  that Worker has its own Worker identity (`references/pools.md`).
+- If the anchor's `environment:` block was deleted, delete every
+  `<<: *worker-environment` line too.
+- No `{{...}}` or `<n>` may remain.
+
+Leave the resource limits (`cpus`, `mem_limit`, `pids_limit`) as they are;
+they are tuned through `WORKER_*` in `.env` (below).
+
+**compose.litellm.yaml** (LiteLLM only) — list every Worker of `compose.yaml`
+the same way: one `agent-<n>` entry per further Worker, none for N=1.
 
 **The model's shell environment.** The profile's `env:` reaches only
 CommandRunner. While the model works, its Bash tool inherits the *container*
@@ -280,8 +351,11 @@ target repo's defaults would give the model:
   equivalent value, `PATH` and `HOME` (the Dockerfile sets them), and
   anything secret.
 
-Put the list in the compose file's `environment:`, not in `.env`: the values
-aren't secret, and a versioned file keeps them next to their reasons. Comment
+Put the list in the `x-worker` anchor's `environment:`, not in `.env`: the
+values aren't secret, and a versioned file keeps them next to their reasons.
+Write it as a mapping (`KEY: value`), not a list (`- KEY=value`): each Worker
+id block merges it with `<<: *worker-environment`, which only works on a
+mapping. Comment
 each entry with why the default isn't enough, and say that it must match the
 profile, which stays the source of truth. If nothing needs copying, drop the
 block and say so in the report.
@@ -319,6 +393,12 @@ block and say so in the report.
   removing the label. The setting is independent of `PR_AUTO_MERGE` (conflicts
   block manual merges too) and needs `AGENT_SRC_REF` v0.6.0+. Say in the report
   whether it was left off or set to N.
+- Resource limits: leave `WORKER_CPUS`, `WORKER_MEM_LIMIT` and
+  `WORKER_PIDS_LIMIT` commented out (the `x-worker` defaults), except for the
+  bundled-services shape (see its reference). Never put `WORKER_ID` in
+  `.env`; it belongs to each Worker's stanza in `compose.yaml`.
+- A Worker with its own Worker identity: `.env.worker-<n>`, as
+  `references/pools.md` describes.
 - Ask before adding any other setting the user didn't ask for.
 - Alternative configurations (e.g. `.env.claude` for the Anthropic backend):
   only if the user asks. Copy `.env`, change what differs and set
@@ -356,8 +436,11 @@ contents, pull requests and issues need read & write.
   with that clone on `sys.path`; needs PyYAML).
 - `docker compose config -q` in `agent-instances/agent-<name>/` (with
   `--env-file` for an alternative configuration). Check that
-  `docker compose config` shows `init: true` on the `agent` service. For
-  LiteLLM, also check that it lists the gateway network there.
+  `docker compose config` shows, on every Worker service, `init: true`, the
+  `cpus` / `mem_limit` / `pids_limit` limits and its own volume; with a
+  Worker id, a distinct `WORKER_ID` and the matching `GIT_AUTHOR_NAME` per
+  Worker; and `build:` on `agent` only. For LiteLLM, also check that it lists
+  the gateway network on every Worker.
 - The split-environment check: in the built image, as `agent` in a target
   clone and *without* the profile's `env:`, run the app's config dump or
   boot command (e.g. `php bin/console debug:dotenv`, `manage.py diffsettings`,
@@ -370,7 +453,9 @@ contents, pull requests and issues need read & write.
 - Once the container runs (only if the user starts it), confirm the init
   process: `docker inspect --format '{{.HostConfig.Init}}' <dir>-agent-1`
   prints `true`, and `docker exec <dir>-agent-1 cat /proc/1/cmdline` starts
-  with `/sbin/docker-init`.
+  with `/sbin/docker-init`. Further Workers' containers are
+  `<dir>-agent-<n>-1`. With a Worker id, `docker exec -u agent <container>
+  git var GIT_AUTHOR_IDENT` names `Claude Code (<worker-id>)`.
 - LiteLLM backend: with the built image, offer the gateway check from
   `references/model-backend.md` ("Verifying the gateway"). Prompt caching
   can only be confirmed on the first real attempt; say so.
@@ -379,7 +464,9 @@ contents, pull requests and issues need read & write.
 
 Tell the user in their language: files created, stack decisions and the reasons
 for them (runtime version, included/excluded checks, bundled services), the
-model and its route (and, for LiteLLM, the gateway network), which
+model and its route (and, for LiteLLM, the gateway network), the Workers
+(N, their Worker ids or why none was rendered, the resource limits, and any
+other Instance found on the same repository), which
 `simple-coding-agent` ref the image builds from (`main`, or the pinned tag —
 and if pinned, that rebuilds won't pick up new agent code until `AGENT_SRC_REF`
 in `.env` is bumped or changed back to `main`, then rebuilt — no other file

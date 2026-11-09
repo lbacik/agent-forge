@@ -26,6 +26,8 @@ with bundled services, also read its
 [bundled-services reference](.agents/skills/create-agent/references/bundled-services.md).
 For the model and its route (Meta, Anthropic, or a LiteLLM gateway), read its
 [model-backend reference](.agents/skills/create-agent/references/model-backend.md).
+For a Pool of several Workers or a GitHub login shared with another instance,
+read its [pools reference](.agents/skills/create-agent/references/pools.md).
 
 Use the skill's templates and write a repository profile that mirrors the
 target's gating CI checks. Keep the profile local to the instance. If the model
