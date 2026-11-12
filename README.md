@@ -238,6 +238,24 @@ project root:
 They default to the `orbstack` Docker context; pass `--context <name>` for another
 context.
 
+## Continuous integration
+
+Every pull request runs the template render check
+([`render-check.yml`](.github/workflows/render-check.yml)). It renders the
+`create-agent` templates with placeholder values — no secrets — and runs
+`docker compose config` on the plain and the LiteLLM Compose variants to prove
+the result is a valid Compose model.
+
+Run the same check locally (needs Docker with Compose v2.17 or newer):
+
+```bash
+.agents/skills/create-agent/tests/render-check.sh
+```
+
+The workflow only calls that script: to add an assertion about the rendered
+Compose model (for example "service X carries label Y"), extend the script's
+assertion section instead of editing the workflow.
+
 ## Relationship to simple-coding-agent-env
 
 The skills and templates originate from `../simple-coding-agent-env`. They
