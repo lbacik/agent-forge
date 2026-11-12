@@ -33,6 +33,7 @@ issue=${2:-}
 
 . "$(dirname "$0")/lib/resolve.sh"
 . "$(dirname "$0")/lib/contract.sh"
+. "$(dirname "$0")/lib/contract_attempts.sh"
 
 # Contract hint: the Compose model carries the discovery label only when the
 # ref speaks the contract. Unlabelled instances skip the extra inspect below,
@@ -74,6 +75,25 @@ if [ "$_use_contract" -eq 1 ]; then
     echo "error: agentfleet identity failed for managed instance '$_managed' (no legacy fallback)" >&2
     exit "$_code"
   fi
+  # The backend for the report line comes from the machine-readable envelope
+  # (the same read fetch-run.sh uses for its cache key); the human block above
+  # stays the report's identity section.
+  _idjson=$(mktemp) || exit 1
+  if ! contract_identity_envelope "$_managed" "$_idjson"; then
+    _code=$?
+    rm -f "$_idjson"
+    exit "$_code"
+  fi
+  _backend=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get("result",{}) if isinstance(d.get("result"),dict) else {}; sys.stdout.write(r.get("backend","") if isinstance(r.get("backend"),str) else "")' "$_idjson") || {
+    rm -f "$_idjson"
+    echo "error: cannot read backend from agentfleet identity for '$_managed'" >&2
+    exit 1
+  }
+  rm -f "$_idjson"
+  if [ -z "$_backend" ]; then
+    echo "error: agentfleet identity for '$_managed' names no backend" >&2
+    exit 1
+  fi
   echo "status_snapshot:"
   _tmp=$(mktemp) || exit 1
   _tmperr=$(mktemp) || { rm -f "$_tmp"; exit 1; }
@@ -95,9 +115,40 @@ if [ "$_use_contract" -eq 1 ]; then
     exit "$_code"
   fi
   if [ -n "$issue" ]; then
-    echo "note:            issue #$issue Attempts listing arrives in a later step; showing snapshot only"
+    # That issue's Attempts from `attempts ls`, filtered by issue on the
+    # client side and paged with the opaque cursor (newest first). Each line
+    # names the native Attempt ID, native outcome, delivery,
+    # `attention_required` and `sealed`.
+    echo "attempts_for_issue_$issue:"
+    _tmpdir=$(mktemp -d) || exit 1
+    _ids=$(contract_list_issue_pages "$_managed" "$issue" "$_tmpdir") || {
+      _code=$?
+      rm -rf "$_tmpdir"
+      exit "$_code"
+    }
+    if [ -z "$_ids" ]; then
+      echo "  none"
+      _ids="<none>"
+    else
+      for _page in "$_tmpdir"/page-*.json; do
+        python3 "$(dirname "$0")/lib/render_attempts.py" "$issue" "$_page" || {
+          _code=$?
+          echo "error: cannot render Attempts listing for '$_managed' (no legacy fallback)" >&2
+          rm -rf "$_tmpdir"
+          exit "$_code"
+        }
+      done
+      # shellcheck disable=SC2086 # word-splitting the collected IDs is intended
+      set -- $_ids
+      _ids="$*"
+    fi
+    rm -rf "$_tmpdir"
   fi
-  echo "report:          context $context, forge instance $dir, managed instance $_managed (backend from identity above)"
+  if [ -n "$issue" ]; then
+    echo "report:          context $context, forge instance $dir, managed instance $_managed, backend $_backend, attempts for issue #$issue: $_ids"
+  else
+    echo "report:          context $context, forge instance $dir, managed instance $_managed, backend $_backend"
+  fi
   exit 0
 fi
 

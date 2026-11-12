@@ -22,6 +22,7 @@ before assuming anything.
 ## Contents
 
 - [Tree](#tree)
+- [Attempt Archive (contract path)](#attempt-archive-contract-path)
 - [State files](#state-files-datastate)
 - [Attempt directory](#attempt-directory-datalogsissuestarted_at)
 - [agent_output.json events](#agent_outputjson-events)
@@ -31,6 +32,10 @@ before assuming anything.
 - [jq recipes](#jq-recipes)
 
 ## Tree
+
+> Legacy-only: the `/data` volume layout below applies to unlabelled instances
+> on the legacy path, and goes away when the legacy path is removed (step 5).
+> On the contract path read the Attempt Archive instead (see above).
 
 ```
 /data/
@@ -56,7 +61,110 @@ Example attempt dir: `logs/49/2026-09-22T20-07-47.012475Z/` is the attempt
 that started at `2026-09-22T20:07:47.012475Z` UTC. The same value is the
 attempt id in `state/*.json` (with `:`).
 
+## Attempt Archive (contract path)
+
+On the contract path there is no `/data` volume layout to read. `fetch-run.sh`
+exports one Attempt Archive per Attempt through `agentfleet attempts export`
+into a separate contract cache
+(`~/.cache/simple-coding-agent-env/contract-attempts/<context>/<managed>/<backend>/<repo>/<attempt>/`,
+each key component percent-encoded so opaque Attempt IDs such as `#41/1`
+become one safe path component). Read the cached copy with Read, Grep and
+`jq` exactly as the legacy cache. Only Sealed archives are reused, after
+`sha256` verification against the manifest; unsealed archives are moving
+snapshots, fetched again on every request. A `sha256` mismatch in a fresh
+export is a torn read and is fetched again.
+
+```bash
+A=<path fetch-run.sh printed>
+# event histogram
+jq -r .event $A/events.jsonl | sort | uniq -c | sort -rn
+
+# everything that isn't routine info
+jq -c 'select(.level!="info")' $A/events.jsonl
+```
+
+### Manifest: kind and media_type
+
+The first member of the export tar is `manifest.json`: the contract version,
+the exported Attempt summary, and one manifest entry per streamed file. Each
+entry carries `path` (a relative POSIX path: never absolute, no `..`
+segment), `kind`, `media_type`, `size` and `sha256`. `kind` is one of
+`events`, `transcript`, `tool_call`, `tool_result`, `model_output`,
+`command_output`, `record` or `other`; `media_type` names the bytes
+(JSON-lines files use `application/x-ndjson`). The helper verifies every
+listed file's size and `sha256` before the cached copy is used.
+
+### Contract Events in events.jsonl
+
+Every archive carries `events.jsonl`: the Contract Events for the Attempt, one
+JSON-lines record per event. Each event has `at` (UTC), `level`
+(`debug`/`info`/`warning`/`error`), `event`, and human `text`, plus the fields
+each event needs: `attempt_id`, `issue` and `phase` where they apply. Look for
+these first: `claim_opened`, `phase_changed`, `outcome_recorded` (carries the
+native outcome plus its `reason`), `attempt_finished`, `attempt_released`, and
+`sealed`. Backend-native events use the `native.` prefix and carry no required
+extras. `startup_check` (carries `check` plus `result`) and `halted` (carries
+`reason` plus `detail`) explain why an instance never got to model work;
+`process_started` carries the `agent_version`.
+
+### Sealed versus outcome recorded
+
+`sealed` and the recorded outcome answer different questions. The Attempt
+summary's `outcome` (`native` as the backend labels it, a human `label`, and a
+`reason`) is recorded when the Attempt finishes — or stays `null` while the
+Attempt is still open. `sealed` tells whether the archive is finished and
+immutable: a Sealed archive carries `sealed_at` and never changes, so the
+helper reuses the cached copy after `sha256` verification. An unsealed archive
+(including the active Attempt) is a moving snapshot: it is fetched again on
+every request and labelled as such in the helper output. Never treat a cached
+unsealed copy as current, and never infer sealedness from files on disk — the
+legacy `"outcome"` file heuristic does not exist on the contract path.
+
+### Figure Basis rules
+
+Budget limits, usage and Figures each carry `value`, `unit` and Figure Basis.
+`unit` is `tokens`, `usd`, `seconds`, `count` or `ratio`. `basis` is
+`measured`, `estimated`, `configured`, `assumed`, `unavailable` or
+`not_applicable`; `value` is `null` exactly when the basis is `unavailable`
+or `not_applicable`, rendered as `unavailable`/`not_applicable` — never `0`.
+Backends may add `native.`-prefixed limits and Figures (observed:
+`native.review_rounds`, `native.queue_depth`); read their unit and basis the
+same way.
+
+### Per-backend notes
+
+**coding-agent.** Attempt IDs are opaque (`#<issue>/<n>`, e.g. `#41/1`).
+Native outcomes arrive as `native` plus `label` and `reason` (observed: native
+`delivered`, label `Delivered`); `delivery` names the pull request (`number`
+and `url`). The observed native phase is `run_step`; the lifecycle state is
+`open` while running, `finished` after. The export manifest maps the engine's
+native artifacts to `events` (`events.jsonl`) and `transcript`
+(`transcript.jsonl`); other kinds (`tool_call`, `tool_result`,
+`model_output`, `command_output`, `record`) carry whatever else the engine
+streams. The observed Halt reason is `credential-failure` with a human
+`detail`.
+
+**simple-coding-agent.** Attempt IDs are the UTC start timestamps (the same
+shape as the legacy attempt directory names). Native phases mirror the legacy
+checkpoint phases (`claimed`, `setup`, `model_running`, `pushing`,
+`publishing`). The budget enforces `raw` tokens and reports `native.` limits
+and Figures; read them by unit and basis as above. Native outcomes are shown
+as the backend labels them.
+
+### Out-of-contract sources
+
+Two sources sit outside the contract. Container stdout (`docker compose logs`)
+stays the source for startup failures before the contract is served (for
+example a `provenance_verification_failed` event, which has no issue number
+and exists only in container stdout). The backend's private state is a
+read-only, backend-specific fallback for when the contract is silent — never
+the first place to look. Reading it changes nothing; when it answers the
+question, flag the finding in the report as outside the contract.
+
 ## State files (`/data/state/`)
+
+> Legacy-only: applies to unlabelled instances on the legacy path, and goes
+> away when the legacy path is removed (step 5).
 
 `consecutive_errors.json`:
 ```json
@@ -105,6 +213,9 @@ with the `<!-- requeue-source: conflict -->` marker; an ordinary conflict
 result carries no requeue-source marker.
 
 ## Attempt directory (`/data/logs/<issue>/<started_at>/`)
+
+> Legacy-only: applies to unlabelled instances on the legacy path, and goes
+> away when the legacy path is removed (step 5).
 
 ### `attempt.json` (summary)
 ```json
@@ -184,6 +295,10 @@ a token got into a URL or an argument.
 
 ## agent_output.json events
 
+> Legacy-only: applies to unlabelled instances on the legacy path, and goes
+> away when the legacy path is removed (step 5). On the contract path read
+> Contract Events in the archive's `events.jsonl` instead (see above).
+
 Each line looks like
 `{"timestamp","level","event","issue_number","phase","detail"}`, where
 `phase` is the coarse process phase (`polling`, `setup`, `model_execution`, …),
@@ -219,6 +334,9 @@ Events that signal trouble:
 | `archive_attempt_kind_failed` (WARNING) | `attempt_kind: conflict` could not be written to `attempt.json` at claim time. The checkpoint still carries the kind |
 
 ## Conflict attempts (merge-conflict requeue)
+
+> Legacy-only: applies to unlabelled instances on the legacy path, and goes
+> away when the legacy path is removed (step 5).
 
 With `MAX_CONFLICT_ATTEMPTS=N > 0` (`.env`, default `0` disables the path with
 no pull-request query) every poll reads the open pull requests and labels an
@@ -323,7 +441,9 @@ checked, and `CLAUDE_CODE_VERSION` has no effect. Typical `detail`:
 `Bundled Claude Code CLI is missing at <path>; the pinned runtime cannot be verified`
 or `Claude Code CLI version does not match the pinned runtime`. The event has
 no issue number, so it exists only in container stdout, phase `startup`; the
-container then exits or restarts, so no attempt dir exists.
+container then exits or restarts, so no attempt dir exists. This section is not
+legacy-only: container stdout stays the source for startup failures before the
+contract is served on the contract path too.
 
 ```bash
 cd agent-instances/agent-<name>
@@ -377,6 +497,9 @@ A `.env` or Dockerfile newer than the image means the image is stale.
 
 ## Diagnosing pids exhaustion (zombie processes)
 
+> Legacy-only: applies to unlabelled instances on the legacy path, and goes
+> away when the legacy path is removed (step 5).
+
 Without an init process the agent itself is PID 1. Processes orphaned by the
 model's tool commands are reparented to it, and it never reaps them. The
 zombies count toward the container cgroup's `pids.max`. Once that is reached,
@@ -424,6 +547,10 @@ fix. Both interrupt an active attempt, so do either only with the user's
 approval.
 
 ## jq recipes
+
+> Legacy-only: applies to unlabelled instances on the legacy path, and goes
+> away when the legacy path is removed (step 5). On the contract path use the
+> Attempt Archive recipes above.
 
 Set `A=~/OrbStack/docker/volumes/<dir>_agent_data/logs/<issue>/<started_at>` first
 (for Worker 2+, the volume is `<dir>_data_<n>`; remote: the path
