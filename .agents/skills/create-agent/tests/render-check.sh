@@ -337,8 +337,16 @@ check_coding_agent_instance() {
     "$label: image tag missing from the Compose model"
   assert_contains "$config_output" '/var/lib/coding-agent' \
     "$label: state path missing from the Compose model"
-  assert_contains "$config_output" '/etc/coding-agent:ro' \
-    "$label: Workflow Configuration is not mounted read-only"
+  # `docker compose config` rewrites the short `./workflow:/etc/coding-agent:ro`
+  # into the long syntax, so look for `read_only: true` inside the volume
+  # entry whose target is /etc/coding-agent rather than for the `:ro` suffix.
+  if ! printf '%s\n' "$config_output" | awk '
+      /^ *- / { in_entry = 0 }
+      /^ *target: \/etc\/coding-agent$/ { in_entry = 1; next }
+      in_entry && /^ *read_only: true$/ { found = 1 }
+      END { exit !found }'; then
+    fail "$label: Workflow Configuration is not mounted read-only"
+  fi
   assert_contains "$config_output" '/var/lib/coding-agent/operator' \
     "$label: private-IPC tmpfs missing from the Compose model"
   assert_contains "$config_output" 'stop_grace_period:' \
@@ -375,7 +383,9 @@ check_coding_agent_instance() {
   if [ "$init_count" != 1 ]; then
     fail "$label: want exactly one init: true line (worker), found $init_count"
   fi
-  read_only_count=$(printf '%s\n' "$config_output" | grep -c -- 'read_only: true' || true)
+  # Service-level keys only (four-space indent): the read-only bind mount of
+  # the Workflow Configuration carries its own, deeper `read_only: true`.
+  read_only_count=$(printf '%s\n' "$config_output" | grep -c -- '^    read_only: true$' || true)
   if [ "$read_only_count" != 3 ]; then
     fail "$label: want read_only: true on all three services, found $read_only_count"
   fi
