@@ -1,0 +1,217 @@
+#!/bin/sh
+# Fake `docker` for the legacy-helpers test. It replays recorded replies for
+# `ps`/`inspect`/`agentctl status` and emulates the volume reads (`exec`/`run`
+# `sh -c ...`, `cp`) against fixture files, so the debug-agent helpers run in
+# CI with no Docker host and no real agent.
+#
+# Environment (all set by tests/legacy-helpers.sh):
+#   STUB_ARGV_LOG    file every invocation is appended to, as one
+#                    `CTX=<docker-context> docker <argv>` record (multi-line
+#                    when argv holds a script). The test asserts the helpers'
+#                    argv by grepping this log.
+#   STUB_SCENARIO_DIR  recorded replies: $STUB_SCENARIO_DIR/<project>/
+#                    ps-<service>.txt, ps-PROJECT.txt, inspect-<container>.txt,
+#                    exec-agentctl-<container>.txt. A missing reply file for
+#                    `ps` means "no such container" (empty output, like a real
+#                    daemon); any other missing reply is an error telling the
+#                    author which file to record.
+#   STUB_VOLUMES_ROOT  fixture volumes: $STUB_VOLUMES_ROOT/<volume> stands in
+#                    for /data of that volume (`<project>_agent_data` for the
+#                    first Worker, `<project>_data_<n>` for Worker N>=2).
+#   STUB_PROJECTS    space-separated compose project names the stub knows
+#                    (used to map a container back to its project/volume).
+#   DOCKER_CONTEXT   set by the helpers themselves; logged, never contacted.
+#
+# To extend the stub with new recorded replies without changing the helpers
+# (or this fake): add reply files under $STUB_SCENARIO_DIR/<project>/ and, for
+# a new project, list it in STUB_PROJECTS. The contract-path checks later put
+# `agentfleet`, backed by a replaying fake `agentctl`, behind this same
+# tests/stub/bin mechanism.
+#
+# This fake never delegates to a real docker: there is no code path here that
+# reaches a Docker host.
+
+set -eu
+
+scene=${STUB_SCENARIO_DIR:?STUB_SCENARIO_DIR is not set}
+vols=${STUB_VOLUMES_ROOT:?STUB_VOLUMES_ROOT is not set}
+
+# shellcheck disable=SC1091 # resolved at runtime from STUB_LIB, not statically
+. "${STUB_LIB:?STUB_LIB is not set}/log-argv.sh"
+log_argv docker "$@"
+
+cmd=${1:?usage: stub docker ...}
+shift
+
+proj_of_container() {
+  best=""
+  # shellcheck disable=SC2086 # word-splitting the project list is intended
+  for p in $STUB_PROJECTS; do
+    case "$1" in
+      "$p"-*)
+        if [ "${#p}" -gt "${#best}" ]; then best=$p; fi
+        ;;
+    esac
+  done
+  printf '%s' "$best"
+}
+
+datadir_for_container() {
+  p=$(proj_of_container "$1")
+  [ -n "$p" ] || {
+    stub_fail "stub docker: no recorded reply: unknown project for container $1"
+  }
+  rest=${1#"$p"-}
+  svc=${rest%-1}
+  case "$svc" in
+    (agent)
+      printf '%s' "$vols/$p""_agent_data"
+      ;;
+    (agent-*)
+      n=${svc#agent-}
+      printf '%s' "$vols/$p""_data_$n"
+      ;;
+    (*)
+      stub_fail "stub docker: no recorded reply: unknown service for container $1"
+      ;;
+  esac
+}
+
+case "$cmd" in
+  (ps)
+    proj=""
+    svc=""
+    for a in "$@"; do
+      case "$a" in
+        (label=com.docker.compose.project=*) proj=${a#label=com.docker.compose.project=} ;;
+        (label=com.docker.compose.service=*) svc=${a#label=com.docker.compose.service=} ;;
+      esac
+    done
+    [ -n "$proj" ] || {
+      stub_fail "stub docker: no recorded reply: ps without project filter"
+    }
+    if [ -n "$svc" ]; then
+      f="$scene/$proj/ps-$svc.txt"
+    else
+      f="$scene/$proj/ps-PROJECT.txt"
+    fi
+    # A missing reply file is a fixture gap, not "no container": record it.
+    # An empty reply file means the daemon lists no such container.
+    if [ -f "$f" ]; then
+      cat "$f"
+    else
+      stub_fail "stub docker: no recorded reply: add $proj/ps-${svc:-PROJECT}.txt (empty file means no container)"
+    fi
+    exit 0
+    ;;
+  (inspect)
+    cont=""
+    for a in "$@"; do
+      case "$a" in
+        (-*) ;;
+        (*) cont=$a ;;
+      esac
+    done
+    proj=$(proj_of_container "$cont")
+    f="$scene/$proj/inspect-$cont.txt"
+    if [ -f "$f" ]; then
+      cat "$f"
+    else
+      stub_fail "stub docker: no recorded reply: add $proj/inspect-$cont.txt"
+    fi
+    exit 0
+    ;;
+  (exec|run)
+    script=""
+    take_script=""
+    skip_next=0
+    prev=""
+    pos=""
+    vol=""
+    for a in "$@"; do
+      if [ -n "$take_script" ]; then
+        script=$a
+        take_script=""
+        continue
+      fi
+      if [ "$skip_next" = 1 ]; then
+        if [ "$prev" = "-v" ]; then vol=${a%%:*}; fi
+        skip_next=0
+        prev=""
+        continue
+      fi
+      case "$a" in
+        (-u|-w|--entrypoint) skip_next=1; prev=$a ;;
+        (-v) skip_next=1; prev="-v" ;;
+        (-c) take_script=1 ;;
+        (-*) ;;
+        (sh) ;;
+        (*) pos="$pos $a" ;;
+      esac
+    done
+    case "$script" in
+      (*"agentctl status"*)
+        # shellcheck disable=SC2086 # word-splitting one positional is intended
+        set -- $pos
+        cont=${1:?stub docker: agentctl status without a container}
+        proj=$(proj_of_container "$cont")
+        f="$scene/$proj/exec-agentctl-$cont.txt"
+        if [ -f "$f" ]; then
+          cat "$f"
+        else
+          stub_fail "stub docker: no recorded reply: add $proj/exec-agentctl-$cont.txt"
+        fi
+        exit 0
+        ;;
+    esac
+    if [ -n "$vol" ]; then
+      dd="$vols/$vol"
+    else
+      # shellcheck disable=SC2086 # word-splitting one positional is intended
+      set -- $pos
+      cont=${1:?stub docker: $cmd without a container or volume}
+      if [ "$cmd" = "run" ]; then
+        stub_fail "stub docker: no recorded reply: run without a -v volume"
+      fi
+      dd=$(datadir_for_container "$cont")
+    fi
+    [ -d "$dd" ] || {
+      stub_fail "stub docker: no fixture data at $dd"
+    }
+    set +e
+    (cd "$dd" && sh -c "$script")
+    code=$?
+    set -e
+    exit "$code"
+    ;;
+  (cp)
+    src=""
+    dst=""
+    for a in "$@"; do
+      case "$a" in
+        (-*) ;;
+        (*)
+          if [ -z "$src" ]; then src=$a; else dst=$a; fi
+          ;;
+      esac
+    done
+    cont=${src%%:*}
+    rel=${src#*:}
+    dd=$(datadir_for_container "$cont")
+    case "$rel" in
+      (/data/*) ;;
+      (*)
+        stub_fail "stub docker: no recorded reply: cp of $src"
+        ;;
+    esac
+    rel=${rel#/data/}
+    set +e
+    cp -r "$dd/$rel" "$dst/"
+    code=$?
+    set -e
+    exit "$code"
+    ;;
+  (*)
+    stub_fail "stub docker: no recorded reply for '$cmd'"
+    ;;
+esac

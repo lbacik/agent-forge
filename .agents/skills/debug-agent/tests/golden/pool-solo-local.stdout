@@ -1,0 +1,6 @@
+instance:        agent-solo (project agent-solo) on context orbstack (local)
+worker 1 (first Worker) service=agent:
+  container:           agent-solo-agent-1 [Up 2 hours]
+  intake:              running
+  active_attempt:      issue #42 (started 2026-11-02T10:00:00Z)
+  pending_next_issue:  none

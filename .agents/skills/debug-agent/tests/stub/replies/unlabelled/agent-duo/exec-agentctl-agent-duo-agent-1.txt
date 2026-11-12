@@ -1,0 +1,5 @@
+WORKER_ID=
+intake: running
+active_attempt: issue #7 (started 2026-11-03T10:00:00Z)
+pending_next_issue: none
+agent version: v0.9.0

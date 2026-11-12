@@ -1,0 +1,10 @@
+#!/bin/sh
+# Fake `gh`: the legacy-helpers test makes no GitHub calls, so any invocation
+# is a test bug. It logs argv like the fake docker, then fails.
+
+set -eu
+
+# shellcheck disable=SC1091 # resolved at runtime from STUB_LIB, not statically
+. "${STUB_LIB:?STUB_LIB is not set}/log-argv.sh"
+log_argv gh "$@"
+stub_fail "stub gh: no recorded reply (the test makes no GitHub calls)"

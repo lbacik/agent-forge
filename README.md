@@ -272,6 +272,26 @@ The workflow only calls that script: to add an assertion about the rendered
 Compose model (for example "service X carries label Y"), extend the script's
 assertion section instead of editing the workflow.
 
+Every pull request also runs the legacy helper check
+([`legacy-helpers.yml`](.github/workflows/legacy-helpers.yml)). It parses
+every skill script with its shebang shell, shellchecks them, and runs the
+`debug-agent` helpers (`locate-agent.sh`, `fetch-run.sh`, `pool-status.sh`)
+for an unlabelled container against a stubbed Docker — recorded replies, no
+Docker host, no real agent, no secrets — asserting each helper's argv, stdout
+and exit status.
+
+Run the same check locally (needs only a POSIX shell, no Docker):
+
+```bash
+.agents/skills/debug-agent/tests/legacy-helpers.sh
+```
+
+The workflow only calls that script: to pin more behaviour, add a case to the
+script plus its golden file under
+`.agents/skills/debug-agent/tests/golden/`, or a new recorded reply under
+`.agents/skills/debug-agent/tests/stub/replies/`, instead of editing the
+workflow.
+
 ## Relationship to simple-coding-agent-env
 
 The skills and templates originate from `../simple-coding-agent-env`. They
