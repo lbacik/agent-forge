@@ -1,0 +1,201 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lbacik/coding-agent/main/schemas/workflow-v2.schema.json
+# Workflow Configuration (`version: 2`) for the coding-agent instance
+# dedicated to {{OWNER}}/{{REPO}}: one `implement` Workflow (issue in, pull
+# request out). Rendered by the create-agent skill from this template; the
+# operator guide is coding-agent's docs/ops/workflow-configuration.md, and
+# the step-workflow runtime contract is the authority. Validate edits with
+#   docker compose run --rm -v ./workflow:/etc/coding-agent:ro agent config validate \
+#     --config /etc/coding-agent/workflow.yml --workflow implement
+# with the token variable `target.token-env` names and the model's
+# `api-key-env` set in the environment (contract §3: still required).
+#
+# One Worker runs one Workflow. Editing this file affects the next Attempt,
+# never one already open. Values that are credentials never appear here:
+# `target.token-env` and each model's `api-key-env` name environment
+# variables only; the values live in `.env`. A value that looks like a
+# secret where a name belongs fails validation.
+
+version: 2
+
+target:
+  kind: github
+  repository: {{OWNER}}/{{REPO}}
+  base-branch: {{BASE_BRANCH}}
+  token-env: GITHUB_TOKEN
+
+models:
+  # The Attempt's one Pinned Model. The (provider, model) pair and its
+  # endpoint must come from the code-owned table in coding-agent's
+  # `src/coding_agent/provider/config.py` at CODING_AGENT_REF — at the
+  # documented ref two pins exist:
+  #
+  #   provider: anthropic | model: claude-sonnet-5    | endpoint: messages
+  #   provider: openai    | model: gpt-5.6-luna       | endpoint: responses
+  #
+  # Any other pair, or another endpoint for the provider, refuses startup.
+  # The context window and the per-request output cap for the pair stay in
+  # code; `effort` is low, medium or high. `prices-usd-per-mtok` is this
+  # pin's configured prices, the Worker's only cost authority: the operator
+  # confirms them (defaults below are the code-owned table's public list
+  # pricing). `input` prices only the uncached remainder of the prompt.
+  main:
+    provider: {{PROVIDER}}
+    model: {{MODEL}}
+    endpoint: {{ENDPOINT}}
+    effort: medium
+    api-key-env: {{API_KEY_ENV}}
+    prices-usd-per-mtok: {input: {{PRICE_INPUT}}, output: {{PRICE_OUTPUT}}, cache-read: {{PRICE_CACHE_READ}}, cache-write: {{PRICE_CACHE_WRITE}}}
+
+worker:
+  poll-interval-seconds: 60             # idle sleep between sweeps (spends the owner's rate limit)
+  shutdown-grace-seconds: 30            # time to finalise after SIGTERM; keep below compose.yaml's stop_grace_period (60s)
+
+workflows:
+
+  # ---------------------------------------------------------------------------
+  # Implementation: issue in, pull request out.
+  # Policy expressed here, not in the runtime: readiness first, tests via the
+  # Validation Contract, a separate self-review before publishing, a PR only
+  # when validation passed on the pushed revision.
+  # ---------------------------------------------------------------------------
+  implement:
+    model: main                         # the Attempt's one Pinned Model
+    input:
+      type: issue
+      label: {{SELECTION_LABEL}}        # Selection Label (human-applied, checked)
+      exclude: [ready-for-human, wontfix]
+      skip-open-agent-pr: true          # skip an issue whose own agent PR is still open
+    limits:                             # Attempt Ceiling (mandatory, all four meters)
+      cost-usd: {{LIMIT_COST_USD}}
+      tokens: {{LIMIT_TOKENS}}
+      tool-calls: {{LIMIT_TOOL_CALLS}}
+      wall-clock-minutes: {{LIMIT_WALL_CLOCK_MINUTES}}
+    max-parallel-subagents: 2
+    outcomes:                           # end labels per Terminal Outcome (runtime applies them)
+      blocked: {labels: [ready-for-human]}
+      unfinished: {labels: [ready-for-human]}
+      failed: {labels: [ready-for-human]}
+      internal-failure: {labels: [ready-for-human]}
+
+    start: preflight
+    defaults:
+      max-executions: 1
+      routes:                           # only runtime-reserved results may appear here
+        error: hard-handoff
+        limit-exceeded: hard-handoff
+
+    steps:
+
+      preflight:                                    # role: Preflight
+        operation: check-readiness
+        routes:
+          ready: process
+          not-ready: {end: blocked}
+
+      process:                                      # role: Process
+        agent:
+          instructions:
+            - skill: implement
+            - prompt: prompts/implement-policy.md
+          tools: [workspace-read, workspace-write, shell, tests, subagents]
+          inputs:
+            - optional: validate.facts              # why the last validation failed
+            - optional: self-review.changes-needed.findings
+          results:
+            done:
+              criteria: {list: evidence-ref}        # each test id must have passed on the current tree
+              summary: document
+            blocked:
+              reason: document
+        max-executions: 3
+        limits: {cost-usd: 12}                      # Step Allowance, shared by all three executions
+        routes:
+          done: validate
+          blocked: explain-blocked
+          limit-exceeded: ai-handoff                # only Process gets the AI-assisted Handoff
+
+      validate:
+        operation: run-validation
+        max-executions: 3
+        routes:
+          passed: self-review
+          failed: process
+
+      self-review:
+        agent:
+          instructions:
+            - skill: code-review
+          tools: [workspace-read, subagents]
+          inputs:
+            - process.done.summary
+          results:
+            approved: {}
+            changes-needed:
+              findings: document
+        max-executions: 2
+        limits: {cost-usd: 3}
+        routes:
+          approved: push
+          changes-needed: process
+
+      push:                                         # role: Finish
+        operation: commit-and-push
+        routes:
+          pushed: open-pr
+          no-changes: {end: blocked}
+
+      open-pr:
+        operation: open-pull-request              # title: fixed runtime template over the issue title
+        with:
+          body: process.done.summary
+          draft: false
+          requires: [run-validation: passed]
+        routes:
+          opened: {end: completed}
+          already-open: {end: completed}
+          requirement-unmet: hard-handoff
+
+      explain-blocked:
+        operation: post-comment
+        with:
+          body: process.blocked.reason
+        routes:
+          posted: {end: blocked}
+
+      ai-handoff:                                   # role: Handoff (AI-assisted)
+        agent:
+          instructions:
+            - prompt: prompts/handoff.md
+          tools: [workspace-read]
+          inputs:
+            - process.facts
+          results:
+            handoff:
+              note: document
+        # Reserved Step: a complete allowance carved out of the Attempt Ceiling, so
+        # Work Pool = 19 USD / 3,850,000 tokens / 570 tool calls / 55 minutes.
+        reserved: true
+        limits: {cost-usd: 1, tokens: 150000, tool-calls: 30, wall-clock-minutes: 5}
+        routes:
+          handoff: handoff-push
+
+      handoff-push:
+        operation: commit-and-push
+        routes:
+          pushed: handoff-comment
+          no-changes: handoff-comment
+
+      handoff-comment:
+        operation: post-comment
+        with:
+          body: ai-handoff.handoff.note
+        routes:
+          posted: {end: unfinished}
+
+      hard-handoff:                                 # role: Handoff (Hard, no model)
+        operation: commit-and-push
+        routes:
+          pushed: {end: unfinished}
+          no-changes: {end: unfinished}
+          error: {end: failed}
+          limit-exceeded: {end: failed}             # must override the default (no self-cycle)

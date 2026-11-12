@@ -3,16 +3,20 @@
 #
 # Renders the simple-coding-agent templates (compose.yaml and
 # compose.litellm.yaml, .env/.env.example from the env example template, and
-# the Dockerfile) with placeholder values and no secrets into scratch
-# directories, then runs `docker compose config` on the plain, the LiteLLM,
-# the contract-labels and the contract-labels Pool variants. Exits non-zero
-# when a rendered result is not a valid Compose model.
+# the Dockerfile) and the coding-agent templates (compose.yaml,
+# .env/.env.example and workflow/workflow.yml) with placeholder values and no
+# secrets into scratch directories, then runs `docker compose config` on the
+# plain, the LiteLLM, the contract-labels, the contract-labels Pool and the
+# coding-agent variants. Exits non-zero when a rendered result is not a valid
+# Compose model.
 #
 # The contract-labels variants simulate an AGENT_SRC_REF that speaks the
 # operator contract (no release does yet — see the create-agent skill,
 # "Contract discovery labels"): the labels blocks the template carries are
 # kept instead of deleted. The plain and LiteLLM variants render without
 # labels and must stay byte-identical in the Compose model to today's layout.
+# The coding-agent variant always carries its four discovery labels on the
+# worker only (see references/coding-agent.md).
 #
 # Usage (from anywhere in this repository):
 #
@@ -20,11 +24,12 @@
 #
 # The CI workflow (.github/workflows/render-check.yml) runs this same script on
 # every pull request. To add an assertion about the rendered Compose model (for
-# example "service X carries label Y"), extend the assertions in check_instance
-# or check_contract_instance below; the workflow file needs no changes.
+# example "service X carries label Y"), extend the assertions in check_instance,
+# check_contract_instance or check_coding_agent_instance below; the workflow
+# file needs no changes.
 #
-# Requires Docker with Compose v2.17 or newer (the template uses
-# additional_contexts).
+# Requires Docker with Compose v2.17 or newer (the simple-coding-agent
+# template uses additional_contexts).
 
 set -eu
 
@@ -44,6 +49,24 @@ PH_MAX_BUDGET_TOKENS=4000000
 PH_SOFT_THRESHOLD_PERCENTAGE=0.3
 PH_NODE_MAJOR=22
 PH_GATEWAY_NETWORK=test-gateway-net
+# coding-agent adapter placeholders. Prices are the code-owned table's public
+# list pricing at the documented ref; limits mirror coding-agent's own
+# implement example.
+PH_CODING_AGENT_REF=main
+PH_BASE_BRANCH=main
+PH_SELECTION_LABEL=agent:implement
+PH_PROVIDER=anthropic
+PH_MODEL=claude-sonnet-5
+PH_ENDPOINT=messages
+PH_API_KEY_ENV=ANTHROPIC_API_KEY
+PH_PRICE_INPUT=2.00
+PH_PRICE_OUTPUT=10.00
+PH_PRICE_CACHE_READ=0.20
+PH_PRICE_CACHE_WRITE=2.50
+PH_LIMIT_COST_USD=20
+PH_LIMIT_TOKENS=4000000
+PH_LIMIT_TOOL_CALLS=600
+PH_LIMIT_WALL_CLOCK_MINUTES=60
 
 WORK_ROOT=""
 
@@ -170,7 +193,7 @@ assert_no_placeholders() {
 
 # assert_no_secrets ENV_FILE LABEL -- credential keys stay empty or absent.
 assert_no_secrets() {
-  for key in GITHUB_TOKEN META_API_KEY MODEL_API_KEY; do
+  for key in GITHUB_TOKEN META_API_KEY MODEL_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY; do
     value=$(grep -E "^${key}=" "$1" | cut -d '=' -f 2-)
     if [ -n "$value" ]; then
       fail "$2: $1 sets $key (the check runs with no secrets)"
@@ -283,6 +306,129 @@ check_contract_instance() {
   done
 }
 
+# check_coding_agent_instance DIR LABEL -- `docker compose config` must accept
+# the rendered coding-agent directory, and the resulting model must carry the
+# adapter's shape: three services sharing one state volume, all four
+# discovery labels on the worker and on no one-off service, the worker's
+# hardening (never restarted, init, read-only root filesystem, the Workflow
+# Configuration mounted read-only), the exact stop grace on the rendered
+# file, and the Compose project name equal to the instance directory name.
+# The rendered Workflow Configuration must name credentials by environment
+# variable only and carry a Selection Label that satisfies coding-agent's
+# rules.
+#
+# Add new model assertions here; the CI workflow needs no changes.
+check_coding_agent_instance() {
+  dir=$1
+  label=$2
+  instance_dir_name=$(basename "$dir")
+  info "checking $label instance"
+  if ! config_output=$(compose_config "$dir"); then
+    fail "$label: 'docker compose config' failed"
+  fi
+  # The Compose project is the directory name: the template sets no `name:`.
+  assert_contains "$config_output" "name: $instance_dir_name" \
+    "$label: Compose project name is not the instance directory name"
+  for service in worker agent validate; do
+    assert_contains "$config_output" "  $service:" \
+      "$label: $service service missing from the Compose model"
+  done
+  assert_contains "$config_output" "coding-agent:$PH_SHORT_NAME" \
+    "$label: image tag missing from the Compose model"
+  assert_contains "$config_output" '/var/lib/coding-agent' \
+    "$label: state path missing from the Compose model"
+  # `docker compose config` rewrites the short `./workflow:/etc/coding-agent:ro`
+  # into the long syntax, so look for `read_only: true` inside the volume
+  # entry whose target is /etc/coding-agent rather than for the `:ro` suffix.
+  if ! printf '%s\n' "$config_output" | awk '
+      /^ *- / { in_entry = 0 }
+      /^ *target: \/etc\/coding-agent$/ { in_entry = 1; next }
+      in_entry && /^ *read_only: true$/ { found = 1 }
+      END { exit !found }'; then
+    fail "$label: Workflow Configuration is not mounted read-only"
+  fi
+  assert_contains "$config_output" '/var/lib/coding-agent/operator' \
+    "$label: private-IPC tmpfs missing from the Compose model"
+  assert_contains "$config_output" 'stop_grace_period:' \
+    "$label: stop_grace_period missing from the Compose model"
+  # All four discovery labels appear exactly once in the whole model: on the
+  # worker, never on a one-off seat.
+  for key in contract instance exec-user backend; do
+    key_count=$(printf '%s\n' "$config_output" | grep -cF -- "io.github.lbacik.agent-operator.$key" || true)
+    if [ "$key_count" != 1 ]; then
+      fail "$label: discovery label '$key' on $key_count services, want 1 (worker only)"
+    fi
+  done
+  assert_line_matches "$config_output" \
+    "io\\.github\\.lbacik\\.agent-operator\\.contract: (\"1\"|1)\$" \
+    "$label: contract label is not major 1"
+  assert_contains "$config_output" 'io.github.lbacik.agent-operator.instance: '"$PH_SHORT_NAME" \
+    "$label: instance label is not $PH_SHORT_NAME"
+  assert_contains "$config_output" 'io.github.lbacik.agent-operator.exec-user: agent' \
+    "$label: exec-user label is not agent"
+  assert_not_contains "$config_output" 'agent-operator.exec-user: root' \
+    "$label: exec-user label must not be root"
+  assert_contains "$config_output" 'io.github.lbacik.agent-operator.backend: coding-agent' \
+    "$label: backend label is not coding-agent"
+  # Hardening: exactly one restart line (the worker, never restarted), one
+  # init (the worker), and a read-only root filesystem on every service.
+  restart_count=$(printf '%s\n' "$config_output" | grep -c -- 'restart:' || true)
+  if [ "$restart_count" != 1 ]; then
+    fail "$label: want exactly one restart: line (worker), found $restart_count"
+  fi
+  assert_line_matches "$config_output" \
+    "restart: ['\"]?no['\"]?\$" \
+    "$label: worker is not restart: no"
+  init_count=$(printf '%s\n' "$config_output" | grep -c -- 'init: true' || true)
+  if [ "$init_count" != 1 ]; then
+    fail "$label: want exactly one init: true line (worker), found $init_count"
+  fi
+  # Service-level keys only (four-space indent): the read-only bind mount of
+  # the Workflow Configuration carries its own, deeper `read_only: true`.
+  read_only_count=$(printf '%s\n' "$config_output" | grep -c -- '^    read_only: true$' || true)
+  if [ "$read_only_count" != 3 ]; then
+    fail "$label: want read_only: true on all three services, found $read_only_count"
+  fi
+  # The rendered file (not the model: durations may normalise) keeps the
+  # grace above the Workflow Configuration's shutdown grace.
+  if ! grep -qF -- 'stop_grace_period: 60s' "$dir/compose.yaml"; then
+    fail "$label: compose.yaml lost stop_grace_period: 60s"
+  fi
+  # The rendered Workflow Configuration: repository, branch, credentials by
+  # environment-variable name only, a lawful Selection Label, limits.
+  workflow_content=$(cat "$dir/workflow/workflow.yml")
+  assert_contains "$workflow_content" "repository: $PH_OWNER/$PH_REPO" \
+    "$label: workflow.yml target repository is not $PH_OWNER/$PH_REPO"
+  assert_contains "$workflow_content" "base-branch: $PH_BASE_BRANCH" \
+    "$label: workflow.yml base branch is not $PH_BASE_BRANCH"
+  assert_contains "$workflow_content" 'token-env: GITHUB_TOKEN' \
+    "$label: workflow.yml token-env does not name an environment variable"
+  assert_contains "$workflow_content" "api-key-env: $PH_API_KEY_ENV" \
+    "$label: workflow.yml api-key-env does not name an environment variable"
+  assert_contains "$workflow_content" "label: $PH_SELECTION_LABEL" \
+    "$label: workflow.yml Selection Label is not $PH_SELECTION_LABEL"
+  assert_not_contains "$workflow_content" 'label: ready-for-human' \
+    "$label: workflow.yml Selection Label breaks coding-agent's rules"
+  assert_not_contains "$workflow_content" 'label: wontfix' \
+    "$label: workflow.yml Selection Label breaks coding-agent's rules"
+  assert_not_contains "$workflow_content" 'wayfinder' \
+    "$label: workflow.yml Selection Label breaks coding-agent's rules"
+  assert_contains "$workflow_content" "cost-usd: $PH_LIMIT_COST_USD" \
+    "$label: workflow.yml Attempt Ceiling is incomplete"
+  assert_not_contains "$workflow_content" 'sk-' \
+    "$label: workflow.yml names a secret value, not an environment variable"
+  env_content=$(cat "$dir/.env")
+  assert_contains "$env_content" "TARGET_REPO=$PH_OWNER/$PH_REPO" \
+    "$label: .env TARGET_REPO is not $PH_OWNER/$PH_REPO"
+  assert_contains "$env_content" "CODING_AGENT_REF=$PH_CODING_AGENT_REF" \
+    "$label: .env CODING_AGENT_REF is not $PH_CODING_AGENT_REF"
+  for prompt in implement-policy.md handoff.md; do
+    if [ ! -f "$dir/workflow/prompts/$prompt" ]; then
+      fail "$label: workflow/prompts/$prompt missing"
+    fi
+  done
+}
+
 # assert_no_agent_operator FILE MESSAGE -- Forge never bakes discovery labels
 # into the image: neither the Dockerfile template nor a rendered Dockerfile
 # may mention agent-operator (discovery labels are Compose labels:, never an
@@ -322,6 +468,74 @@ MODEL_NAME=muse-spark-1.3-contributor
 EOF
 }
 
+# render_coding_agent_compose SRC DST -- the coding-agent compose.yaml: owner,
+# repo and short name to substitute (the engine ref lives in .env as
+# CODING_AGENT_REF, read through ${...} interpolation like AGENT_SRC_REF).
+render_coding_agent_compose() {
+  sed -e "s|{{OWNER}}|$PH_OWNER|g" \
+    -e "s|{{REPO}}|$PH_REPO|g" \
+    -e "s|{{SHORT_NAME}}|$PH_SHORT_NAME|g" "$1" >"$2"
+}
+
+# render_coding_agent_env SRC DST -- .env/.env.example from the coding-agent
+# env example template.
+render_coding_agent_env() {
+  sed -e "s|{{OWNER}}|$PH_OWNER|g" \
+    -e "s|{{REPO}}|$PH_REPO|g" \
+    -e "s|{{CODING_AGENT_REF}}|$PH_CODING_AGENT_REF|g" \
+    "$1" >"$2"
+}
+
+# render_coding_agent_workflow SRC DST -- workflow/workflow.yml from the
+# coding-agent Workflow Configuration template.
+render_coding_agent_workflow() {
+  sed -e "s|{{OWNER}}|$PH_OWNER|g" \
+    -e "s|{{REPO}}|$PH_REPO|g" \
+    -e "s|{{BASE_BRANCH}}|$PH_BASE_BRANCH|g" \
+    -e "s|{{SELECTION_LABEL}}|$PH_SELECTION_LABEL|g" \
+    -e "s|{{PROVIDER}}|$PH_PROVIDER|g" \
+    -e "s|{{MODEL}}|$PH_MODEL|g" \
+    -e "s|{{ENDPOINT}}|$PH_ENDPOINT|g" \
+    -e "s|{{API_KEY_ENV}}|$PH_API_KEY_ENV|g" \
+    -e "s|{{PRICE_INPUT}}|$PH_PRICE_INPUT|g" \
+    -e "s|{{PRICE_OUTPUT}}|$PH_PRICE_OUTPUT|g" \
+    -e "s|{{PRICE_CACHE_READ}}|$PH_PRICE_CACHE_READ|g" \
+    -e "s|{{PRICE_CACHE_WRITE}}|$PH_PRICE_CACHE_WRITE|g" \
+    -e "s|{{LIMIT_COST_USD}}|$PH_LIMIT_COST_USD|g" \
+    -e "s|{{LIMIT_TOKENS}}|$PH_LIMIT_TOKENS|g" \
+    -e "s|{{LIMIT_TOOL_CALLS}}|$PH_LIMIT_TOOL_CALLS|g" \
+    -e "s|{{LIMIT_WALL_CLOCK_MINUTES}}|$PH_LIMIT_WALL_CLOCK_MINUTES|g" \
+    "$1" >"$2"
+}
+
+# render_coding_agent_prompts DIR -- stub prompt files with the names the
+# rendered workflow.yml references. The skill copies the real contents from
+# the CODING_AGENT_REF checkout (step 3b); the check only proves the layout
+# the validation stats exists.
+render_coding_agent_prompts() {
+  mkdir -p "$1/workflow/prompts" ||
+    fail 'coding-agent: cannot create workflow/prompts directory'
+  for prompt in implement-policy.md handoff.md; do
+    printf '# render-check: prompt stub for %s.\n' "$prompt" \
+      >"$1/workflow/prompts/$prompt"
+  done
+}
+
+# render_coding_agent DIR -- one scratch coding-agent instance: compose.yaml,
+# .env/.env.example, workflow/workflow.yml and stub prompt files.
+render_coding_agent() {
+  render_coding_agent_compose \
+    "$ASSETS_DIR/compose.coding-agent.yaml.template" "$1/compose.yaml"
+  render_coding_agent_env "$ASSETS_DIR/env.coding-agent.example.template" \
+    "$1/.env.example"
+  cp "$1/.env.example" "$1/.env"
+  mkdir -p "$1/workflow" ||
+    fail 'coding-agent: cannot create workflow directory'
+  render_coding_agent_workflow \
+    "$ASSETS_DIR/workflow.coding-agent.yml.template" "$1/workflow/workflow.yml"
+  render_coding_agent_prompts "$1"
+}
+
 main() {
   command -v docker >/dev/null 2>&1 ||
     fail 'docker not found (needs Docker with Compose v2.17 or newer)'
@@ -335,8 +549,9 @@ main() {
   litellm_dir="$WORK_ROOT/litellm"
   contract_dir="$WORK_ROOT/contract"
   contract_pool_dir="$WORK_ROOT/contract-pool"
+  coding_agent_dir="$WORK_ROOT/agent-$PH_SHORT_NAME"
   mkdir -p "$plain_dir" "$litellm_dir" "$contract_dir" \
-    "$contract_pool_dir" ||
+    "$contract_pool_dir" "$coding_agent_dir" ||
     fail 'cannot create scratch instance directories'
 
   info 'rendering plain instance'
@@ -347,6 +562,8 @@ main() {
   render_instance "$contract_dir" labels 1
   info 'rendering contract-labels Pool instance'
   render_instance "$contract_pool_dir" labels 2
+  info 'rendering coding-agent instance'
+  render_coding_agent "$coding_agent_dir"
 
   # Forge never bakes discovery labels into the image; the legacy role image
   # label belongs to simple-coding-agent's own discovery and stays.
@@ -357,10 +574,20 @@ main() {
     fail 'Dockerfile template lost the legacy role image label'
   fi
 
+  # The coding-agent template fixes no project name (the directory is the
+  # project) and renders no Pool: an <n> worker must never appear in it.
+  if grep -qE '^name:' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
+    fail 'compose.coding-agent.yaml.template sets a project name (the directory is the project)'
+  fi
+  if grep -qF '<n>' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
+    fail 'compose.coding-agent.yaml.template renders a Pool (this backend runs one Worker)'
+  fi
+
   assert_no_placeholders "$plain_dir" 'plain'
   assert_no_placeholders "$litellm_dir" 'litellm'
   assert_no_placeholders "$contract_dir" 'contract'
   assert_no_placeholders "$contract_pool_dir" 'contract-pool'
+  assert_no_placeholders "$coding_agent_dir" 'coding-agent'
   assert_no_secrets "$plain_dir/.env" 'plain'
   assert_no_secrets "$plain_dir/.env.example" 'plain'
   assert_no_secrets "$litellm_dir/.env" 'litellm'
@@ -369,6 +596,8 @@ main() {
   assert_no_secrets "$contract_dir/.env.example" 'contract'
   assert_no_secrets "$contract_pool_dir/.env" 'contract-pool'
   assert_no_secrets "$contract_pool_dir/.env.example" 'contract-pool'
+  assert_no_secrets "$coding_agent_dir/.env" 'coding-agent'
+  assert_no_secrets "$coding_agent_dir/.env.example" 'coding-agent'
   assert_no_agent_operator "$plain_dir/Dockerfile" \
     'plain: Dockerfile mentions agent-operator'
   assert_no_agent_operator "$contract_dir/Dockerfile" \
@@ -381,6 +610,7 @@ main() {
   check_contract_instance "$contract_dir" 'contract' 1 "$PH_SHORT_NAME"
   check_contract_instance "$contract_pool_dir" 'contract-pool' 2 \
     "$PH_SHORT_NAME" "$PH_SHORT_NAME-2"
+  check_coding_agent_instance "$coding_agent_dir" 'coding-agent'
 
   info 'PASS: all variants render to a valid Compose model with no secrets'
 }

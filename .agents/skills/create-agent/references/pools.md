@@ -1,9 +1,11 @@
-# Pools of N Workers
+# Pools of N Workers (simple-coding-agent only)
 
 Read this when an Instance gets N>=2 Workers, shares its Worker identity with
 another Instance, or has a Worker with its own Worker identity. The rules
 every Instance needs are in SKILL.md, "Pools"; terms are defined in
-`CONTEXT.md`.
+`CONTEXT.md`. The coding-agent adapter never renders a Pool — exactly one
+Worker per Target Repository and state volume — so this reference does not
+apply to it; see `references/coding-agent.md` instead.
 
 ## Worker identities
 
@@ -28,8 +30,7 @@ When `AGENT_SRC_REF` speaks the operator contract (no release does yet — see
 every Worker service this Pool renders carries all four discovery labels:
 `agent` with the instance name `<short-name>`, each `agent-<n>` with its
 Worker id `<short-name>-<n>`, and the backend label naming the engine backend
-from step 0 (`simple-coding-agent`; the `coding-agent` adapter is not
-available yet). The labels are set through Compose `labels:`
+from step 0 (`simple-coding-agent`). The labels are set through Compose `labels:`
 only, never as an image `LABEL`, so one-off containers stay unlabelled.
 A Pool of N ≥ 2 Workers on the contract path requires `pool` in the
 `identity.capabilities` the running instance reports; without it the backend
