@@ -71,10 +71,31 @@ Worker identity, or when a Worker has its own identity.
   another Instance on the same `TARGET_REPO` that the user says acts as the
   same login. Such a Worker's stanza sets `WORKER_ID` and the commit author
   `Claude Code (<worker-id>)`. N=1 on an identity of its own runs without one.
+- **Contract discovery labels.** Every managed Worker service (`agent` and
+  `agent-2..N`) carries four Compose `labels:` when `AGENT_SRC_REF` speaks
+  the operator contract (its `agentctl` answers `agentctl --contract 1`):
+  `io.github.lbacik.agent-operator.contract` = `1`,
+  `io.github.lbacik.agent-operator.instance` = the Managed Instance name,
+  `io.github.lbacik.agent-operator.exec-user` = `agent` (the non-root user
+  both engine images run as),
+  `io.github.lbacik.agent-operator.backend` = `simple-coding-agent`. The
+  first Worker's instance name is `<short-name>`; Worker n ≥ 2 uses its
+  Worker id `<short-name>-<n>`. Both must match
+  `^[a-z0-9][a-z0-9-]{0,62}$`: refuse a short name that would produce a
+  non-matching name — for N Workers check `<short-name>-<N>` too — and ask
+  the user for another. When a Worker id is rendered, its own scheme (above)
+  still applies on top. The labels are set through Compose `labels:` only,
+  never as an image `LABEL`, so one-off containers (`docker compose run`)
+  are never labelled (contract consumers ignore one-offs anyway). The legacy
+  role image label in the Dockerfile belongs to simple-coding-agent's own
+  discovery and is not touched.
 - **Minimum upstream.** A Worker id needs `AGENT_SRC_REF` `v0.7.0` or newer
   (lbacik/simple-coding-agent#302); N>=2 on one identity needs `v0.9.0` or
   newer, the first release with the startup recovery fix of
-  lbacik/simple-coding-agent#364.
+  lbacik/simple-coding-agent#364. Contract discovery labels need a ref whose
+  `agentctl` speaks the contract; until simple-coding-agent#334 ships a
+  release, no ref qualifies and every instance renders without labels.
+  Record the minimum release tag here once it exists.
 - **Hard rule.** Never run Workers of different Claim protocol versions on
   one Worker identity. Moving an identity to N>=2 follows the order in
   `references/pools.md` (release, stop and drain every Worker on it, upgrade
@@ -98,7 +119,10 @@ can determine by reading the repository.
 - Refuse to overwrite an existing `agent-instances/agent-*` directory; ask
   instead. Create `agent-instances/` itself if it doesn't exist yet.
 - Number of Workers N: 1 unless the user asks for more. Check the Worker id
-  scheme in "Pools" against the short name.
+  scheme and the contract instance-name pattern in "Pools" against the short
+  name (`<short-name>` and `<short-name>-<N>` must each match
+  `^[a-z0-9][a-z0-9-]{0,62}$`); refuse a short name that fails either and
+  ask for another.
 - Look for other Instances on the same repository, listing file names only so
   no token is read into the output:
 
@@ -148,6 +172,10 @@ context resolves like `git checkout <ref>` (works for tags, branches and
 commit SHAs alike). Don't ask for one unprompted; only use a non-`main` ref
 when the user gave it. A rendered Worker id needs a minimum ref ("Pools",
 "Minimum upstream"): if a pinned ref is older, ask the user to bump it.
+Contract discovery labels need a ref whose `agentctl` speaks the contract;
+until simple-coding-agent#334 ships a release, no ref qualifies ("Pools",
+"Minimum upstream"): render the instance without labels. The minimum release
+tag will be recorded there once it exists.
 
 Shallow-clone that same ref into the scratchpad and read, at that commit
 (`git clone --depth 1 --branch <AGENT_SRC_REF> ...` — for a bare commit SHA,
@@ -313,6 +341,11 @@ render the Workers (see "Pools"):
 - Repeat the `agent-<n>` stanza and its `data_<n>` volume for n = 2..N,
   replacing `<n>`; for N=1 delete both. Delete the stanza's `env_file` unless
   that Worker has its own Worker identity (`references/pools.md`).
+- Render the contract discovery labels ("Pools", "Contract discovery
+  labels") only when `AGENT_SRC_REF` speaks the contract; otherwise delete
+  both labels blocks — the rendered model is then unchanged from today.
+  Never set them as an image `LABEL`; ad hoc `docker compose run`
+  containers are never labelled.
 - If the anchor's `environment:` block was deleted, delete every
   `<<: *worker-environment` line too.
 - No `{{...}}` or `<n>` may remain.
@@ -439,7 +472,10 @@ contents, pull requests and issues need read & write.
   `docker compose config` shows, on every Worker service, `init: true`, the
   `cpus` / `mem_limit` / `pids_limit` limits and its own volume; with a
   Worker id, a distinct `WORKER_ID` and the matching `GIT_AUTHOR_NAME` per
-  Worker; and `build:` on `agent` only. For LiteLLM, also check that it lists
+  Worker; and `build:` on `agent` only. When the ref speaks the contract,
+  every managed Worker service carries all four discovery labels with its
+  own instance name; otherwise no service carries an `agent-operator` label.
+  For LiteLLM, also check that it lists
   the gateway network on every Worker.
 - The split-environment check: in the built image, as `agent` in a target
   clone and *without* the profile's `env:`, run the app's config dump or
@@ -470,6 +506,8 @@ other Instance found on the same repository), which
 `simple-coding-agent` ref the image builds from (`main`, or the pinned tag —
 and if pinned, that rebuilds won't pick up new agent code until `AGENT_SRC_REF`
 in `.env` is bumped or changed back to `main`, then rebuilt — no other file
-needs editing), token check result, what was and wasn't validated, and the
+needs editing), whether the contract discovery labels were rendered and why
+(the ref speaks the contract, or no release does yet so the instance stays
+on the legacy path), token check result, what was and wasn't validated, and the
 start command (`cd agent-instances/agent-<name> && docker compose up --build -d`).
 The instance is ignored by Git, so there is nothing to commit there.

@@ -1,0 +1,18 @@
+# legacy-helpers: pin the legacy debug-agent helpers against stubbed Docker.
+#
+# The assertions live in the script this workflow calls; to pin more
+# behaviour, add a case to the script plus its golden files, not this file.
+name: legacy-helpers
+
+on:
+  pull_request:
+
+jobs:
+  legacy:
+    name: Pin legacy debug-agent helpers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Parse, shellcheck and pin legacy debug-agent helpers
+        run: .agents/skills/debug-agent/tests/legacy-helpers.sh

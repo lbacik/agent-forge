@@ -1,0 +1,6 @@
+agent_dir:       @T@/instances/agent-duo
+docker_context:  orbstack (local)
+compose_project: agent-duo
+workers:         1,2 (use --worker <n|worker-id> to inspect one Worker)
+worker 1 (duo-1): service=agent container=agent-duo-agent-1 volume=agent-duo_agent_data
+worker 2 (duo-2): service=agent-2 container=agent-duo-agent-2-1 volume=agent-duo_data_2

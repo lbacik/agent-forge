@@ -1,0 +1,12 @@
+agent_dir:       @T@/instances/agent-solo
+docker_context:  rpi5 (remote)
+compose_project: agent-solo
+worker:          2 (solo-2)
+service:         agent-2
+container:       agent-solo-agent-2-1 (not created)
+container_state: unknown
+image:           unknown
+volume:          agent-solo_data_2
+data_access:     remote - read with fetch-run.sh, then work on the local copy
+local_cache:     @T@/home/.cache/simple-coding-agent-env/rpi5/agent-solo/solo-2   (mirrors /data/logs/...)
+state_files:

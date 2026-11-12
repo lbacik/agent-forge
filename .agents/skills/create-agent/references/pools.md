@@ -21,6 +21,15 @@ every Instance needs are in SKILL.md, "Pools"; terms are defined in
   `PEER_LOGINS` in `.env` listing all their logins (see `.env.example`); ask
   the user before setting it.
 
+## Contract discovery labels
+
+When `AGENT_SRC_REF` speaks the operator contract (no release does yet — see
+`SKILL.md`, "Pools", "Contract discovery labels" and "Minimum upstream"),
+every Worker service this Pool renders carries all four discovery labels:
+`agent` with the instance name `<short-name>`, each `agent-<n>` with its
+Worker id `<short-name>-<n>`. The labels are set through Compose `labels:`
+only, never as an image `LABEL`, so one-off containers stay unlabelled.
+
 ## Hard rule and the order to N>=2
 
 Never run Workers of different Claim protocol versions on one Worker

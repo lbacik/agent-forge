@@ -1,0 +1,4 @@
+CTX=orbstack docker ps -a --filter label=com.docker.compose.project=agent-duo --filter label=com.docker.compose.service=agent --format {{.Names}}
+CTX=orbstack docker inspect -f '{{.State.Status}}|{{.State.ExitCode}}|{{.State.StartedAt}}|{{.Config.Image}}' agent-duo-agent-1
+CTX=orbstack docker ps -a --filter label=com.docker.compose.project=agent-duo --filter label=com.docker.compose.service=agent --format {{.Names}}
+CTX=orbstack docker ps -a --filter label=com.docker.compose.project=agent-duo --filter label=com.docker.compose.service=agent-2 --format {{.Names}}

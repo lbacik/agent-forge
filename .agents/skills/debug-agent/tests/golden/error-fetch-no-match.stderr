@@ -1,0 +1,5 @@
+error: no agent directory matches 'zzz-no-such'. Available:
+  agent-amb-one
+  agent-amb-two
+  agent-duo
+  agent-solo

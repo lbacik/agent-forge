@@ -129,6 +129,19 @@ Worker on the login, upgrade and set `WORKER_ID` on all of them at once, and
 only then add Workers. The `create-agent` skill describes the order in
 `references/pools.md`; `manage-pool` carries it out for an existing instance.
 
+**Contract discovery labels.** When the `AGENT_SRC_REF` the instance builds
+from speaks the operator contract (its `agentctl` answers
+`agentctl --contract 1`), every managed Worker service (`agent` and
+`agent-2..N`) carries four Compose `labels:` — contract major `1`, the
+Managed Instance name (`<short-name>`, or the Worker id `<short-name>-<n>`
+for Worker n ≥ 2), exec user `agent` and backend `simple-coding-agent` — so
+contract consumers route the instance to the contract path. The labels are
+never baked into the image, and one-off containers are never labelled.
+Until simple-coding-agent ships the contract (simple-coding-agent#334), no
+ref qualifies and every instance renders without labels, staying on the
+legacy path exactly as today. The minimum release tag will be recorded in
+the `create-agent` skill once it exists.
+
 ### 2. Build
 
 Run Compose commands from the instance directory:
@@ -237,6 +250,47 @@ project root:
 
 They default to the `orbstack` Docker context; pass `--context <name>` for another
 context.
+
+## Continuous integration
+
+Every pull request runs the template render check
+([`render-check.yml`](.github/workflows/render-check.yml)). It renders the
+`create-agent` templates with placeholder values — no secrets — and runs
+`docker compose config` on four Compose variants to prove each result is a
+valid Compose model: plain and LiteLLM without labels (a ref that does not
+speak the operator contract, unchanged from today's layout), and an N=1
+instance plus an N=2 Pool with the contract discovery labels kept on every
+managed Worker service.
+
+Run the same check locally (needs Docker with Compose v2.17 or newer):
+
+```bash
+.agents/skills/create-agent/tests/render-check.sh
+```
+
+The workflow only calls that script: to add an assertion about the rendered
+Compose model (for example "service X carries label Y"), extend the script's
+assertion section instead of editing the workflow.
+
+Every pull request also runs the legacy helper check
+([`legacy-helpers.yml`](.github/workflows/legacy-helpers.yml)). It parses
+every skill script with its shebang shell, shellchecks them, and runs the
+`debug-agent` helpers (`locate-agent.sh`, `fetch-run.sh`, `pool-status.sh`)
+for an unlabelled container against a stubbed Docker — recorded replies, no
+Docker host, no real agent, no secrets — asserting each helper's argv, stdout
+and exit status.
+
+Run the same check locally (needs only a POSIX shell, no Docker):
+
+```bash
+.agents/skills/debug-agent/tests/legacy-helpers.sh
+```
+
+The workflow only calls that script: to pin more behaviour, add a case to the
+script plus its golden file under
+`.agents/skills/debug-agent/tests/golden/`, or a new recorded reply under
+`.agents/skills/debug-agent/tests/stub/replies/`, instead of editing the
+workflow.
 
 ## Operator contract
 

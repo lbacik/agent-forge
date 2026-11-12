@@ -1,0 +1,11 @@
+instance:        agent-duo (project agent-duo) on context orbstack (local)
+worker 1 (first Worker) service=agent:
+  container:           agent-duo-agent-1 [Up 3 hours]
+  intake:              running
+  active_attempt:      issue #7 (started 2026-11-03T10:00:00Z)
+  pending_next_issue:  none
+worker 2 (duo-2) service=agent-2:
+  container:           agent-duo-agent-2-1 [Up 3 hours]
+  intake:              running
+  active_attempt:      issue #7 (started 2026-11-04T10:00:00Z)
+  pending_next_issue:  none

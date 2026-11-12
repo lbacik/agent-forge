@@ -1,0 +1,3 @@
+CTX=rpi5 docker ps -a --filter label=com.docker.compose.project=agent-solo --filter label=com.docker.compose.service=agent --format {{.Names}}
+CTX=rpi5 docker inspect -f '{{.State.Status}}|{{.State.ExitCode}}|{{.State.StartedAt}}|{{.Config.Image}}' agent-solo-agent-1
+CTX=rpi5 docker exec -u agent -w /data agent-solo-agent-1 sh -c 'ls logs/42 2>/dev/null | sort'

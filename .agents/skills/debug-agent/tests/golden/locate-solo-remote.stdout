@@ -1,0 +1,12 @@
+agent_dir:       @T@/instances/agent-solo
+docker_context:  rpi5 (remote)
+compose_project: agent-solo
+container:       agent-solo-agent-1
+container_state: running (exit 0, started 2026-11-10T10:00:00Z)
+image:           agent-solo-image:latest
+volume:          agent-solo_agent_data
+data_access:     remote - read with fetch-run.sh, then work on the local copy
+local_cache:     @T@/home/.cache/simple-coding-agent-env/rpi5/agent-solo   (mirrors /data/logs/...)
+state_files:
+  consecutive_errors.json: {"consecutive_errors":0}
+issues_with_logs: 42 

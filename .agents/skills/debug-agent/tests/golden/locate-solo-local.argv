@@ -1,0 +1,2 @@
+CTX=orbstack docker ps -a --filter label=com.docker.compose.project=agent-solo --filter label=com.docker.compose.service=agent --format {{.Names}}
+CTX=orbstack docker inspect -f '{{.State.Status}}|{{.State.ExitCode}}|{{.State.StartedAt}}|{{.Config.Image}}' agent-solo-agent-1

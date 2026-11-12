@@ -1,0 +1,1 @@
+agent|agent-solo-agent-1|exited|Exited (2) 1 hour ago

@@ -1,0 +1,1 @@
+exited|2|2026-11-10T09:00:00Z|agent-solo-image:latest

@@ -1,0 +1,13 @@
+agent_dir:       @T@/instances/agent-duo
+docker_context:  orbstack (local)
+compose_project: agent-duo
+worker:          2 (duo-2)
+service:         agent-2
+container:       agent-duo-agent-2-1
+container_state: running (exit 0, started 2026-11-10T11:05:00Z)
+image:           agent-duo-image:latest
+volume:          agent-duo_data_2
+host_data:       @T@/home/OrbStack/docker/volumes/agent-duo_data_2   (= /data in the container)
+state_files:
+  consecutive_errors.json: {"consecutive_errors":2}
+issues_with_logs: 7 
