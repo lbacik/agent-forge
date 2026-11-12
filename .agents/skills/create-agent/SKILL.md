@@ -329,9 +329,17 @@ Shallow-clone that same ref into the scratchpad and read, at that commit:
   instance's `workflow/prompts/` (step 5). They carry no placeholders.
 
 Then run the target checkout checks in `references/coding-agent.md` ("Target
-checkout checks"): a missing Project Profile is reported for the operator to
-decide; an out-of-matrix runtime requirement is an Unsupported Environment —
-ask before scaffolding anyway.
+checkout checks") against the step-2 checkout at its default branch (the
+revision that becomes `target.base_branch` in step 5), before
+writing anything: confirm `docs/agents/project-profile.yml` exists there,
+and that its declared toolchain is inside the Supported Toolchain Matrix at
+the chosen `CODING_AGENT_REF`. A missing Project Profile is reported (searched
+location and revision) and scaffolding continues only on the operator's
+explicit decision (AskUserQuestion). An out-of-matrix runtime requirement is
+reported as an Unsupported Environment naming the offending runtime and the
+supported range, and the skill asks before scaffolding anyway. When the
+profile is present and the toolchain matches, proceed without prompting.
+Never write a Forge-owned profile on this path.
 
 ### 4. Analyze the target stack (simple-coding-agent)
 
@@ -671,8 +679,12 @@ model and its route (and, for LiteLLM, the gateway network), and the Workers
 (N, their Worker ids or why none was rendered, the resource limits);
 for coding-agent — the Workflow Configuration (Target Repository, Selection
 Label, limits, model pin and confirmed prices), that there is exactly one
-Worker and no Pool, and the target checkout check result (Project Profile
-found, toolchain matrix match or Unsupported Environment). In both cases:
+Worker and no Pool, that no Forge-owned profile was generated (the
+repository-owned `docs/agents/project-profile.yml` stays the only profile),
+and the target checkout check result (Project Profile found at its searched
+location and revision, toolchain matrix match at the chosen ref, or the
+reported miss / Unsupported Environment with the operator's decision). In
+both cases:
 the target Docker context and the Fleet check result — which Fleet was listed
 and that no other instance holds the repository, or which one does; which
 engine ref the image builds from (`AGENT_SRC_REF` or `CODING_AGENT_REF`:

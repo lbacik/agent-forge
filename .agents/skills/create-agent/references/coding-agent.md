@@ -105,18 +105,71 @@ are the Worker's only cost authority.
 ## Target checkout checks (no Forge profile)
 
 There is no Forge-owned profile for this backend: the Target Repository's
-own Project Profile, read at the Base Revision, stays the only profile. At
-scaffolding time, check the target checkout and report before writing
-anything:
+own Project Profile, read at the Base Revision, stays the only profile. No
+`simple-coding-agent-profile.yml` is written, no Dockerfile `STACK` block is
+rendered, and nothing is baked into the image under
+`/opt/agent-profile/` — the repository-owned profile is the only profile,
+and the Worker pins it at Claim time. At scaffolding time, run both checks
+below against the target checkout and report before writing anything. When
+both pass, scaffold without further prompts; when either fails, ask the
+operator (AskUserQuestion) and continue only on an explicit decision to
+proceed.
 
-- The checkout contains its own Project Profile. A missing profile is
-  reported and the operator decides.
-- The runtime versions the profile declares are inside the image's Supported
-  Toolchain Matrix (`/opt/coding-agent/toolchain-matrix.json` in the image,
-  generated at build time from the toolchains the build produced — Python
-  with uv, PHP with Composer, Node with pnpm). An out-of-matrix requirement
-  is reported as an Unsupported Environment, and the skill asks before
-  scaffolding anyway.
+### 1. The Project Profile exists
+
+The canonical location is `docs/agents/project-profile.yml` in the Target
+Repository at the Base Revision (the default branch that becomes
+`target.base_branch` in step 5). Read it from the target checkout used in
+step 2 — the working tree at that branch, or
+`git show <base>:docs/agents/project-profile.yml` — never from prose
+fallbacks (`AGENTS.md`, `CLAUDE.md`, `docs/agents/*` other than the profile
+itself): upstream resolves no Readiness Fact from prose.
+
+- When the file is present, record that the Project Profile was found (and
+  its `schema`, `language` and `toolchain` for the next check) and move on
+  to check 2.
+- When it is absent, report the miss naming the searched location and the
+  revision (for example: "no `docs/agents/project-profile.yml` at
+  `<base>` of `<owner>/<repo>`"), and ask the operator whether to scaffold
+  anyway. Scaffolding continues only on the operator's explicit decision —
+  without a profile the Worker cannot reach readiness, so say so in the
+  report.
+
+### 2. The declared toolchain is inside the Supported Toolchain Matrix
+
+The profile declares one toolchain: `language` selects the runtime key
+(`python` → `python`, `php` → `php`, `typescript` → `node`), and
+`toolchain.<runtime>` plus `toolchain.package_manager` name the required
+runtime version and package manager. The image provides exactly the
+Supported Toolchain Matrix — Python with uv, PHP with Composer, Node with
+pnpm — published at `/opt/coding-agent/toolchain-matrix.json`, generated at
+build time from the toolchains the build actually produced (never
+hand-copied). At scaffolding time the matrix belongs to the chosen
+`CODING_AGENT_REF`: read the supported versions from a matrix that ref
+generates when one is available (`scripts/generate-toolchain-matrix.py`, or
+`CODING_AGENT_TOOLCHAIN_MATRIX` / `--toolchain-matrix`) — otherwise from
+that ref checkout's `Dockerfile` `ARG` pins (`PYTHON_IMAGE`, `PHP_VERSION`,
+`NODE_VERSION`, `UV_VERSION`, `COMPOSER_VERSION`, `PNPM_VERSION`), the build
+inputs the generated matrix records. A generated matrix wins over the pins
+when both exist.
+
+Compare the profile against that matrix the way the Worker will at runtime:
+
+- A declared version is satisfied by prefix match on dotted segments:
+  declared `3.13` is satisfied by an image carrying `3.13.9`, while declared
+  `3.1` is not satisfied by `3.13.9`.
+- The declared package manager name must equal the matrix's for that
+  runtime (`uv` for Python, `composer` for PHP, `pnpm` for Node).
+- A runtime the matrix does not carry at all is a mismatch.
+
+When every declared requirement is satisfied, record the match and scaffold
+without prompting. Otherwise report the requirement as an Unsupported
+Environment, naming the offending runtime and the supported range (for
+example: "profile declares `python 3.12`, image matrix at `<ref>` carries
+`3.13.9` with `uv <uv-version>`"), and ask the operator whether to scaffold
+anyway. Scaffolding continues only on the operator's explicit decision —
+no answer at scaffolding time can make that image satisfy the profile, only
+a different deployment can, so say so in the report.
 
 ## Validation
 
