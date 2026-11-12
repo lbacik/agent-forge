@@ -80,6 +80,21 @@ services:
       additional_contexts:
         agent-src: https://github.com/lbacik/simple-coding-agent.git#${AGENT_SRC_REF:-main}
     image: simple-coding-agent:{{SHORT_NAME}}
+    # Contract discovery labels (operator contract major 1): keep this block
+    # only when AGENT_SRC_REF speaks the contract — its agentctl answers
+    # `agentctl --contract 1` (see the create-agent skill, "Contract discovery
+    # labels"); otherwise delete it. Until simple-coding-agent ships the
+    # contract (simple-coding-agent#334), no ref qualifies and every instance
+    # renders without it. Set through Compose `labels:`, never as an image
+    # LABEL, so one-off containers (`docker compose run`) stay unlabelled;
+    # consumers ignore one-offs anyway. The legacy role image LABEL in the
+    # Dockerfile is unrelated and stays untouched. The labels apply to every
+    # managed Worker service: `agent` here and `agent-2..N` below.
+    labels:
+      io.github.lbacik.agent-operator.contract: "1"
+      io.github.lbacik.agent-operator.instance: {{SHORT_NAME}}
+      io.github.lbacik.agent-operator.exec-user: "agent"
+      io.github.lbacik.agent-operator.backend: "simple-coding-agent"
     # Worker id: keep this block only when this Worker shares its GitHub
     # login (Worker identity) with another Worker, of this Instance or of
     # another Instance on {{OWNER}}/{{REPO}}; otherwise delete it. The id tells
@@ -100,6 +115,15 @@ services:
     <<: *worker
     image: simple-coding-agent:{{SHORT_NAME}}
     pull_policy: never
+    # Contract discovery labels, as for `agent` above: keep this block only
+    # when AGENT_SRC_REF speaks the contract; otherwise delete it. This
+    # Worker is a Managed Instance of its own, so it carries all four labels
+    # with its own instance name — its Worker id.
+    labels:
+      io.github.lbacik.agent-operator.contract: "1"
+      io.github.lbacik.agent-operator.instance: {{SHORT_NAME}}-<n>
+      io.github.lbacik.agent-operator.exec-user: "agent"
+      io.github.lbacik.agent-operator.backend: "simple-coding-agent"
     # Only for a Worker with its own Worker identity (its own GITHUB_TOKEN in
     # .env.worker-<n>, which overrides the shared file); otherwise delete.
     # The long syntax needs Docker Compose v2.24+.
