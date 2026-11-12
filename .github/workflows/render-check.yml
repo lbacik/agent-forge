@@ -1,0 +1,18 @@
+# render-check: prove the create-agent templates render to a valid Compose model.
+#
+# The assertions live in the script this workflow calls; to add one, edit the
+# script, not this file.
+name: render-check
+
+on:
+  pull_request:
+
+jobs:
+  render:
+    name: Render templates and validate Compose model
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Render templates and run docker compose config
+        run: .agents/skills/create-agent/tests/render-check.sh
