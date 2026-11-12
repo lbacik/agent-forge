@@ -6,11 +6,11 @@ Configuration and skills for running dedicated simple-coding-agent deployments, 
 
 **Instance**:
 The deployment directory `agent-instances/agent-<name>/` for one target repository: one image, one repository profile, one or more Workers.
-_Avoid_: Agent (ambiguous between the deployment and a running process)
+_Avoid_: Agent (ambiguous between the deployment and a running process), Managed Instance (that is one Worker)
 
 **Worker**:
 One running simple-coding-agent container of an Instance, with its own data volume and, when it shares its Worker identity with other Workers, its own Worker id.
-_Avoid_: Replica, agent, node; Managed Instance outside the contract mapping below
+_Avoid_: Replica, agent, node
 
 **Pool**:
 The set of Workers of one Instance that take issues from the same queue. Its Workers treat each other's attempt results as their own, so any Worker may continue an issue another Worker handed off.
@@ -44,14 +44,9 @@ _Avoid_: Retry, re-label, continuation (a continuation resumes unfinished work);
 The attempt a Worker makes after a Conflict requeue: it brings the already published pull request up to date with the base branch, publishes only when the result passes the repository's check, and does no new work on the issue.
 _Avoid_: Conflict-only attempt, resolver run
 
-## Operator contract
+### Operator contract
 
-These terms are used as defined in the [operator contract glossary](https://github.com/lbacik/agent-operator-contract/blob/v1.0.0/CONTEXT.md) at the pinned tag `v1.0.0`, and are not redefined here: Managed Instance, Fleet, Pool, Backend, Target Repository, Intake, Operator Command, Acknowledgement, Status Snapshot, Figure, Figure Basis, Attempt, Attempt Archive, Sealed, Offline Read, Halt. Where the two glossaries share a word, this file's meaning applies unless the contract one is named, as in "contract Pool".
+These terms are used as defined in the [operator contract glossary](https://github.com/lbacik/agent-operator-contract/blob/v1.0.0/CONTEXT.md) at the pinned tag `v1.0.0`, and are not redefined here: Managed Instance, Fleet, Pool, Backend, Target Repository, Operator Capability, Intake, Operator Command, Acknowledgement, Status Snapshot, Figure, Figure Basis, Attempt, Attempt Archive, Sealed, Offline Read, Halt. Where both glossaries use a word, this file's meaning applies unless the contract's is named, as in "contract Pool".
 
-**Worker ↔ Managed Instance**:
-Each Worker, running or stopped, is exactly one Managed Instance; an Instance holds one or more Managed Instances, one per Worker. Say Worker for the deployment and Managed Instance for what the contract addresses.
-_Avoid_: Calling an Instance a Managed Instance
-
-**Pool ↔ contract Pool**:
-A Pool is a contract Pool, so on the contract each of its Workers' Managed Instances must advertise the `pool` Operator Capability. Workers of different Instances that share a Queue settle Claims between them but are not a Pool.
-_Avoid_: Using a Fleet as a Pool (a Fleet shares no Queue)
+- **Worker ↔ Managed Instance**: each Worker managed through the contract is exactly one Managed Instance, so an Instance holds one or more Managed Instances, one per Worker.
+- **Pool ↔ contract Pool**: a Pool managed through the contract is a contract Pool, and its Managed Instances need the `pool` Operator Capability.
