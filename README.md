@@ -296,13 +296,56 @@ workflow.
 
 Agent Forge follows major 1 of the
 [agent operator contract](https://github.com/lbacik/agent-operator-contract),
-pinned to tag `v1.0.4`. This section is the one place the tag is named;
-everything else refers to the contract by its major. The contract's terms are
-defined in its
-[glossary at the pinned tag](https://github.com/lbacik/agent-operator-contract/blob/v1.0.4/CONTEXT.md),
-and [CONTEXT.md](CONTEXT.md) maps them to Forge's Instance, Worker and Pool.
-To move to a newer `v1.x.y`, change the tag here; a new major also means
-reviewing that mapping.
+pinned to tag `v1.0.4`. This section is the one place in the docs that names
+the tag (the one place in the skills is `CONTRACT_TAG` in
+`.agents/skills/debug-agent/scripts/lib/contract.sh`); everything else refers
+to the contract by its major. The contract's terms are defined in the contract
+repository's glossary at the pinned tag, and [CONTEXT.md](CONTEXT.md) maps them
+to Forge's Instance, Worker and Pool. To move to a newer `v1.x.y`, change the
+tag in both places; a new major also means reviewing that mapping.
+
+`agentfleet` — the host-side client shipped by the contract — is installed on
+the operator's host from the pinned tag. Forge ships no Python package and
+vendors no library code. To install it (from the repository root; the tag is
+read from the skills so it cannot drift from the pinned value):
+
+```bash
+tag=$(sed -n 's/^CONTRACT_TAG=//p' .agents/skills/debug-agent/scripts/lib/contract.sh | head -n 1)
+uv tool install "agent-operator-contract @ git+https://github.com/lbacik/agent-operator-contract@$tag"
+```
+
+`locate-agent.sh` picks one of two paths per container. A container carrying
+the `io.github.lbacik.agent-operator.contract` label is observed only through
+`agentfleet`: the helper first checks that `agentfleet` is present and speaks
+the expected contract major, and if not it stops with the install command —
+it never falls back to reading the container's files. The label is only a
+hint; compatibility is decided by `agentfleet`'s runtime `--contract` check,
+and a `contract_mismatch`, `unsupported` or `agent_unreachable` reply is
+reported as such, never retried through the legacy grammar. On the contract
+path the helper prints `agentfleet identity` plus a Status Snapshot summary
+(instance state and startup check, last Halt, Intake with pending stop, stop
+plan and priority, current Attempt with native phase and budget Figures, last
+finished Attempt, each with its `observed_at`); unknown Figures render as
+`unavailable`/`not_applicable`, never `0`. A container without the label stays
+on the legacy path: today's `locate-agent.sh` output (container, volume and
+`state/*.json` files), unchanged. The `--context` flag (default `orbstack`) is
+passed to `agentfleet` through the standard Docker context mechanism.
+
+Every pull request also runs the contract consumer suite
+([`contract-helpers.yml`](.github/workflows/contract-helpers.yml)) from the
+pinned tag — no copied fixtures. It installs `agentfleet` from the tag named
+in `contract.sh`, backs it with the suite's replaying fake `agentctl` behind
+the same stubbed Docker as the legacy regression check, and pins
+`locate-agent.sh` on the contract path: the prerequisite stop, per-Worker name
+resolution, `--context` propagation, the snapshot summary, and every failure
+class (success, rejection, `unsupported`, ambiguous outcome, contract mismatch
+with no legacy fallback, malformed stdout).
+
+Run the same check locally (needs `agentfleet` from the pinned tag, no Docker):
+
+```bash
+.agents/skills/debug-agent/tests/contract-helpers.sh
+```
 
 ## Relationship to simple-coding-agent-env
 
