@@ -75,6 +75,25 @@ if [ "$_use_contract" -eq 1 ]; then
     echo "error: agentfleet identity failed for managed instance '$_managed' (no legacy fallback)" >&2
     exit "$_code"
   fi
+  # The backend for the report line comes from the machine-readable envelope
+  # (the same read fetch-run.sh uses for its cache key); the human block above
+  # stays the report's identity section.
+  _idjson=$(mktemp) || exit 1
+  if ! contract_identity_envelope "$_managed" "$_idjson"; then
+    _code=$?
+    rm -f "$_idjson"
+    exit "$_code"
+  fi
+  _backend=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get("result",{}) if isinstance(d.get("result"),dict) else {}; sys.stdout.write(r.get("backend","") if isinstance(r.get("backend"),str) else "")' "$_idjson") || {
+    rm -f "$_idjson"
+    echo "error: cannot read backend from agentfleet identity for '$_managed'" >&2
+    exit 1
+  }
+  rm -f "$_idjson"
+  if [ -z "$_backend" ]; then
+    echo "error: agentfleet identity for '$_managed' names no backend" >&2
+    exit 1
+  fi
   echo "status_snapshot:"
   _tmp=$(mktemp) || exit 1
   _tmperr=$(mktemp) || { rm -f "$_tmp"; exit 1; }
@@ -126,9 +145,9 @@ if [ "$_use_contract" -eq 1 ]; then
     rm -rf "$_tmpdir"
   fi
   if [ -n "$issue" ]; then
-    echo "report:          context $context, forge instance $dir, managed instance $_managed, attempts for issue #$issue: $_ids (backend from identity above)"
+    echo "report:          context $context, forge instance $dir, managed instance $_managed, backend $_backend, attempts for issue #$issue: $_ids"
   else
-    echo "report:          context $context, forge instance $dir, managed instance $_managed (backend from identity above)"
+    echo "report:          context $context, forge instance $dir, managed instance $_managed, backend $_backend"
   fi
   exit 0
 fi

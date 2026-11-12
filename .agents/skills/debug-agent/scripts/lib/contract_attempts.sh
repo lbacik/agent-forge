@@ -138,7 +138,9 @@ contract_attempt_show() {
 
 # Export one Attempt Archive tar to a file. agentfleet verifies size and
 # `sha256` against the streamed manifest and refetches a torn read within
-# its bound; a tar that stays torn exits non-zero and nothing is cached.
+# its bound; a tar that stays torn exits non-zero and nothing is cached. The
+# caller still re-verifies the extracted copy (verify_archive.py): that layer
+# also repairs a cache that changed after a good export.
 contract_attempt_export() {
   _managed=$1
   _attempt=$2

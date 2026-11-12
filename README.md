@@ -331,20 +331,28 @@ on the legacy path: today's `locate-agent.sh` output (container, volume and
 `state/*.json` files), unchanged. The `--context` flag (default `orbstack`) is
 passed to `agentfleet` through the standard Docker context mechanism.
 
-Every pull request also runs the contract consumer suite
-([`contract-helpers.yml`](.github/workflows/contract-helpers.yml)) from the
-pinned tag — no copied fixtures. It installs `agentfleet` from the tag named
-in `contract.sh`, backs it with the suite's replaying fake `agentctl` behind
-the same stubbed Docker as the legacy regression check, and pins
-`locate-agent.sh` on the contract path: the prerequisite stop, per-Worker name
-resolution, `--context` propagation, the snapshot summary, and every failure
-class (success, rejection, `unsupported`, ambiguous outcome, contract mismatch
-with no legacy fallback, malformed stdout).
+Every pull request also runs the contract consumer suites
+([`contract-helpers.yml`](.github/workflows/contract-helpers.yml) and
+[`contract-attempts.yml`](.github/workflows/contract-attempts.yml)) from the
+pinned tag — no copied fixtures. They install `agentfleet` from the tag named
+in `contract.sh`, back it with the suite's replaying fake `agentctl` behind
+the same stubbed Docker as the legacy regression check, and pin the contract
+path: `contract-helpers.sh` pins `locate-agent.sh` (the prerequisite stop,
+per-Worker name resolution, `--context` propagation, the snapshot summary, and
+every failure class — success, rejection, `unsupported`, ambiguous outcome,
+contract mismatch with no legacy fallback, malformed stdout);
+`contract-attempts.sh` pins the Attempts listing and export (`locate-agent.sh`
+with an issue number across `attempts ls` pages with the opaque cursor,
+`fetch-run.sh` exporting Attempt Archives into the separate contract cache
+with Sealed reuse after `sha256` verification, moving snapshots, torn-read and
+Offline Read handling) and the log-layout reference, then runs the legacy
+regression.
 
-Run the same check locally (needs `agentfleet` from the pinned tag, no Docker):
+Run the same checks locally (needs `agentfleet` from the pinned tag, no Docker):
 
 ```bash
 .agents/skills/debug-agent/tests/contract-helpers.sh
+.agents/skills/debug-agent/tests/contract-attempts.sh
 ```
 
 ## Relationship to simple-coding-agent-env

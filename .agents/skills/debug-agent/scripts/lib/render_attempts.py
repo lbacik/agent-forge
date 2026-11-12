@@ -54,7 +54,7 @@ def render_attempt(entry):
     elif sealed is False:
         sealed_text = "false (moving snapshot: unsealed, fetched again on every request)"
     else:
-        sealed_text = str(sealed)
+        sealed_text = "unknown"
     attention = render_bool(entry.get("attention_required", ""))
     return (
         "attempt {}: issue #{} lifecycle {} native_outcome {} "

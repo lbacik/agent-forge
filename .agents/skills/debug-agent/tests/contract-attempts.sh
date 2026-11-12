@@ -59,6 +59,7 @@ setup_fixture() {
   : >"$ARGV_LOG"
   : >"$ERROR_LOG"
 
+  mkdir -p "$T_HOME/OrbStack/docker/volumes/agent-foo_agent_data" "$T_HOME/OrbStack/docker/volumes/agent-plain_agent_data"
   mkdir -p "$T_INSTANCES/agent-foo" "$T_INSTANCES/agent-plain"
   cat >"$T_INSTANCES/agent-foo/compose.yaml" <<'EOF'
 services:
@@ -294,7 +295,7 @@ main() {
   run_helper fetch-run.sh --context rpi5 foo 42 latest
   [ "$CODE" -eq 0 ] || fail "fetch unsealed: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
   assert_contains "$WORK_ROOT/out.txt" "moving snapshot" "fetch unsealed"
-  assert_contains "$WORK_ROOT/out.txt" "contract-attempts/rpi5/foo/coding-agent/example-owner%2Fexample-repo/%2342%2F1" "fetch unsealed cache path"
+  assert_contains "$WORK_ROOT/out.txt" "rpi5/foo/coding-agent/example-owner%2Fexample-repo/%2342%2F1" "fetch unsealed cache path"
   assert_contains "$WORK_ROOT/out.txt" "report: .*context rpi5.*managed instance foo.*backend coding-agent.*example-owner/example-repo.*#42/1" "fetch unsealed report"
   [ "$(export_count)" -ge 1 ] || fail "fetch unsealed: no attempts export in $(cat "$ARGV_LOG")"
   assert_no_file_reads "fetch unsealed"
@@ -313,7 +314,7 @@ main() {
   export AGENT_CONTRACT_CACHE="$WORK_ROOT/cache-sealed"
   run_helper fetch-run.sh --context rpi5 foo 41 latest
   [ "$CODE" -eq 0 ] || fail "fetch sealed: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
-  assert_contains "$WORK_ROOT/out.txt" "contract-attempts/rpi5/foo/coding-agent/example-owner%2Fexample-repo/%2341%2F1" "fetch sealed cache path"
+  assert_contains "$WORK_ROOT/out.txt" "rpi5/foo/coding-agent/example-owner%2Fexample-repo/%2341%2F1" "fetch sealed cache path"
   assert_not_contains "$WORK_ROOT/out.txt" "moving snapshot" "fetch sealed is not a moving snapshot"
   _dest41=$(head -n 1 "$WORK_ROOT/out.txt" | awk '{print $1}')
   [ -f "$_dest41/manifest.json" ] || fail "fetch sealed: no cached manifest.json"
