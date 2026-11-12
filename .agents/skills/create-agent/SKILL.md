@@ -1,13 +1,15 @@
 ---
 name: create-agent
-description: Create a new, dedicated agent instance (Dockerfile, compose.yaml, .env, .env.example and a local repository profile) for a GitHub repository, in this agent-forge project (always under `agent-instances/agent-<name>/`). The engine backend is simple-coding-agent by default (a coding-agent adapter is not available yet). Use this whenever the user gives a repository URL or owner/repo and wants an agent "for" it — e.g. "create an agent for https://github.com/x/y", "set up simple-coding-agent for my Go service", "przygotuj agenta dla ...", "new agent instance like agent-jsonhub-api" — even if they don't say "create-agent" explicitly.
+description: Create a new, dedicated agent instance (compose.yaml, .env, .env.example plus, per backend, a Dockerfile with a local repository profile or a Workflow Configuration) for a GitHub repository, in this agent-forge project (always under `agent-instances/agent-<name>/`). The engine backend is simple-coding-agent by default, coding-agent on request. Use this whenever the user gives a repository URL or owner/repo and wants an agent "for" it — e.g. "create an agent for https://github.com/x/y", "set up simple-coding-agent for my Go service", "przygotuj agenta dla ...", "new agent instance like agent-jsonhub-api" — even if they don't say "create-agent" explicitly.
 ---
 
 # create-agent
 
 Scaffold one `agent-instances/agent-<name>/` directory in this repo that builds
-and runs [simple-coding-agent](https://github.com/lbacik/simple-coding-agent)
-against a single target repository. `agent-instances/` is ignored by Git, so
+and runs one engine backend against a single target repository:
+[simple-coding-agent](https://github.com/lbacik/simple-coding-agent) by
+default, [coding-agent](https://github.com/lbacik/coding-agent) on request.
+`agent-instances/` is ignored by Git, so
 the instance and its secrets never get committed. Never create an instance
 anywhere else.
 
@@ -26,18 +28,21 @@ work from the templates alone:
   (Its profile still lives in the target repo — new agents should not copy that;
   keep the profile local as in web-terminal.)
 
-The output is always these files in `agent-instances/agent-<name>/`:
+The output is these files in `agent-instances/agent-<name>/`, depending on the
+backend chosen in step 0:
 
 | File | Source |
 |---|---|
-| `Dockerfile` | `assets/Dockerfile.template` + a stack block |
-| `compose.yaml` | `assets/compose.yaml.template`, one service per Worker |
-| `simple-coding-agent-profile.yml` | written from the target repo's CI |
-| `.env.example` | `assets/env.example.template` |
+| `Dockerfile` | simple-coding-agent only: `assets/Dockerfile.template` + a stack block |
+| `compose.yaml` | `assets/compose.yaml.template` (simple-coding-agent, one service per Worker) or `assets/compose.coding-agent.yaml.template` (coding-agent: labelled `worker`, unlabelled `agent` and `validate` seats) |
+| `simple-coding-agent-profile.yml` | simple-coding-agent only: written from the target repo's CI |
+| `workflow/workflow.yml` | coding-agent only: `assets/workflow.coding-agent.yml.template` |
+| `workflow/prompts/*.md` | coding-agent only: copied from the `CODING_AGENT_REF` checkout |
+| `.env.example` | `assets/env.example.template` (simple-coding-agent) or `assets/env.coding-agent.example.template` (coding-agent) |
 | `.env` | same as `.env.example` + real secrets (ignored with all of `agent-instances/`) |
-| `agent-entrypoint.sh` | only for the bundled-services shape |
-| `compose.litellm.yaml` | only for the LiteLLM backend: `assets/compose.litellm.yaml.template`, every Worker listed |
-| `.env.worker-<n>` | only for a Worker with its own Worker identity (its own `GITHUB_TOKEN`) |
+| `agent-entrypoint.sh` | only for the bundled-services shape (simple-coding-agent only) |
+| `compose.litellm.yaml` | only for the LiteLLM backend (simple-coding-agent only): `assets/compose.litellm.yaml.template`, every Worker listed |
+| `.env.worker-<n>` | only for a Worker with its own Worker identity (its own `GITHUB_TOKEN`; simple-coding-agent only) |
 
 The whole point of the profile is that the agent's `check:` must be red exactly
 when the target repo's CI gate would be red. Everything else follows from that.
@@ -79,8 +84,8 @@ Worker identity, or when a Worker has its own identity.
   `io.github.lbacik.agent-operator.exec-user` = `agent` (the non-root user
   the engine image runs as),
   `io.github.lbacik.agent-operator.backend` = the engine backend chosen in
-  step 0 (`simple-coding-agent`; the `coding-agent` adapter is not available
-  yet). The
+  step 0 (`simple-coding-agent`, or `coding-agent` with the adapter in
+  `references/coding-agent.md`). The
   first Worker's instance name is `<short-name>`; Worker n ≥ 2 uses its
   Worker id `<short-name>-<n>`. Both must match
   `^[a-z0-9][a-z0-9-]{0,62}$`: refuse a short name that would produce a
@@ -90,7 +95,9 @@ Worker identity, or when a Worker has its own identity.
   never as an image `LABEL`, so one-off containers (`docker compose run`)
   are never labelled (contract consumers ignore one-offs anyway). The legacy
   role image label in the Dockerfile belongs to simple-coding-agent's own
-  discovery and is not touched.
+  discovery and is not touched. (The coding-agent adapter in
+  `references/coding-agent.md` labels its single `worker` the same way and
+  never renders a Pool.)
 - **Minimum upstream.** A Worker id needs `AGENT_SRC_REF` `v0.7.0` or newer
   (lbacik/simple-coding-agent#302); N>=2 on one identity needs `v0.9.0` or
   newer, the first release with the startup recovery fix of
@@ -116,11 +123,14 @@ can determine by reading the repository.
   recommended option first): `simple-coding-agent` (default) or
   `coding-agent`. This is the deployment adapter (engine image, discovery
   labels, contract capabilities) — not the model route in
-  `references/model-backend.md`, which is chosen in step 1.
+  `references/model-backend.md` (simple-coding-agent only), which is chosen
+  in step 1.
 - The backend selects the deployment adapter; target identification, token
   verification and the report stay shared.
-- `coding-agent`: the adapter is not available yet. Say so and stop; do not
-  scaffold anything.
+- `coding-agent`: continue with the coding-agent adapter in
+  `references/coding-agent.md` — no instance Dockerfile, no stack block, no
+  Forge-owned profile, exactly one Worker. Steps 1–2 and 6 stay shared; steps
+  3, 5, 7 and 8 branch per backend as marked below.
 - `simple-coding-agent`: continue below; the flow is otherwise unchanged.
 
 ### 1. Identify the target
@@ -211,16 +221,21 @@ can determine by reading the repository.
     `references/pools.md` ("Hard rule and the order to N>=2") applies to the
     other Instance too. While no backend advertises `pool`, this question
     only matters for N>=2 Workers sharing this Instance's own login.
-- `AGENT_SRC_REF` (which commit of `simple-coding-agent` the image builds
-  from) defaults to `main`. If the user names a tag — e.g. "build it against
-  tag v1.4.0" — use that as `AGENT_SRC_REF` instead; see step 3. It's not a
-  one-time choice: it lands in `.env` as an ordinary setting, so it can be
-  changed later (and the image rebuilt) without touching any other file.
-- Ask which model the agent should use and recommend its route as
-  `references/model-backend.md` ("Choosing the route") says; read it now.
-  Offer the model an existing instance uses as an option.
-  The choice decides the `.env` model settings, `MAX_BUDGET_USD` and whether
-  `compose.litellm.yaml` is generated (step 5).
+- Engine ref (which commit the image builds from) defaults to `main`. If the
+  user names a tag — e.g. "build it against tag v1.4.0" — use that instead;
+  see step 3. It's not a one-time choice: it lands in `.env` as an ordinary
+  setting (`AGENT_SRC_REF` for simple-coding-agent, `CODING_AGENT_REF` for
+  coding-agent), so it can be changed later (and the image rebuilt) without
+  touching any other file.
+- Ask which model the agent should use. For simple-coding-agent, recommend
+  its route as `references/model-backend.md` ("Choosing the route") says;
+  read it now. Offer the model an existing instance uses as an option. The
+  choice decides the `.env` model settings, `MAX_BUDGET_USD` and whether
+  `compose.litellm.yaml` is generated (step 5). For coding-agent, choose the
+  model within the providers its Workflow Configuration supports at the ref
+  (Anthropic, OpenAI) and confirm its prices with the operator, as
+  `references/coding-agent.md` ("Model") says; there is no LiteLLM or Meta
+  route on this backend.
 
 ### 2. Get the target's source
 
@@ -237,10 +252,10 @@ existing instance's `.env` (`agent-instances/agent-*/.env`, else
 `../simple-coding-agent-env/agent-*/.env`) without printing it (e.g. via
 `gh repo clone` with `GH_TOKEN` set in the command's environment).
 
-### 3. Get the agent's source (`AGENT_SRC_REF`)
+### 3. Get the agent's source (`AGENT_SRC_REF`, simple-coding-agent)
 
-This step is the `simple-coding-agent` deployment adapter (the only adapter
-available; step 0 stops for `coding-agent`). Generated agents build from
+This step is the `simple-coding-agent` deployment adapter. For `coding-agent`
+see step 3b instead. Generated agents build from
 `https://github.com/lbacik/simple-coding-agent.git#<AGENT_SRC_REF>`, not the
 local checkout. `AGENT_SRC_REF` defaults to `main`; if the user names a tag
 (or branch/commit) of `simple-coding-agent` to pin instead, use that value
@@ -280,7 +295,48 @@ since shallow clones can't fetch an arbitrary commit by SHA):
   build. For such a ref, drop that step and tell the user that USD figures
   use the CLI's default-model rates.
 
-### 4. Analyze the target stack
+### 3b. Get the agent's source (`CODING_AGENT_REF`, coding-agent)
+
+This step is the `coding-agent` deployment adapter (step 0 chose it; the
+rest of steps 3–4 above do not apply — there is no stack block and no
+Forge profile). Generated agents build from
+`https://github.com/lbacik/coding-agent.git#<CODING_AGENT_REF>`, not a local
+checkout. `CODING_AGENT_REF` defaults to `main`; if the user names a tag (or
+branch/commit) to pin instead, use that value verbatim — it goes straight
+into the git URL fragment, which Docker resolves like `git checkout <ref>`.
+Don't ask for one unprompted.
+
+Shallow-clone that same ref into the scratchpad and read, at that commit:
+
+- `compose.yaml` — the deployment this adapter mirrors (services, hardening,
+  state path `/var/lib/coding-agent`, workflow mount). If the ref's
+  hardening or mount layout diverged from
+  `assets/compose.coding-agent.yaml.template` in a way that matters, follow
+  the ref and tell the user.
+- `src/coding_agent/provider/config.py` — the code-owned
+  (`provider`, `model`, `endpoint`) pins and their prices. Only a pair from
+  that table (Anthropic and OpenAI at the documented ref) may go into the
+  Workflow Configuration; anything else refuses startup.
+- `docs/ops/workflow-configuration.md` and `examples/workflows.yaml` (or
+  their equivalents at the ref) — the `version: 2` file shape and the
+  `implement` chain the template mirrors.
+- `src/coding_agent/agentctl.py` (the contract CLI) — whether it documents
+  a private-IPC socket directory needing the worker's operator tmpfs, and
+  which Operator Capabilities the Worker advertises. If the ref documents no
+  such directory, drop that tmpfs entry from the rendered `compose.yaml`.
+- `examples/prompts/implement-policy.md` and `examples/prompts/handoff.md`
+  (or their equivalents at the ref) — copy both verbatim into the
+  instance's `workflow/prompts/` (step 5). They carry no placeholders.
+
+Then run the target checkout checks in `references/coding-agent.md` ("Target
+checkout checks"): a missing Project Profile is reported for the operator to
+decide; an out-of-matrix runtime requirement is an Unsupported Environment —
+ask before scaffolding anyway.
+
+### 4. Analyze the target stack (simple-coding-agent)
+
+For `coding-agent`, skip this step: there is no stack block and no profile,
+and the target checkout checks already ran in step 3b.
 
 Read, in roughly this order:
 
@@ -311,6 +367,17 @@ for example:
   both; if impossible, say so.
 
 ### 5. Generate the files
+
+For `coding-agent`, generate the deployment from
+`references/coding-agent.md` instead of this step: `compose.yaml` from
+`assets/compose.coding-agent.yaml.template` (image tag
+`coding-agent:<short-name>`; the `build.context` URL reads the ref from
+`CODING_AGENT_REF` in `.env` — nothing to fill in here), `workflow/workflow.yml`
+from `assets/workflow.coding-agent.yml.template` with the prompt files copied
+from the ref checkout (step 3b), and `.env`/`.env.example` from
+`assets/env.coding-agent.example.template` with the real secrets. No
+`{{...}}` or prompt-file gap may remain: every prompt the YAML names must
+exist next to it. The rest of this step is simple-coding-agent only.
 
 **Dockerfile** — start from `assets/Dockerfile.template`. Replace the
 placeholders, and put the target's toolchain in the `STACK` block (language
@@ -541,6 +608,13 @@ contents, pull requests and issues need read & write.
 
 ### 7. Validate
 
+For `coding-agent`, validate as `references/coding-agent.md` ("Validation")
+says — `docker compose config -q`, `config validate` through the `agent`
+seat with the named variables set, `startup-check --repo` with the
+instance's token, the token-scope check of step 6, and the optional
+`validate` run against a target checkout — and report which passed and which
+remain unverified. The rest of this step is simple-coding-agent only.
+
 - Profile: load it with the agent's own loader from the cloned agent source
   (`python3 -c "from simple_coding_agent.config import load_repository_profile; ..."`
   with that clone on `sys.path`; needs PyYAML).
@@ -591,19 +665,26 @@ contents, pull requests and issues need read & write.
 ### 8. Report
 
 Tell the user in their language: the engine backend chosen in step 0, files
-created, stack decisions and the reasons
+created, and — for simple-coding-agent — stack decisions and the reasons
 for them (runtime version, included/excluded checks, bundled services), the
-model and its route (and, for LiteLLM, the gateway network), the Workers
-(N, their Worker ids or why none was rendered, the resource limits, the
-target Docker context, and the Fleet check result — which Fleet was listed
-and that no other instance holds the repository, or which one does), which
-engine ref the image builds from (`AGENT_SRC_REF`: `main`, or the pinned tag —
-and if pinned, that rebuilds won't pick up new agent code until `AGENT_SRC_REF`
-in `.env` is bumped or changed back to `main`, then rebuilt — no other file
-needs editing), whether the contract discovery labels were rendered and why
-(the ref speaks the contract, or no release does yet so the instance stays
-on the legacy path), token check result, what was and wasn't validated, and the
-start command (`cd agent-instances/agent-<name> && docker compose up --build -d`).
+model and its route (and, for LiteLLM, the gateway network), and the Workers
+(N, their Worker ids or why none was rendered, the resource limits);
+for coding-agent — the Workflow Configuration (Target Repository, Selection
+Label, limits, model pin and confirmed prices), that there is exactly one
+Worker and no Pool, and the target checkout check result (Project Profile
+found, toolchain matrix match or Unsupported Environment). In both cases:
+the target Docker context and the Fleet check result — which Fleet was listed
+and that no other instance holds the repository, or which one does; which
+engine ref the image builds from (`AGENT_SRC_REF` or `CODING_AGENT_REF`:
+`main`, or the pinned tag — and if pinned, that rebuilds won't pick up new
+agent code until the ref in `.env` is bumped or changed back to `main`, then
+rebuilt — no other file needs editing); whether the contract discovery labels
+were rendered and why (for simple-coding-agent, the ref speaks the contract,
+or no release does yet so the instance stays on the legacy path; for
+coding-agent, the `worker` is always labelled); token check result, what was
+and wasn't validated, and the start command
+(`cd agent-instances/agent-<name> && docker compose up --build -d` —
+`docker compose up --build -d worker` for coding-agent).
 The instance is ignored by Git, so there is nothing to commit there.
 Once the operator starts a contract instance, extend the report with
 `agentfleet identity` (engine backend, Target Repository, contract major,
@@ -611,3 +692,5 @@ Operator Capabilities) and readiness from the Status Snapshot
 (`instance.state`: ready when anything other than `starting`) for every
 Managed Instance — `<short-name>` and each `<short-name>-<n>`. Name a Pool
 (N ≥ 2) on the contract path only with `pool` in `identity.capabilities`.
+For coding-agent, report identity and readiness as unverified until the
+contract producer ships (step 4).

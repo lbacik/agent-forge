@@ -1,0 +1,171 @@
+# Deploys one coding-agent instance dedicated to {{OWNER}}/{{REPO}}.
+#
+# The image is built straight from the coding-agent git repository at the ref
+# named by CODING_AGENT_REF in .env (default main) — there is no instance
+# Dockerfile and no stack block: the toolchain is fixed by the image's
+# Supported Toolchain Matrix (coding-agent ADR 0001), not per instance. Change
+# the ref and rerun `docker compose build` to switch agent code; nothing else
+# here needs editing either way.
+#
+# The Compose project is the directory name: this file deliberately sets no
+# `name:` (coding-agent's own fixed `name: coding-agent` is not copied),
+# because the project name is the Instance identity on this Docker context.
+#
+# Services: `worker` is the one long-running process (`agent run`) and the
+# only Managed Instance, so it alone carries the contract discovery labels.
+# `agent` and `validate` are unlabelled one-off seats (`docker compose run
+# --rm ...`) sharing the worker's state volume: everything the CLI can do,
+# and one checkout validation, against the same ledger. Exactly one Worker
+# per Target Repository and state volume: Pool rendering never applies to
+# this backend (no backend advertises the `pool` Operator Capability yet), so
+# there is no `agent-2..N` stanza here and `manage-pool` does not apply.
+#
+# Hardening mirrors coding-agent's own deployment (its compose.yaml at the
+# chosen ref): read-only root filesystem with a writable /tmp on every
+# service, `init: true` plus `restart: "no"` on the worker (a startup refusal
+# or a Halt exits non-zero and is never restarted automatically, so a
+# Credential Failure cannot loop), and `stop_grace_period` above the
+# Workflow Configuration's `worker.shutdown-grace-seconds` (default 30 s),
+# or Docker would SIGKILL the Worker mid-finalisation.
+
+# Everything the services share. Each service merges it with `<<: *agent`.
+x-agent: &agent
+  # Runtime settings for the container. Values come from the shell or from
+  # the .env compose reads beside this file. GITHUB_TOKEN is the default the
+  # CLI looks for; SANDBOX_TOKEN is passed through so a sandbox credential
+  # can be selected with `--token-env SANDBOX_TOKEN` rather than copied
+  # under a second name. The model's key variable (ANTHROPIC_API_KEY or
+  # OPENAI_API_KEY, whichever the Workflow Configuration names in
+  # `models.<id>.api-key-env`) reaches only the worker below.
+  env_file:
+    - .env
+  build:
+    context: https://github.com/lbacik/coding-agent.git#${CODING_AGENT_REF:-main}
+  image: coding-agent:{{SHORT_NAME}}
+  # The image deliberately declares no entrypoint (its verification scripts
+  # run `bash` inside it); compose fixes one so a service's arguments read
+  # as the agent's own subcommand.
+  entrypoint: ["agent"]
+  read_only: true
+  tmpfs:
+    - /tmp
+  environment:
+    GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    SANDBOX_TOKEN: ${SANDBOX_TOKEN:-}
+  volumes:
+    - state:/var/lib/coding-agent
+
+services:
+  # The general-purpose seat. Everything the CLI can do, with the
+  # subcommand supplied at the command line:
+  #
+  #   docker compose run --rm agent startup-check --repo {{OWNER}}/{{REPO}}
+  #   docker compose run --rm agent config validate --config /etc/coding-agent/workflow.yml --workflow implement
+  #
+  # The Workflow Configuration lives in the instance's `workflow/` directory
+  # (mounted read-only on the worker only, as in coding-agent's own
+  # deployment). Commands that read it through this seat mount it
+  # explicitly, so this service stays a bare seat:
+  #
+  #   docker compose run --rm -v ./workflow:/etc/coding-agent:ro agent config validate \
+  #     --config /etc/coding-agent/workflow.yml --workflow implement
+  #
+  # with the token variable the YAML's `target.token-env` names and the
+  # model's `api-key-env` set in the environment. Never labelled: one-off
+  # containers are never Managed Instances.
+  agent:
+    <<: *agent
+    command: ["--help"]
+
+  # Validates one checkout against its own Project Profile. Point it at the
+  # checkout (mounted writable, because `bootstrap` installs into it);
+  # evidence is written to the state volume, not into the project:
+  #
+  #   TARGET_PROJECT=../my-project docker compose run --rm validate
+  #   TARGET_PROJECT=../my-project docker compose run --rm validate --skip-bootstrap \
+  #     --targeted tests/test_greeting.py
+  #
+  # TARGET_PROJECT has no usable default: `./target` only satisfies
+  # interpolation so that `docker compose config` passes with nothing set.
+  # Always set it to a real checkout when running this service. The two
+  # paths sit in the entrypoint rather than in `command` so that arguments
+  # given to `docker compose run` are appended to them instead of replacing
+  # them. Never labelled: a one-off seat, not a Managed Instance.
+  validate:
+    <<: *agent
+    volumes:
+      - state:/var/lib/coding-agent
+      - ${TARGET_PROJECT:-./target}:/var/lib/coding-agent/workspaces/target
+    # The two paths sit in the entrypoint rather than in `command` so that
+    # arguments given to `docker compose run` are appended to them instead
+    # of replacing them.
+    entrypoint:
+      - agent
+      - validate
+      - --project-dir
+      - /var/lib/coding-agent/workspaces/target
+      - --evidence-dir
+      - /var/lib/coding-agent/artifacts/target
+    command: []
+
+  # The Worker (step-workflow contract §4): `agent run` against the
+  # operator's `version: 2` Workflow Configuration in the instance's
+  # `workflow/` directory. It selects, claims and runs the selected
+  # Workflow's inputs one Attempt at a time until it halts.
+  #
+  #   docker compose up -d worker
+  #
+  # WORKFLOW selects the Workflow id (default `implement`). The token
+  # variable the YAML's `target.token-env` names and the model's
+  # `api-key-env` must be among the names passed below. This is the only
+  # labelled service: the deployment labels make this container — and only
+  # this one — a Managed Instance. They are set through the deployment,
+  # never as an image LABEL: the image is shared with the one-off `agent`
+  # and `validate` services above.
+  worker:
+    <<: *agent
+    restart: "no"
+    # Contract discovery labels (operator contract §2.1): contract major 1,
+    # this Instance's Managed Instance name, the non-root exec user the
+    # engine image runs as, and this backend. The name must match
+    # `^[a-z0-9][a-z0-9-]{0,62}$`.
+    labels:
+      io.github.lbacik.agent-operator.contract: "1"
+      io.github.lbacik.agent-operator.instance: {{SHORT_NAME}}
+      io.github.lbacik.agent-operator.exec-user: "agent"
+      io.github.lbacik.agent-operator.backend: "coding-agent"
+    # PID 1 in the image ignores SIGTERM without an installed handler, so
+    # the Worker installs one explicitly at startup and this init forwards
+    # the signal as well. `stop_grace_period` must stay above the Workflow
+    # Configuration's `worker.shutdown-grace-seconds` (default 30 s), or
+    # Docker would SIGKILL the Worker mid-finalisation.
+    init: true
+    stop_grace_period: 60s
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - state:/var/lib/coding-agent
+      - ${WORKFLOW_CONFIG_DIR:-./workflow}:/etc/coding-agent:ro
+    # The operator control socket directory: a tmpfs mount shadowing the
+    # state volume's `operator` subdirectory, so the Unix socket never
+    # touches the named volume. Only the worker carries it; `agent` and
+    # `validate` keep the base `/tmp` tmpfs alone. The listener enforces
+    # 0700 on the directory and 0600 on the socket; there is no network
+    # listener and no published port. If the chosen CODING_AGENT_REF's
+    # `agentctl` documents no such socket directory, drop this second entry
+    # (see the create-agent skill, references/coding-agent.md).
+    tmpfs:
+      - /tmp
+      - /var/lib/coding-agent/operator
+    command:
+      - run
+      - --config
+      - /etc/coding-agent/workflow.yml
+      - --workflow
+      - ${WORKFLOW:-implement}
+
+volumes:
+  state:
