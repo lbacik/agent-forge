@@ -32,6 +32,74 @@ fragment=${1:?usage: locate-agent.sh [--context <ctx>] [--worker <n|worker-id>] 
 issue=${2:-}
 
 . "$(dirname "$0")/lib/resolve.sh"
+. "$(dirname "$0")/lib/contract.sh"
+
+# Contract hint: the Compose model carries the discovery label only when the
+# ref speaks the contract. Unlabelled instances skip the extra inspect below,
+# so their argv and output stay exactly as today.
+_use_contract=0
+if [ -n "${container:-}" ] && [ -f "$root/$dir/compose.yaml" ] \
+  && grep -q "$CONTRACT_LABEL" "$root/$dir/compose.yaml" 2>/dev/null; then
+  _label=$(docker inspect -f '{{index .Config.Labels "io.github.lbacik.agent-operator.contract"}}' "$container" 2>/dev/null || true)
+  case "$_label" in
+    ""|"<no value>") _use_contract=0 ;;
+    *) _use_contract=1 ;;
+  esac
+fi
+
+if [ "$_use_contract" -eq 1 ]; then
+  if ! require_agentfleet; then
+    exit 3
+  fi
+  _managed=$(managed_instance_name "$short" "$worker_num" "${worker_id:-}")
+  echo "agent_dir:       $root/$dir"
+  echo "docker_context:  $context ($mode)"
+  echo "compose_project: $project"
+  echo "forge_instance:  $dir (short $short)"
+  echo "managed_instance: $_managed"
+  if [ -n "$worker" ]; then
+    if [ "$worker_num" -eq 1 ]; then
+      echo "worker:          1 (first Worker)"
+    else
+      echo "worker:          $worker_num ($worker_id)"
+    fi
+    echo "service:         $service"
+  fi
+  echo "container:       ${container:-${project}-${service}-1 (not created)}"
+  echo "container_state: $container_state"
+  echo "image:           ${image:-unknown}"
+  echo "agentfleet_identity:"
+  if ! agentfleet identity "$_managed"; then
+    _code=$?
+    echo "error: agentfleet identity failed for managed instance '$_managed' (no legacy fallback)" >&2
+    exit "$_code"
+  fi
+  echo "status_snapshot:"
+  _tmp=$(mktemp) || exit 1
+  _tmperr=$(mktemp) || { rm -f "$_tmp"; exit 1; }
+  if agentfleet status "$_managed" --json >"$_tmp" 2>"$_tmperr"; then
+    if ! python3 "$(dirname "$0")/lib/render_status.py" <"$_tmp"; then
+      _code=$?
+      echo "error: cannot render Status Snapshot for '$_managed'" >&2
+      cat "$_tmperr" >&2 || true
+      rm -f "$_tmp" "$_tmperr"
+      exit "$_code"
+    fi
+    rm -f "$_tmp" "$_tmperr"
+  else
+    _code=$?
+    cat "$_tmp" >&2 || true
+    cat "$_tmperr" >&2 || true
+    echo "error: agentfleet status failed for managed instance '$_managed' (no legacy fallback)" >&2
+    rm -f "$_tmp" "$_tmperr"
+    exit "$_code"
+  fi
+  if [ -n "$issue" ]; then
+    echo "note:            issue #$issue Attempts listing arrives in a later step; showing snapshot only"
+  fi
+  echo "report:          context $context, forge instance $dir, managed instance $_managed (backend from identity above)"
+  exit 0
+fi
 
 # With N>=2 and no --worker, list every Worker with container and volume
 # instead of guessing. N comes from the compose services on disk, so it works

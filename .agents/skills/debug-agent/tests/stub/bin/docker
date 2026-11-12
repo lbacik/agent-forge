@@ -24,9 +24,13 @@
 #
 # To extend the stub with new recorded replies without changing the helpers
 # (or this fake): add reply files under $STUB_SCENARIO_DIR/<project>/ and, for
-# a new project, list it in STUB_PROJECTS. The contract-path checks later put
-# `agentfleet`, backed by a replaying fake `agentctl`, behind this same
-# tests/stub/bin mechanism.
+# a new project, list it in STUB_PROJECTS. The contract-path checks put
+# `agentfleet`, backed by the suite's replaying fake `agentctl`, behind this
+# same tests/stub/bin mechanism: `ps` with the contract label serves
+# $scene/fleet.json, `inspect` without `-f` serves it as JSON, the per-container
+# contract label is read from $scene/<project>/contract-label-<container>.txt,
+# and `exec`/`run` of `/usr/local/bin/agentctl --contract ...` replays one
+# fixture from $CONTRACT_FIXTURES_DIR (the pinned tag checkout, never copied).
 #
 # This fake never delegates to a real docker: there is no code path here that
 # reaches a Docker host.
@@ -81,12 +85,22 @@ case "$cmd" in
   (ps)
     proj=""
     svc=""
+    contract_ps=0
     for a in "$@"; do
       case "$a" in
         (label=com.docker.compose.project=*) proj=${a#label=com.docker.compose.project=} ;;
         (label=com.docker.compose.service=*) svc=${a#label=com.docker.compose.service=} ;;
+        (label=io.github.lbacik.agent-operator.contract*) contract_ps=1 ;;
       esac
     done
+    if [ "$contract_ps" -eq 1 ]; then
+      # Fleet discovery for agentfleet: list IDs from fleet.json.
+      if [ -f "$scene/fleet.json" ]; then
+        python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); [print(c["id"]) for c in d.get("containers",[]) if isinstance(c,dict) and "id" in c]' "$scene/fleet.json"
+        exit 0
+      fi
+      exit 0
+    fi
     [ -n "$proj" ] || {
       stub_fail "stub docker: no recorded reply: ps without project filter"
     }
@@ -105,6 +119,67 @@ case "$cmd" in
     exit 0
     ;;
   (inspect)
+    has_format=0
+    label_format=0
+    for a in "$@"; do
+      case "$a" in
+        (-f) has_format=1 ;;
+        (*Config.Labels*contract*) label_format=1 ;;
+      esac
+    done
+    if [ "$label_format" -eq 1 ]; then
+      # Per-container contract label for path selection.
+      cont=""
+      for a in "$@"; do
+        case "$a" in
+          (-*|*'{{'*|*'}}'*) ;;
+          (*) cont=$a ;;
+        esac
+      done
+      proj=$(proj_of_container "$cont")
+      f="$scene/$proj/contract-label-$cont.txt"
+      if [ -f "$f" ]; then
+        cat "$f"
+      else
+        printf '\n'
+      fi
+      exit 0
+    fi
+    if [ "$has_format" -eq 0 ] && [ -f "$scene/fleet.json" ]; then
+      # Fleet discovery inspect: IDs -> JSON array with labels, state, mounts.
+      python3 - "$scene/fleet.json" "$@" <<'PY'
+import json, sys
+fleet_path = sys.argv[1]
+ids = sys.argv[2:]
+doc = json.load(open(fleet_path))
+by_id = {c["id"]: c for c in doc.get("containers", []) if isinstance(c, dict) and "id" in c}
+entries = []
+for cid in ids:
+    d = by_id.get(cid)
+    if d is None:
+        sys.stderr.write(f"fake docker: no such container: {cid}\n")
+        sys.exit(1)
+    labels = {
+        "io.github.lbacik.agent-operator.contract": str(d.get("contract", "1")),
+        "io.github.lbacik.agent-operator.instance": str(d.get("name", "")),
+        "io.github.lbacik.agent-operator.backend": str(d.get("backend", "")),
+        "io.github.lbacik.agent-operator.exec-user": str(d.get("exec_user", "")),
+    }
+    if d.get("oneoff") is True:
+        labels["com.docker.compose.oneoff"] = "True"
+    state = str(d.get("state", "running"))
+    mounts = []
+    for v in d.get("volumes", []) if isinstance(d.get("volumes"), list) else []:
+        if isinstance(v, dict) and v.get("name") and v.get("path"):
+            mounts.append({"Type": "volume", "Name": v["name"], "Source": v["name"], "Destination": v["path"]})
+    for b in d.get("binds", []) if isinstance(d.get("binds"), list) else []:
+        if isinstance(b, dict) and b.get("source") and b.get("path"):
+            mounts.append({"Type": "bind", "Source": b["source"], "Destination": b["path"]})
+    entries.append({"Id": cid, "Image": str(d.get("image", "example-image")), "Config": {"Labels": labels}, "Mounts": mounts, "State": {"Status": state, "Running": state == "running"}})
+sys.stdout.write(json.dumps(entries) + "\n")
+PY
+      exit 0
+    fi
     cont=""
     for a in "$@"; do
       case "$a" in
@@ -122,6 +197,40 @@ case "$cmd" in
     exit 0
     ;;
   (exec|run)
+    case " $* " in
+      (*"/usr/local/bin/agentctl"*--contract*)
+        # Contract agentctl replay for agentfleet (identity/status reads).
+        # Fixtures come from the pinned tag checkout, never copied:
+        # CONTRACT_FIXTURES_DIR points at its fixtures/agentctl/.
+        # CONTRACT_IDENTITY_FIXTURE / CONTRACT_STATUS_FIXTURE name the files.
+        _fixdir=${CONTRACT_FIXTURES_DIR:-}
+        _op=status
+        case " $* " in (*" identity "*) _op=identity ;; esac
+        if [ "$_op" = identity ]; then
+          _fix=${CONTRACT_IDENTITY_FIXTURE:-identity.json}
+        else
+          _fix=${CONTRACT_STATUS_FIXTURE:-status-active.json}
+        fi
+        if [ -z "$_fixdir" ]; then
+          stub_fail "stub docker: CONTRACT_FIXTURES_DIR is not set for contract agentctl replay"
+        fi
+        set +e
+        python3 - "$_fixdir/$_fix" <<'PYEOF'
+import base64, json, sys
+doc = json.load(open(sys.argv[1]))
+enc = doc.get("stdout_base64")
+if isinstance(enc, str) and enc:
+    sys.stdout.buffer.write(base64.b64decode(enc))
+    sys.stdout.buffer.flush()
+else:
+    sys.stdout.write(str(doc.get("stdout", "")))
+sys.stderr.write(str(doc.get("stderr", "")))
+sys.exit(int(doc.get("exit_code", 0)))
+PYEOF
+        _replay_code=$?
+        exit "$_replay_code"
+        ;;
+    esac
     script=""
     take_script=""
     skip_next=0
