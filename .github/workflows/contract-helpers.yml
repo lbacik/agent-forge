@@ -21,7 +21,9 @@ jobs:
         run: |
           tag=$(sed -n 's/^CONTRACT_TAG=//p' .agents/skills/debug-agent/scripts/lib/contract.sh | head -n 1)
           [ -n "$tag" ] || { echo "cannot read CONTRACT_TAG" >&2; exit 1; }
-          pip install "agent-operator-contract @ git+https://github.com/lbacik/agent-operator-contract@$tag"
+          # pipx, not `pip install --user`: the suite points HOME at a scratch
+          # dir, which hides user site-packages from a --user install.
+          pipx install "agent-operator-contract @ git+https://github.com/lbacik/agent-operator-contract@$tag"
           agentfleet --version
       - name: Pin contract-path locate-agent
         run: .agents/skills/debug-agent/tests/contract-helpers.sh
