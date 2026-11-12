@@ -63,6 +63,27 @@ its `observed_at`. Figures show their unit and Figure Basis; unknown values
 render as `unavailable`/`not_applicable`, never `0`. Native outcomes are shown
 as the backend labels them. No private state files are printed.
 
+Pass an issue number to list that issue's Attempts from `attempts ls` (filtered
+by issue on the client side, paged with the opaque cursor): each line names the
+native Attempt ID, the native outcome, the delivery, `attention_required` and
+`sealed`, with unsealed archives labelled as moving snapshots. On the contract
+path fetch the Attempt Archive into the separate contract cache with:
+
+```bash
+.claude/skills/debug-agent/scripts/fetch-run.sh [--context <ctx>] [--worker <n|worker-id>] <name-fragment> <issue> [<attempt-id>|latest|all]
+```
+
+`<attempt-id>` is the native Attempt ID (opaque: coding-agent uses
+`#<issue>/<n>`); `latest` is the newest Attempt of the issue. Only Sealed
+archives are reused (after `sha256` verification against the manifest);
+unsealed archives are moving snapshots, fetched again on every request. A
+stopped instance is read through Offline Read inside `agentfleet`: no
+`docker cp` and no throwaway container. Read the cached copy with Read, Grep
+and `jq` as today; the archive layout, Contract Events and backend notes are
+in `references/log-layout.md`. The backend's private state is a read-only,
+backend-specific fallback for when the contract is silent — flag such findings
+as outside the contract.
+
 ### Which Worker
 
 An Instance is one Compose project with one or more Workers. The first Worker
@@ -457,7 +478,9 @@ Tell the user:
   attempt results carry its worker id, so quote it when you name the run. For
   a contract-path report, name the docker context, the Forge Instance
   (directory), the Managed Instance name and the backend (from the identity
-  block), then the snapshot sections above.
+  block), then the snapshot sections above. When you listed or fetched Attempts,
+  name their native Attempt IDs too (opaque: e.g. `#41/1`), alongside the
+  issue number.
 - the root cause, backed by a quote from the specific file and event
   (e.g. `check_stderr.log`, or event `final_check_failed`)
 - whether the cause is in the target repo, the agent instance config

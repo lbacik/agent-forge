@@ -345,15 +345,22 @@ Instance keeps today's `pool-status.sh` output, unchanged. `fleet.sh` answers
 Intake), plus a separate list of the unlabelled legacy containers on that
 context, which `agentfleet` cannot manage.
 
-Every pull request also runs the contract consumer suite
-([`contract-helpers.yml`](.github/workflows/contract-helpers.yml)) from the
-pinned tag — no copied fixtures. It installs `agentfleet` from the tag named
-in `contract.sh`, backs it with the suite's replaying fake `agentctl` behind
-the same stubbed Docker as the legacy regression check, and pins
-`locate-agent.sh` on the contract path: the prerequisite stop, per-Worker name
-resolution, `--context` propagation, the snapshot summary, and every failure
-class (success, rejection, `unsupported`, ambiguous outcome, contract mismatch
-with no legacy fallback, malformed stdout).
+Every pull request also runs the contract consumer suites
+([`contract-helpers.yml`](.github/workflows/contract-helpers.yml) and
+[`contract-attempts.yml`](.github/workflows/contract-attempts.yml)) from the
+pinned tag — no copied fixtures. They install `agentfleet` from the tag named
+in `contract.sh`, back it with the suite's replaying fake `agentctl` behind
+the same stubbed Docker as the legacy regression check, and pin the contract
+path: `contract-helpers.sh` pins `locate-agent.sh` (the prerequisite stop,
+per-Worker name resolution, `--context` propagation, the snapshot summary, and
+every failure class — success, rejection, `unsupported`, ambiguous outcome,
+contract mismatch with no legacy fallback, malformed stdout);
+`contract-attempts.sh` pins the Attempts listing and export (`locate-agent.sh`
+with an issue number across `attempts ls` pages with the opaque cursor,
+`fetch-run.sh` exporting Attempt Archives into the separate contract cache
+with Sealed reuse after `sha256` verification, moving snapshots, torn-read and
+Offline Read handling) and the log-layout reference, then runs the legacy
+regression.
 
 The pool and fleet consumer suite
 ([`contract-pool-fleet.yml`](.github/workflows/contract-pool-fleet.yml)) pins
@@ -367,6 +374,7 @@ Run the same checks locally (needs `agentfleet` from the pinned tag, no Docker):
 
 ```bash
 .agents/skills/debug-agent/tests/contract-helpers.sh
+.agents/skills/debug-agent/tests/contract-attempts.sh
 .agents/skills/debug-agent/tests/contract-pool-fleet.sh
 ```
 
