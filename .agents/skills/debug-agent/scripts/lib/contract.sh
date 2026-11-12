@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2034 # library: sourced by locate-agent.sh, whose use of these constants shellcheck cannot see.
 # Shared contract-path helpers for the debug-agent skill. Source it, don't run it.
 #
 # The operator contract (major 1) is consumed through `agentfleet`, the

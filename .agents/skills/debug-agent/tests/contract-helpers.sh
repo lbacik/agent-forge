@@ -32,7 +32,6 @@ set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd) || exit 1
 ROOT_DIR=$(cd "$SCRIPT_DIR/../../../.." && pwd) || exit 1
 SCRIPTS_DIR="$ROOT_DIR/.agents/skills/debug-agent/scripts"
-SKILLS_DIR="$ROOT_DIR/.agents/skills"
 STUB_BIN="$SCRIPT_DIR/stub/bin"
 STUB_LIB="$SCRIPT_DIR/stub/lib"
 
@@ -97,8 +96,8 @@ EOF
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-foo/.env"
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-duo/.env"
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-plain/.env"
-  mkdir -p "$T_HOME/OrbStack/docker/volumes/plain_agent_data/state"
-  printf '{"consecutive_errors":0}\n' >"$T_HOME/OrbStack/docker/volumes/plain_agent_data/state/consecutive_errors.json"
+  mkdir -p "$T_HOME/OrbStack/docker/volumes/agent-plain_agent_data/state"
+  printf '{"consecutive_errors":0}\n' >"$T_HOME/OrbStack/docker/volumes/agent-plain_agent_data/state/consecutive_errors.json"
 
   SCENE="$WORK_ROOT/scene"
   mkdir -p "$SCENE/agent-foo" "$SCENE/agent-duo" "$SCENE/agent-plain"
@@ -128,6 +127,8 @@ EOF
 resolve_fixtures() {
   _tag=$(sed -n 's/^CONTRACT_TAG=//p' "$SCRIPTS_DIR/lib/contract.sh" | head -n 1)
   [ -n "$_tag" ] || fail "cannot read CONTRACT_TAG from lib/contract.sh"
+  PINNED_TAG="$_tag"
+  export PINNED_TAG
   info "pinned contract tag: $_tag"
   if [ -n "${CONTRACT_CHECKOUT:-}" ] && [ -d "$CONTRACT_CHECKOUT/src/agent_operator_contract/fixtures/agentctl" ]; then
     FIXDIR="$CONTRACT_CHECKOUT/src/agent_operator_contract/fixtures/agentctl"
@@ -244,6 +245,7 @@ main() {
   assert_contains "$WORK_ROOT/out.txt" "unavailable" "success-figures"
   assert_contains "$WORK_ROOT/out.txt" "not_applicable" "success-figures"
   assert_contains "$WORK_ROOT/out.txt" "native delivered" "success-figures"
+  assert_not_contains "$WORK_ROOT/out.txt" ": 0 .*basis" "success-figures (unknown Figures never render as 0)"
 
   # Per-Worker: the second Worker resolves to its own Managed Instance name.
   run_locate --context rpi5 --worker 2 duo
@@ -312,11 +314,12 @@ main() {
     PATH="$STUB_BIN:/usr/bin:/bin"
     export PATH
     command -v agentfleet >/dev/null 2>&1 && fail "missing-agentfleet: agentfleet unexpectedly on PATH"
+    # shellcheck disable=SC2030,SC2031 # intentional: the subshell scopes this case's fixture override.
     export CONTRACT_STATUS_FIXTURE=status-active.json
     run_locate --context rpi5 foo
     [ "$CODE" -ne 0 ] || fail "missing-agentfleet: exit 0, want non-zero"
     assert_contains "$WORK_ROOT/err.txt" "agentfleet is not installed" "missing-agentfleet"
-    assert_contains "$WORK_ROOT/err.txt" "v1.0.4" "missing-agentfleet install command pins the tag"
+    assert_contains "$WORK_ROOT/err.txt" "$PINNED_TAG" "missing-agentfleet install command pins the tag"
     assert_no_file_reads "missing-agentfleet"
     info "ok: missing agentfleet stops with the install command"
   )
@@ -325,15 +328,17 @@ main() {
   (
     _faked="$WORK_ROOT/fakebin"
     mkdir -p "$_faked"
+    # shellcheck disable=SC2016 # intentional: the fake's body must not expand here.
     printf '#!/bin/sh\nif [ "${1:-}" = "--version" ]; then echo "agentfleet 9.9.9 (contract major 9)"; exit 0; fi\necho "agentfleet: unexpected call" >&2; exit 1\n' >"$_faked/agentfleet"
     chmod +x "$_faked/agentfleet"
     PATH="$_faked:$STUB_BIN:/usr/bin:/bin"
     export PATH
+    # shellcheck disable=SC2030,SC2031 # intentional: the subshell scopes this case's fixture override.
     export CONTRACT_STATUS_FIXTURE=status-active.json
     run_locate --context rpi5 foo
     [ "$CODE" -ne 0 ] || fail "wrong-major: exit 0, want non-zero"
     assert_contains "$WORK_ROOT/err.txt" "unexpected contract major" "wrong-major"
-    assert_contains "$WORK_ROOT/err.txt" "v1.0.4" "wrong-major install command pins the tag"
+    assert_contains "$WORK_ROOT/err.txt" "$PINNED_TAG" "wrong-major install command pins the tag"
     assert_no_file_reads "wrong-major"
     info "ok: wrong contract major stops with the install command"
   )

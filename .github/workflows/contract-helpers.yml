@@ -1,0 +1,27 @@
+# contract-helpers: pin the contract-path locate-agent against agentfleet.
+#
+# The assertions live in the script this workflow calls; to pin more
+# behaviour, add a case to the script, not this file. The contract tag is not
+# named here: the install step reads CONTRACT_TAG from
+# .agents/skills/debug-agent/scripts/lib/contract.sh, and the fixtures come
+# from that tag (nothing is copied into this repo).
+name: contract-helpers
+
+on:
+  pull_request:
+
+jobs:
+  contract:
+    name: Pin contract-path locate-agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Install agentfleet from the pinned contract tag
+        run: |
+          tag=$(sed -n 's/^CONTRACT_TAG=//p' .agents/skills/debug-agent/scripts/lib/contract.sh | head -n 1)
+          [ -n "$tag" ] || { echo "cannot read CONTRACT_TAG" >&2; exit 1; }
+          pip install "agent-operator-contract @ git+https://github.com/lbacik/agent-operator-contract@$tag"
+          agentfleet --version
+      - name: Pin contract-path locate-agent
+        run: .agents/skills/debug-agent/tests/contract-helpers.sh

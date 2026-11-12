@@ -37,6 +37,32 @@ number, that issue's runs with their outcomes. If the fragment is ambiguous
 (e.g. `jsonhub` matches three agents), it exits with code 4 and lists the
 matches. Ask the user which one they mean; don't pick for them.
 
+### Contract path vs legacy path
+
+`locate-agent.sh` picks one of two paths per container (per Worker when the
+Workers of one Instance run different images). A container carrying the
+`io.github.lbacik.agent-operator.contract` label is observed only through
+`agentfleet`, the host-side client shipped by the operator contract — never by
+reading the container's files. The label is only a hint; compatibility is
+decided by `agentfleet`'s runtime `--contract` check. A container without the
+label stays on the legacy path described in the rest of this skill.
+
+The contract path has a prerequisite: `agentfleet` must be installed on the
+operator's host from the pinned contract tag (see `README.md#operator-contract`;
+the helpers print the install command). Before any contract-path call the
+helpers check that `agentfleet` is present and speaks the expected contract
+major; if not, they stop with the install command and read nothing from the
+container. A `contract_mismatch`, `unsupported` or `agent_unreachable` reply is
+reported as such and never retried through the legacy file grammar.
+
+On the contract path the resolver prints `agentfleet identity` plus a Status
+Snapshot summary instead of the file listing below: instance state and startup
+check, last Halt, Intake with pending stop, stop plan and priority, current
+Attempt with native phase and budget Figures, last finished Attempt, each with
+its `observed_at`. Figures show their unit and Figure Basis; unknown values
+render as `unavailable`/`not_applicable`, never `0`. Native outcomes are shown
+as the backend labels them. No private state files are printed.
+
 ### Which Worker
 
 An Instance is one Compose project with one or more Workers. The first Worker
@@ -116,7 +142,11 @@ Always match against the `agent-instances/agent-*/` directories on disk, never a
 They hold old, unrelated runs, and a substring search like `*jsonhub-api*`
 would pull them in.
 
-## 2. Pick the access path
+## 2. Pick the access path (legacy)
+
+This section is legacy: it applies only to unlabelled instances on the legacy
+path, and goes away when the legacy path is removed. On the contract path
+(§1) the Status Snapshot is the orientation — do not fetch or read run files.
 
 On a remote context, set `DOCKER_CONTEXT=<ctx>` on every `docker` and
 `docker compose` command below (or pass `--context <ctx>`). Otherwise they go
@@ -248,7 +278,10 @@ tag changed. The gateway
 is separate shared infrastructure; don't restart or reconfigure it without the
 user's approval, and report gateway-side causes as such.
 
-## 3. Choose which run(s) to inspect
+## 3. Choose which run(s) to inspect (legacy)
+
+This section is legacy: it applies only to unlabelled instances on the legacy
+path, and goes away when the legacy path is removed.
 
 Every attempt gets its own directory, `logs/<issue>/<started_at>/`. One issue
 often has several runs (retries, continuations after handoff), so the user's
@@ -271,7 +304,10 @@ Run directory timestamps are **UTC**, with `:` replaced by `-`. The user
 thinks in local time (Europe/Warsaw, UTC+2 in summer, UTC+1 in winter), so
 convert before you match "the run around 21:00".
 
-## 4. Read the evidence
+## 4. Read the evidence (legacy)
+
+This section is legacy: it applies only to unlabelled instances on the legacy
+path, and goes away when the legacy path is removed.
 
 Work from the summary down to the detail. `references/log-layout.md` explains
 each file.
@@ -384,7 +420,10 @@ Tell the user:
 
 - which agent, on which docker context, which Worker (`--worker`, worker id),
   and which run(s) you looked at: issue, UTC timestamp, outcome. A Worker's
-  attempt results carry its worker id, so quote it when you name the run.
+  attempt results carry its worker id, so quote it when you name the run. For
+  a contract-path report, name the docker context, the Forge Instance
+  (directory), the Managed Instance name and the backend (from the identity
+  block), then the snapshot sections above.
 - the root cause, backed by a quote from the specific file and event
   (e.g. `check_stderr.log`, or event `final_check_failed`)
 - whether the cause is in the target repo, the agent instance config
