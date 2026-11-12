@@ -199,13 +199,162 @@ PY
   (exec|run)
     case " $* " in
       (*"/usr/local/bin/agentctl"*--contract*)
-        # Contract agentctl replay for agentfleet (identity/status reads).
-        # Fixtures come from the pinned tag checkout, never copied:
-        # CONTRACT_FIXTURES_DIR points at its fixtures/agentctl/.
-        # CONTRACT_IDENTITY_FIXTURE / CONTRACT_STATUS_FIXTURE name the files.
+        # Contract agentctl replay for agentfleet (identity/status reads and
+        # attempts list/show/export). Identity/status fixtures come from the
+        # pinned tag checkout, never copied: CONTRACT_FIXTURES_DIR points at
+        # its fixtures/agentctl/, CONTRACT_IDENTITY_FIXTURE /
+        # CONTRACT_STATUS_FIXTURE name the files. Attempts list/show pages are
+        # read from the scene ($scene/attempts-list.json for the first page,
+        # $scene/attempts-list-before-<cursor>.json for later pages,
+        # $scene/attempts-show-<id>.json per attempt). Export tars are
+        # synthesized from $scene/archive-<id>/ plus $scene/archive-<id>.json
+        # (the attempt summary), with exact sizes and sha256 so the client's
+        # torn-read verification passes; a sentinel
+        # $scene/export-torn-once-<id> makes the first export of that attempt
+        # torn to exercise the refetch.
         _fixdir=${CONTRACT_FIXTURES_DIR:-}
         _op=status
-        case " $* " in (*" identity "*) _op=identity ;; esac
+        case " $* " in
+          (*" identity "*) _op=identity ;;
+          (*" attempts list "*|*" attempts ls "*) _op=attlist ;;
+          (*" attempts show "*) _op=attshow ;;
+          (*" attempts export "*) _op=attexport ;;
+        esac
+        case "$_op" in
+          (attlist)
+            _cursor=""
+            _prev=""
+            for _a in "$@"; do
+              if [ "$_prev" = "--before" ]; then _cursor=$_a; fi
+              _prev=$_a
+            done
+            if [ -z "$_cursor" ]; then
+              _f="$scene/attempts-list.json"
+            else
+              _san=$(printf '%s' "$_cursor" | tr -c 'A-Za-z0-9' '_')
+              _f="$scene/attempts-list-before-$_san.json"
+            fi
+            [ -f "$_f" ] || stub_fail "stub docker: no recorded reply: add $(basename "$_f") for attempts list (cursor '${_cursor:-<first page>}')"
+            # Scene pages hold either a raw producer envelope or a pinned
+            # harness reply ({argv, exit_code, stdout, stderr}); the helper
+            # only ever sees the envelope stdout.
+            set +e
+            python3 - "$_f" <<'PYEOF'
+import base64, json, sys
+doc = json.load(open(sys.argv[1]))
+if isinstance(doc, dict) and "ok" not in doc and "stdout" in doc:
+    enc = doc.get("stdout_base64")
+    if isinstance(enc, str) and enc:
+        sys.stdout.buffer.write(base64.b64decode(enc))
+    else:
+        sys.stdout.write(str(doc.get("stdout", "")))
+else:
+    json.dump(doc, sys.stdout)
+    sys.stdout.write("\n")
+PYEOF
+            _page_code=$?
+            set -e
+            exit "$_page_code"
+            ;;
+          (attshow)
+            _prev=""
+            _aid=""
+            for _a in "$@"; do
+              if [ "$_prev" = "show" ]; then _aid=$_a; fi
+              _prev=$_a
+            done
+            [ -n "$_aid" ] || stub_fail "stub docker: attempts show without an attempt id"
+            _san=$(printf '%s' "$_aid" | tr -c 'A-Za-z0-9' '_')
+            _f="$scene/attempts-show-$_san.json"
+            [ -f "$_f" ] || stub_fail "stub docker: no recorded reply: add attempts-show-$_san.json for attempt '$_aid'"
+            set +e
+            python3 - "$_f" <<'PYEOF'
+import base64, json, sys
+doc = json.load(open(sys.argv[1]))
+if isinstance(doc, dict) and "ok" not in doc and "stdout" in doc:
+    enc = doc.get("stdout_base64")
+    if isinstance(enc, str) and enc:
+        sys.stdout.buffer.write(base64.b64decode(enc))
+    else:
+        sys.stdout.write(str(doc.get("stdout", "")))
+else:
+    json.dump(doc, sys.stdout)
+    sys.stdout.write("\n")
+PYEOF
+            _show_code=$?
+            set -e
+            exit "$_show_code"
+            ;;
+          (attexport)
+            _prev=""
+            _aid=""
+            for _a in "$@"; do
+              if [ "$_prev" = "export" ]; then _aid=$_a; fi
+              _prev=$_a
+            done
+            [ -n "$_aid" ] || stub_fail "stub docker: attempts export without an attempt id"
+            _san=$(printf '%s' "$_aid" | tr -c 'A-Za-z0-9' '_')
+            { [ -f "$scene/archive-$_san.json" ] && [ -d "$scene/archive-$_san" ]; } || \
+              stub_fail "stub docker: no recorded reply: add archive-$_san.json and archive-$_san/ for attempt '$_aid'"
+            set +e
+            STUB_EXPORT_SAFE=$_san STUB_SCENE_DIR=$scene python3 - <<'PYEOF'
+import hashlib, io, json, os, sys, tarfile
+safe = os.environ["STUB_EXPORT_SAFE"]
+scene = os.environ["STUB_SCENE_DIR"]
+meta = json.load(open(os.path.join(scene, "archive-%s.json" % safe)))
+srcdir = os.path.join(scene, "archive-%s" % safe)
+kinds = meta.get("file_kinds", {})
+plain = []
+for dirpath, dirnames, filenames in os.walk(srcdir):
+    dirnames.sort()
+    for name in sorted(filenames):
+        full = os.path.join(dirpath, name)
+        rel = os.path.relpath(full, srcdir)
+        with open(full, "rb") as handle:
+            plain.append((rel, handle.read()))
+torn = False
+if os.path.exists(os.path.join(scene, "export-torn-once-%s" % safe)) \
+        and not os.path.exists(os.path.join(scene, "export-count-%s" % safe)):
+    torn = True
+    with open(os.path.join(scene, "export-count-%s" % safe), "w") as handle:
+        handle.write("1")
+entries = []
+blob = {}
+first = True
+for rel, content in plain:
+    spec = kinds.get(rel, {})
+    if not isinstance(spec, dict):
+        spec = {}
+    out = content
+    if torn and first:
+        first = False
+        out = (b"X" if content[:1] != b"X" else b"Y") + content[1:]
+    blob[rel] = out
+    entries.append({
+        "path": rel,
+        "kind": spec.get("kind", "other"),
+        "media_type": spec.get("media_type", "application/octet-stream"),
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    })
+manifest = {"contract": "1.0", "attempt": meta["attempt"], "files": entries}
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w") as archive:
+    data = json.dumps(manifest).encode("utf-8")
+    info = tarfile.TarInfo("manifest.json")
+    info.size = len(data)
+    archive.addfile(info, io.BytesIO(data))
+    for rel, _content in plain:
+        info = tarfile.TarInfo(rel)
+        info.size = len(blob[rel])
+        archive.addfile(info, io.BytesIO(blob[rel]))
+sys.stdout.buffer.write(buf.getvalue())
+PYEOF
+            _gen_code=$?
+            set -e
+            exit "$_gen_code"
+            ;;
+        esac
         if [ "$_op" = identity ]; then
           _fix=${CONTRACT_IDENTITY_FIXTURE:-identity.json}
         else

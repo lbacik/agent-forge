@@ -33,6 +33,7 @@ issue=${2:-}
 
 . "$(dirname "$0")/lib/resolve.sh"
 . "$(dirname "$0")/lib/contract.sh"
+. "$(dirname "$0")/lib/contract_attempts.sh"
 
 # Contract hint: the Compose model carries the discovery label only when the
 # ref speaks the contract. Unlabelled instances skip the extra inspect below,
@@ -95,9 +96,40 @@ if [ "$_use_contract" -eq 1 ]; then
     exit "$_code"
   fi
   if [ -n "$issue" ]; then
-    echo "note:            issue #$issue Attempts listing arrives in a later step; showing snapshot only"
+    # That issue's Attempts from `attempts ls`, filtered by issue on the
+    # client side and paged with the opaque cursor (newest first). Each line
+    # names the native Attempt ID, native outcome, delivery,
+    # `attention_required` and `sealed`.
+    echo "attempts_for_issue_$issue:"
+    _tmpdir=$(mktemp -d) || exit 1
+    _ids=$(contract_list_issue_pages "$_managed" "$issue" "$_tmpdir") || {
+      _code=$?
+      rm -rf "$_tmpdir"
+      exit "$_code"
+    }
+    if [ -z "$_ids" ]; then
+      echo "  none"
+      _ids="<none>"
+    else
+      for _page in "$_tmpdir"/page-*.json; do
+        python3 "$(dirname "$0")/lib/render_attempts.py" "$issue" "$_page" || {
+          _code=$?
+          echo "error: cannot render Attempts listing for '$_managed' (no legacy fallback)" >&2
+          rm -rf "$_tmpdir"
+          exit "$_code"
+        }
+      done
+      # shellcheck disable=SC2086 # word-splitting the collected IDs is intended
+      set -- $_ids
+      _ids="$*"
+    fi
+    rm -rf "$_tmpdir"
   fi
-  echo "report:          context $context, forge instance $dir, managed instance $_managed (backend from identity above)"
+  if [ -n "$issue" ]; then
+    echo "report:          context $context, forge instance $dir, managed instance $_managed, attempts for issue #$issue: $_ids (backend from identity above)"
+  else
+    echo "report:          context $context, forge instance $dir, managed instance $_managed (backend from identity above)"
+  fi
   exit 0
 fi
 
