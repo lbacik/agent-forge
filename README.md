@@ -238,6 +238,18 @@ project root:
 They default to the `orbstack` Docker context; pass `--context <name>` for another
 context.
 
+## Operator contract
+
+Agent Forge follows major 1 of the
+[agent operator contract](https://github.com/lbacik/agent-operator-contract),
+pinned to tag `v1.0.4`. This section is the one place the tag is named;
+everything else refers to the contract by its major. The contract's terms are
+defined in its
+[glossary at the pinned tag](https://github.com/lbacik/agent-operator-contract/blob/v1.0.4/CONTEXT.md),
+and [CONTEXT.md](CONTEXT.md) maps them to Forge's Instance, Worker and Pool.
+To move to a newer `v1.x.y`, change the tag here; a new major also means
+reviewing that mapping.
+
 ## Relationship to simple-coding-agent-env
 
 The skills and templates originate from `../simple-coding-agent-env`. They

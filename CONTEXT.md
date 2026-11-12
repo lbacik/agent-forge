@@ -46,7 +46,7 @@ _Avoid_: Conflict-only attempt, resolver run
 
 ### Operator contract
 
-These terms are used as defined in the [operator contract glossary](https://github.com/lbacik/agent-operator-contract/blob/v1.0.0/CONTEXT.md) at the pinned tag `v1.0.0`, and are not redefined here: Managed Instance, Fleet, Pool, Backend, Target Repository, Operator Capability, Intake, Operator Command, Acknowledgement, Status Snapshot, Figure, Figure Basis, Attempt, Attempt Archive, Sealed, Offline Read, Halt. Where both glossaries use a word, this file's meaning applies unless the contract's is named, as in "contract Pool".
+These terms are used as defined in the glossary of operator contract major 1, at the tag pinned in the README's [Operator contract](README.md#operator-contract) section, and are not redefined here: Managed Instance, Fleet, Pool, Backend, Target Repository, Operator Capability, Intake, Operator Command, Acknowledgement, Status Snapshot, Figure, Figure Basis, Attempt, Attempt Archive, Sealed, Offline Read, Halt. Where both glossaries use a word, this file's meaning applies unless the contract's is named, as in "contract Pool".
 
 - **Worker ↔ Managed Instance**: each Worker managed through the contract is exactly one Managed Instance, so an Instance holds one or more Managed Instances, one per Worker.
 - **Pool ↔ contract Pool**: a Pool managed through the contract is a contract Pool, and its Managed Instances need the `pool` Operator Capability.
