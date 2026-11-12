@@ -85,7 +85,7 @@ request ID, and the acknowledgement report. Its helper resolves the same
 Worker from the instance name:
 
 ```bash
-.agents/skills/operate-agent/scripts/operate.sh [--context <ctx>] [--worker <n|worker-id>] [--expect-repo <owner/repo>] [--request-id <id>] [--follow] <name> <stop [--after <n>]|resume|next-issue <n>|handoff|command <request-id>>
+.agents/skills/operate-agent/scripts/operate.sh [--context <ctx>] [--worker <n|worker-id>] [--expect-repo <owner/repo>] [--request-id <id>] [--follow] <name> <stop [--after <n>]|resume|next-issue <n>|handoff|recovery-retry <attempt-id>|recovery-release <attempt-id> --saved-at <location>|errors-reset|command <request-id>>
 ```
 
 This skill picks the Worker and the order; operate-agent submits.

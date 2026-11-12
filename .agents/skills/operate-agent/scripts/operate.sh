@@ -4,7 +4,10 @@
 # Usage:
 #   operate.sh [--context <ctx>] [--worker <n|worker-id>]
 #              [--expect-repo <owner/repo>] [--request-id <id>] [--follow]
-#              <name-fragment> <stop [--after <n>]|resume|next-issue <n>|handoff|command <request-id>>
+#              <name-fragment> <stop [--after <n>]|resume|next-issue <n>|handoff
+#                             |recovery-retry <attempt-id>
+#                             |recovery-release <attempt-id> --saved-at <location>
+#                             |errors-reset|command <request-id>>
 #
 #   --context     docker context the instance runs on (default: orbstack).
 #   --worker      which Worker: a number (2) or a worker id (<short>-2).
@@ -19,6 +22,12 @@
 #                 (completed, superseded, not_fulfilled) with `command`
 #                 reads using the same request ID. Without it, an accepted
 #                 command is reported with its request ID and how to check it.
+#   --after <n>   with `stop`: close Intake after N finalized attempts
+#                 (1-999, only where the instance advertises `stop-after`).
+#   --saved-at <location>
+#                 with `recovery-release`: where the retained work was secured
+#                 (a shelf, path or URL — never a credential; anything
+#                 token- or key-shaped is refused before submission).
 #
 # Run from anywhere; instances are looked up in agent-forge's agent-instances/.
 # Every mutation runs only on the operator's explicit request: invoking this
@@ -42,6 +51,8 @@ worker=""
 expect_repo=""
 request_id=""
 follow=0
+after=""
+saved_at=""
 _positionals=""
 while [ $# -gt 0 ]; do
   case "${1:-}" in
@@ -49,6 +60,8 @@ while [ $# -gt 0 ]; do
     --worker) worker=${2:?--worker needs a value}; shift 2 ;;
     --expect-repo) expect_repo=${2:?--expect-repo needs a value}; shift 2 ;;
     --request-id) request_id=${2:?--request-id needs a value}; shift 2 ;;
+    --after) after=${2:?--after needs a value (1-999, with 'stop')}; shift 2 ;;
+    --saved-at) saved_at=${2:?--saved-at needs a location (with 'recovery-release')}; shift 2 ;;
     --follow) follow=1; shift ;;
     --) shift
       while [ $# -gt 0 ]; do _positionals="$_positionals $1"; shift; done
@@ -57,10 +70,11 @@ while [ $# -gt 0 ]; do
     *) _positionals="$_positionals $1"; shift ;;
   esac
 done
+_usage="usage: operate.sh [options] <name-fragment> <stop [--after <n>]|resume|next-issue <n>|handoff|recovery-retry <attempt-id>|recovery-release <attempt-id> --saved-at <location>|errors-reset|command <request-id>>"
 # shellcheck disable=SC2086 # positionals hold no spaces by construction below
 set -- $_positionals
-fragment=${1:?usage: operate.sh [options] <name-fragment> <stop [--after <n>]|resume|next-issue <n>|handoff|command <request-id>>}
-op=${2:?usage: operate.sh [options] <name-fragment> <stop [--after <n>]|resume|next-issue <n>|handoff|command <request-id>>}
+fragment=${1:?$_usage}
+op=${2:?$_usage}
 op_arg=${3:-}
 op_extra=${4:-}
 [ -z "${5:-}" ] || { echo "error: too many arguments" >&2; exit 2; }
@@ -74,19 +88,17 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd) || exit 1
 ENVELOPE="$SCRIPT_DIR/lib/envelope.py"
 
 # --- Operation dispatch and validation -------------------------------------
-after=""
 issue=""
+attempt=""
 lookup_id=""
 required_cap=""
 effect=""
 case "$op" in
   stop)
-    if [ -n "$op_arg" ]; then
-      case "$op_arg" in
-        --after) : ;;
-        *) echo "error: usage: operate.sh <name> stop [--after <1-999>]" >&2; exit 2 ;;
-      esac
-      after=${op_extra:?usage: operate.sh <name> stop --after <1-999>}
+    [ -z "$op_arg" ] || { echo "error: usage: operate.sh <name> stop [--after <1-999>]" >&2; exit 2; }
+    [ -z "$op_extra" ] || { echo "error: usage: operate.sh <name> stop [--after <1-999>]" >&2; exit 2; }
+    [ -z "$saved_at" ] || { echo "error: --saved-at only applies to 'recovery-release'" >&2; exit 2; }
+    if [ -n "$after" ]; then
       case "$after" in ''|*[!0-9]*|0) echo "error: --after must be 1-999, got '$after'" >&2; exit 2 ;; esac
       if [ "$after" -gt 999 ]; then echo "error: --after must be 1-999, got '$after'" >&2; exit 2; fi
       required_cap="stop-after"
@@ -97,27 +109,104 @@ case "$op" in
     ;;
   resume)
     [ -z "$op_arg" ] || { echo "error: usage: operate.sh <name> resume" >&2; exit 2; }
+    [ -z "$op_extra" ] || { echo "error: usage: operate.sh <name> resume" >&2; exit 2; }
+    [ -z "$after" ] || { echo "error: --after only applies to 'stop'" >&2; exit 2; }
+    [ -z "$saved_at" ] || { echo "error: --saved-at only applies to 'recovery-release'" >&2; exit 2; }
     effect="reopen Intake (never starts a container)"
     ;;
   next-issue)
     issue=${op_arg:?usage: operate.sh <name> next-issue <issue-number>}
     case "$issue" in ''|*[!0-9]*|0) echo "error: issue must be a positive number, got '$issue'" >&2; exit 2 ;; esac
     [ -z "$op_extra" ] || { echo "error: usage: operate.sh <name> next-issue <issue-number>" >&2; exit 2; }
+    [ -z "$after" ] || { echo "error: --after only applies to 'stop'" >&2; exit 2; }
+    [ -z "$saved_at" ] || { echo "error: --saved-at only applies to 'recovery-release'" >&2; exit 2; }
     required_cap="next-issue"
     effect="one-shot priority: issue #$issue is preferred for the next claim (may end not_fulfilled)"
     ;;
   handoff)
     [ -z "$op_arg" ] || { echo "error: usage: operate.sh <name> handoff" >&2; exit 2; }
+    [ -z "$op_extra" ] || { echo "error: usage: operate.sh <name> handoff" >&2; exit 2; }
+    [ -z "$after" ] || { echo "error: --after only applies to 'stop'" >&2; exit 2; }
+    [ -z "$saved_at" ] || { echo "error: --saved-at only applies to 'recovery-release'" >&2; exit 2; }
     required_cap="operator-handoff"
     effect="complete an Operator Handoff of the active attempt"
+    ;;
+  recovery-retry)
+    attempt=${op_arg:?usage: operate.sh <name> recovery-retry <attempt-id>}
+    [ -z "$op_extra" ] || { echo "error: usage: operate.sh <name> recovery-retry <attempt-id>" >&2; exit 2; }
+    [ -z "$after" ] || { echo "error: --after only applies to 'stop'" >&2; exit 2; }
+    [ -z "$saved_at" ] || { echo "error: --saved-at only applies to 'recovery-release'" >&2; exit 2; }
+    required_cap="recovery-retry"
+    effect="retry safe finalization of attempt $attempt from retained evidence"
+    ;;
+  recovery-release)
+    attempt=${op_arg:?usage: operate.sh <name> recovery-release <attempt-id> --saved-at <location>}
+    [ -z "$op_extra" ] || { echo "error: usage: operate.sh <name> recovery-release <attempt-id> --saved-at <location>" >&2; exit 2; }
+    [ -z "$after" ] || { echo "error: --after only applies to 'stop'" >&2; exit 2; }
+    [ -n "$saved_at" ] || { echo "error: 'recovery-release' needs --saved-at <location>: where the retained work was secured (never a credential)" >&2; exit 2; }
+    required_cap="recovery-release"
+    effect="record work for attempt $attempt as secured at $saved_at, release the issue and finalize"
+    ;;
+  errors-reset)
+    [ -z "$op_arg" ] || { echo "error: usage: operate.sh <name> errors-reset" >&2; exit 2; }
+    [ -z "$op_extra" ] || { echo "error: usage: operate.sh <name> errors-reset" >&2; exit 2; }
+    [ -z "$after" ] || { echo "error: --after only applies to 'stop'" >&2; exit 2; }
+    [ -z "$saved_at" ] || { echo "error: --saved-at only applies to 'recovery-release'" >&2; exit 2; }
+    required_cap="errors-reset"
+    effect="reset the durable infrastructure-error guard"
     ;;
   command)
     lookup_id=${op_arg:?usage: operate.sh <name> command <request-id>}
     [ -z "$op_extra" ] || { echo "error: usage: operate.sh <name> command <request-id>" >&2; exit 2; }
+    [ -z "$after" ] || { echo "error: --after only applies to 'stop'" >&2; exit 2; }
+    [ -z "$saved_at" ] || { echo "error: --saved-at only applies to 'recovery-release'" >&2; exit 2; }
     effect="read the committed Operator Command $lookup_id"
     ;;
-  *) echo "error: unknown operation '$op': expected stop, resume, next-issue, handoff or command" >&2; exit 2 ;;
+  *) echo "error: unknown operation '$op': expected stop, resume, next-issue, handoff, recovery-retry, recovery-release, errors-reset or command" >&2; exit 2 ;;
 esac
+
+# Fail-closed guard: --saved-at names where the work was secured (a shelf,
+# path or URL). Refuse anything token- or key-shaped before submission so
+# secrets never land in the command store; the refused value is never
+# echoed back.
+saved_at_is_secret() {
+  _s=$1
+  case "$_s" in
+    ghp_*|gho_*|ghu_*|ghs_*|ghr_*|github_pat_*|sk-*|xoxa-*|xoxb-*|xoxo-*|xoxp-*|xoxs-*|AKIA*|ASIA*|-----BEGIN*|eyJ[A-Za-z0-9_-]*.*) return 0 ;;
+  esac
+  _low=$(printf '%s' "$_s" | tr '[:upper:]' '[:lower:]')
+  case "$_low" in
+    *token=*|*secret=*|*passwd=*|*password=*|*api-key=*|*apikey=*|*api_key=*) return 0 ;;
+  esac
+  if [ "${#_s}" -ge 40 ]; then
+    case "$_s" in
+      *[[:space:]/]*) return 1 ;;
+    esac
+    case "$_s" in
+      *[!A-Za-z0-9_.+:=/-]*) return 1 ;;
+      *) return 0 ;;
+    esac
+  fi
+  return 1
+}
+if [ -n "$saved_at" ] && saved_at_is_secret "$saved_at"; then
+  echo "error: --saved-at looks like a credential (token- or key-shaped); pass the location where the work was secured instead (a shelf, path or URL), never the credential itself" >&2
+  exit 2
+fi
+
+# Report a final Acknowledgement: completed and superseded are done;
+# not_fulfilled is final but explicitly not done (a one-shot priority that
+# lost the race or was ineligible), so it is never mistaken for success.
+report_final_state() {
+  case "$1" in
+    completed|superseded) echo "state:           final ($1)" ;;
+    not_fulfilled)
+      echo "state:           final (not_fulfilled) - not done"
+      echo "note:            not_fulfilled is not success: the priority lost the race or was ineligible; re-decide and submit again if still wanted"
+      ;;
+    *) echo "state:           $1" ;;
+  esac
+}
 
 case "$expect_repo" in
   ""|*/*) : ;;
@@ -263,7 +352,7 @@ if [ "$_use_contract" -eq 1 ]; then
       done
       case "$_ack" in
         accepted) echo "state:           accepted (still finalizing; re-run with command $request_id to check again)" ;;
-        completed|superseded|not_fulfilled) echo "state:           final ($_ack)" ;;
+        completed|superseded|not_fulfilled) report_final_state "$_ack" ;;
         *) echo "state:           $_ack" ;;
       esac
       exit 0
@@ -291,6 +380,9 @@ if [ "$_use_contract" -eq 1 ]; then
     resume) set -- resume "$_managed" --expect-repo "$expect_repo" --request-id "$request_id" --max-attempts 1 --json ;;
     next-issue) set -- next-issue "$_managed" $issue --expect-repo "$expect_repo" --request-id "$request_id" --max-attempts 1 --json ;;
     handoff) set -- handoff "$_managed" --expect-repo "$expect_repo" --request-id "$request_id" --max-attempts 1 --json ;;
+    recovery-retry) set -- recovery-retry "$_managed" "$attempt" --expect-repo "$expect_repo" --request-id "$request_id" --max-attempts 1 --json ;;
+    recovery-release) set -- recovery-release "$_managed" "$attempt" --saved-at "$saved_at" --expect-repo "$expect_repo" --request-id "$request_id" --max-attempts 1 --json ;;
+    errors-reset) set -- errors-reset "$_managed" --expect-repo "$expect_repo" --request-id "$request_id" --max-attempts 1 --json ;;
   esac
   if agentfleet "$@" >"$_mout" 2>"$_merr"; then
     _mcode=0
@@ -330,7 +422,7 @@ if [ "$_use_contract" -eq 1 ]; then
         fi
         ;;
       completed|superseded|not_fulfilled)
-        echo "state:           final ($_ack)"
+        report_final_state "$_ack"
         ;;
       *)
         echo "state:           $_ack"
@@ -425,10 +517,20 @@ case "$_version" in
 esac
 
 case "$op" in
-  stop) _argv="stop$_expect_flag" ;;
+  stop)
+    if [ -n "$after" ]; then
+      _argv="stop --after $after$_expect_flag"
+    else
+      _argv="stop$_expect_flag"
+    fi
+    ;;
   resume) _argv="resume$_expect_flag" ;;
   next-issue) _argv="next issue $issue$_expect_flag" ;;
   handoff) _argv="handoff now$_expect_flag" ;;
+  # The legacy recovery/errors grammar takes no --expect-repo guard flag.
+  recovery-retry) _argv="recovery retry $attempt" ;;
+  recovery-release) _argv="recovery release $attempt --saved-at $saved_at" ;;
+  errors-reset) _argv="errors reset" ;;
 esac
 echo "legacy_agentctl: agentctl $_argv"
 out=$(legacy_agentctl "$_argv") || _lcode=$?

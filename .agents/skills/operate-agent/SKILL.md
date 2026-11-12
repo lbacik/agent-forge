@@ -64,6 +64,9 @@ by the contract. Forge ships no Python package.
 | `resume` | Reopens Intake only. It never starts a container. |
 | `next-issue N` | One-shot priority: issue N is preferred for the Worker's next claim. Losing the race to another Worker is a normal outcome (`not_fulfilled`), not a failure; sending it to another Worker is a new decision. |
 | `handoff` | Completes an Operator Handoff of the active attempt. |
+| `recovery-retry <attempt-id>` | Retries safe finalization of a retained attempt from its retained evidence. Commits a `completed` no-op when the attempt is already finalized. |
+| `recovery-release <attempt-id> --saved-at <location>` | Records the retained work as secured at the location, releases the issue and finalizes the attempt. Refused for an active attempt (nothing retained) and for an already-finalized one. |
+| `errors-reset` | Resets the durable infrastructure-error guard. Rejected with no change (nothing stored) while the guard is already clear. |
 | `command <request-id>` | Reads back the committed Operator Command. No state changes. |
 
 Semantics that are easy to get wrong:
@@ -77,6 +80,14 @@ Semantics that are easy to get wrong:
   it is a separate deployment action (`docker compose up -d <service>`)
   that needs the operator's authorization; only then does `resume` reopen
   Intake.
+- **`recovery-release --saved-at` takes a location, never a credential.**
+  Pass where the work was secured (a shelf, path or URL); anything token-
+  or key-shaped is refused before submission, so secrets never land in the
+  command store. The helper never echoes a refused value back.
+- **`recovery-retry` and `recovery-release` are different decisions.**
+  Retry keeps the attempt and finishes it from retained evidence; release
+  abandons the attempt after its work was secured elsewhere. Release needs
+  the `--saved-at` location; retry takes none.
 - **Mutations are `unsupported` offline.** A stopped instance takes no
   Operator Command through `agentfleet` or `agentctl`. Read it offline
   (`debug-agent`); do not start it as a side effect of operating it.
@@ -91,8 +102,12 @@ Before submission the helper reads `agentfleet identity` and refuses an
 operation whose capability is not advertised, listing the advertised
 Operator Capabilities. `stop` and `resume` are core and need no capability;
 `stop --after` needs `stop-after`, `next-issue` needs `next-issue`,
-`handoff` needs `operator-handoff`. The producer re-checks before
-committing; a refusal names the missing capability.
+`handoff` needs `operator-handoff`, `recovery-retry` needs
+`recovery-retry`, `recovery-release` needs `recovery-release`, and
+`errors-reset` needs `errors-reset`. The producer re-checks before
+committing; a refusal names the missing capability. For example, coding-agent
+advertises `next-issue` and `stop-after` but not `operator-handoff`, so the
+skill refuses `handoff` there and says so from `identity`.
 
 Every mutation carries `--expect-repo` with the Target Repository from
 section 1 and a request ID generated before submission: the helper uses
@@ -110,8 +125,10 @@ not yet applied) from the final states (`completed`, `superseded`,
   check it (`command <request-id>`); with `--follow`, follow it to its
   final state.
 - `completed` / `superseded` / `not_fulfilled` → report the final state
-  and what it means (for `not_fulfilled`, who won the race when the
-  command names another claimant).
+  and what it means. `not_fulfilled` is final but not done (for
+  `next-issue`, the priority lost the race or was ineligible — who won the
+  race when the command names another claimant); never report it as success,
+  and re-decide whether to submit again.
 - `replayed: true` → the command was already committed under this request
   ID; nothing new happened.
 - Rejection (`rejected`, `repository_mismatch`, `payload_mismatch`, …) →
@@ -129,7 +146,7 @@ sequence above (one submission, same-ID `command` check, `--follow` loop
 to a final state):
 
 ```bash
-.agents/skills/operate-agent/scripts/operate.sh [--context <ctx>] [--worker <n|worker-id>] [--expect-repo <owner/repo>] [--request-id <id>] [--follow] <name-fragment> <stop [--after <n>]|resume|next-issue <n>|handoff|command <request-id>>
+.agents/skills/operate-agent/scripts/operate.sh [--context <ctx>] [--worker <n|worker-id>] [--expect-repo <owner/repo>] [--request-id <id>] [--follow] <name-fragment> <stop [--after <n>]|resume|next-issue <n>|handoff|recovery-retry <attempt-id>|recovery-release <attempt-id> --saved-at <location>|errors-reset|command <request-id>>
 ```
 
 Examples (from anywhere; the helper resolves `agent-instances/` itself):
@@ -137,6 +154,12 @@ Examples (from anywhere; the helper resolves `agent-instances/` itself):
 ```bash
 .agents/skills/operate-agent/scripts/operate.sh cli stop
 .agents/skills/operate-agent/scripts/operate.sh --context rpi5 --worker 2 paysubscriptions resume --follow
+.agents/skills/operate-agent/scripts/operate.sh cli stop --after 2
+.agents/skills/operate-agent/scripts/operate.sh cli next-issue 122 --follow
+.agents/skills/operate-agent/scripts/operate.sh cli handoff
+.agents/skills/operate-agent/scripts/operate.sh cli recovery-retry att-2026-11-01-001
+.agents/skills/operate-agent/scripts/operate.sh cli recovery-release att-2026-11-01-001 --saved-at shelf-303
+.agents/skills/operate-agent/scripts/operate.sh cli errors-reset
 .agents/skills/operate-agent/scripts/operate.sh cli command req-3f1c9a2b7d10
 ```
 
@@ -147,7 +170,10 @@ then the request ID and the Acknowledgement. Its consumer suite
 producer replies from the pinned contract tag, no copies) pins success,
 rejection, `unsupported`, the ambiguous same-ID follow-up, contract
 mismatch with no legacy fallback, malformed stdout, the pre-submission
-refusal, and the legacy argv below:
+refusal, the optional commands above (each with guards and request ID,
+`next-issue` followed to each final state with `not_fulfilled` as not
+done, the credential-shaped `--saved-at` refusal), and the legacy argv
+below:
 
 ```bash
 .agents/skills/operate-agent/tests/operate-helpers.sh
@@ -160,16 +186,21 @@ away when the legacy path is removed. Today's `agentctl` usage, unchanged:
 
 ```bash
 docker exec -u agent -w /data <container> /usr/local/bin/agentctl status
-docker exec -u agent -w /data <container> /usr/local/bin/agentctl stop [--expect-repo=<TARGET_REPO>]
+docker exec -u agent -w /data <container> /usr/local/bin/agentctl stop [--after <n>] [--expect-repo=<TARGET_REPO>]
 docker exec -u agent -w /data <container> /usr/local/bin/agentctl resume [--expect-repo=<TARGET_REPO>]
 docker exec -u agent -w /data <container> /usr/local/bin/agentctl next issue <n> [--expect-repo=<TARGET_REPO>]
 docker exec -u agent -w /data <container> /usr/local/bin/agentctl handoff now [--expect-repo=<TARGET_REPO>]
+docker exec -u agent -w /data <container> /usr/local/bin/agentctl recovery retry <attempt-id>
+docker exec -u agent -w /data <container> /usr/local/bin/agentctl recovery release <attempt-id> --saved-at <location>
+docker exec -u agent -w /data <container> /usr/local/bin/agentctl errors reset
 docker exec -u agent -w /data <container> /usr/local/bin/agentctl command <request-id>
 ```
 
 Pass `--expect-repo=<TARGET_REPO>` when the Worker's `agent version:` is
 v0.8.0 or newer; on older ones check the `repository:` line of `status`
-first. A mutating command prints a `request_id`;
+first. The legacy `recovery` and `errors` grammar takes no `--expect-repo`
+flag; `errors reset` also answers to its `consecutive-errors reset` alias.
+A mutating command prints a `request_id`;
 `agentctl command <request-id>` reads its outcome later (`accepted`,
 `completed`, `superseded` or `not fulfilled`). The helper (`operate.sh`)
 runs these for unlabelled instances: it picks the flag from the status
@@ -186,6 +217,9 @@ Tell the user, in their language:
 - the operation, its effect, the request ID and the Acknowledgement —
   `accepted` distinctly from `completed` / `superseded` /
   `not_fulfilled`, with the follow-up command when still `accepted`;
+  report `not_fulfilled` as not done, never as success;
+- for `recovery-release`, the location the work was secured at (never a
+  credential — a refused `--saved-at` is reported without echoing it);
 - for ambiguous outcomes, the request ID and what the same-ID
   `command` check showed — never a second submission;
 - what remains (a Worker still draining, a `not_fulfilled` priority to
