@@ -11,6 +11,12 @@
 # never a new ID), contract mismatch with no legacy fallback, malformed
 # stdout, an unadvertised operation refused before submission with the
 # advertised capabilities listed, and the legacy stop/command argv.
+# The optional commands (`stop --after`, `next-issue` followed to
+# `completed`/`superseded`/`not_fulfilled`, `handoff`, `recovery-retry`,
+# `recovery-release --saved-at`, `errors-reset`) are covered the same way:
+# success with guards, rejection, and refusal when unadvertised, plus the
+# credential-shaped `--saved-at` refusal (no submission, value never
+# echoed) and the legacy `agentctl` argv for each.
 #
 # Every contract mutation the helper issues carries --expect-repo and an
 # explicit --request-id (asserted on the stub's argv log); the follow-up
@@ -22,9 +28,12 @@
 #
 # Hermeticity: HOME points at a scratch dir, AGENT_INSTANCES_DIR at a scratch
 # fixture, PATH starts with the debug-agent tests/stub/bin (fake docker plus
-# a gh that fails if ever called). CONTRACT_FIXTURES_DIR points at the
-# fixtures of the pinned agent-operator-contract tag (the installed package
-# matching CONTRACT_TAG, or a checkout via CONTRACT_CHECKOUT); no fixture is
+# a gh that fails if ever called). CONTRACT_FIXTURES_DIR points at a scratch
+# farm of symlinks to the fixtures of the pinned agent-operator-contract tag
+# (the installed package matching CONTRACT_TAG, or a checkout via
+# CONTRACT_CHECKOUT), plus three envelopes derived at run time from those
+# fixtures (a full-capability identity, a `not_fulfilled` command read and a
+# `superseded` command read — the tag ships no such fixture); no fixture is
 # copied into this repo. Shell internals are not tested: only exit status,
 # stdout/stderr content (via grep) and the stub's argv log (no `docker cp`,
 # no legacy `agentctl status` on the contract path, one request ID per
@@ -113,6 +122,21 @@ request_id: req-legacy0000000001
 acknowledgement: completed
 detail: intake closed after the active attempt finished
 EOF
+  cat >"$SCENE/agent-plain/exec-agentctl-recovery-retry-agent-plain-agent-1.txt" <<'EOF'
+request_id: req-legacy0000000002
+acknowledgement: completed
+detail: safe finalization retried from retained evidence
+EOF
+  cat >"$SCENE/agent-plain/exec-agentctl-recovery-release-agent-plain-agent-1.txt" <<'EOF'
+request_id: req-legacy0000000003
+acknowledgement: completed
+detail: work secured at shelf-303; issue released
+EOF
+  cat >"$SCENE/agent-plain/exec-agentctl-errors-reset-agent-plain-agent-1.txt" <<'EOF'
+request_id: req-legacy0000000004
+acknowledgement: completed
+detail: infrastructure-error guard reset
+EOF
   cat >"$SCENE/fleet.json" <<'EOF'
 {"containers": [
   {"id": "cid-foo-1", "name": "foo", "backend": "simple-coding-agent", "contract": "1", "exec_user": "agent", "state": "running"}
@@ -158,11 +182,11 @@ run_operate() {
 }
 
 assert_contains() {
-  grep -q "$2" "$1" || fail "$3: expected '$2' in $(cat "$1")"
+  grep -q -- "$2" "$1" || fail "$3: expected '$2' in $(cat "$1")"
 }
 
 assert_not_contains() {
-  if grep -q "$2" "$1"; then
+  if grep -q -- "$2" "$1"; then
     fail "$3: unexpected '$2' in $(cat "$1")"
   fi
 }
@@ -215,7 +239,44 @@ main() {
   [ "$(command -v docker)" = "$STUB_BIN/docker" ] || fail "stub docker is not first on PATH"
 
   resolve_fixtures
-  export CONTRACT_FIXTURES_DIR="$FIXDIR"
+
+  # The pinned tag ships no full-capability identity and no `not_fulfilled`
+  # or `superseded` command fixture, so derive them at run time from the
+  # pinned fixtures (a symlink farm plus three generated envelopes): nothing
+  # is copied, and the derived envelopes cannot go stale.
+  FIXFARM="$WORK_ROOT/fixfarm"
+  mkdir -p "$FIXFARM"
+  for _f in "$FIXDIR"/*.json; do ln -s "$_f" "$FIXFARM/$(basename "$_f")"; done
+  # The stub replays the harness wrapper ({argv, exit_code, stdout,
+  # stderr}), so the derived envelopes are wrapped the same way.
+  python3 - "$FIXDIR/identity.json" "$FIXFARM/identity-full.json" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+env = json.loads(doc["stdout"])
+env["result"]["capabilities"] = ["next-issue", "stop-after", "operator-handoff",
+                                 "recovery-retry", "recovery-release", "errors-reset", "pool"]
+doc["stdout"] = json.dumps(env) + "\n"
+json.dump(doc, open(sys.argv[2], "w"))
+PYEOF
+  python3 - "$FIXDIR/next-issue-accepted.json" "$FIXFARM/command-not-fulfilled.json" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+env = json.loads(doc["stdout"])
+env["result"]["command"]["acknowledgement"] = "not_fulfilled"
+env["result"]["command"]["detail"] = "issue 122 went to another worker; priority not fulfilled"
+doc["stdout"] = json.dumps(env) + "\n"
+json.dump(doc, open(sys.argv[2], "w"))
+PYEOF
+  python3 - "$FIXDIR/next-issue-accepted.json" "$FIXFARM/command-superseded.json" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+env = json.loads(doc["stdout"])
+env["result"]["command"]["acknowledgement"] = "superseded"
+env["result"]["command"]["detail"] = "a newer command superseded this priority"
+doc["stdout"] = json.dumps(env) + "\n"
+json.dump(doc, open(sys.argv[2], "w"))
+PYEOF
+  export CONTRACT_FIXTURES_DIR="$FIXFARM"
 
   command -v agentfleet >/dev/null 2>&1 || fail "agentfleet is not installed; install from the pinned tag"
   _ver=$(agentfleet --version 2>/dev/null || true)
@@ -335,6 +396,191 @@ main() {
   grep -q -- '--contract 1 identity' "$ARGV_LOG" || fail "unadvertised: no identity pre-flight ran"
   info "ok: unadvertised operation refused before submission"
 
+  # Optional stop plan: stop --after commits where advertised, carrying the
+  # guards; the producer argv is `stop --after N`.
+  export CONTRACT_IDENTITY_FIXTURE=identity.json
+  export CONTRACT_STATUS_FIXTURE=stop-after-accepted.json
+  run_operate --context rpi5 foo stop --after 2 --request-id req-aa01bb02cc03
+  [ "$CODE" -eq 0 ] || fail "stop-after: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "close Intake after 2 finalized attempts" "stop-after (effect)"
+  assert_contains "$WORK_ROOT/out.txt" "acknowledgement: accepted" "stop-after"
+  assert_contains "$WORK_ROOT/out.txt" "accepted (committed, effect not yet applied)" "stop-after (accepted distinct)"
+  grep -q -- '--contract 1 stop --after 2' "$ARGV_LOG" || fail "stop-after: no 'stop --after 2' in mutation argv"
+  assert_mutation_carries_guards "stop-after" "req-aa01bb02cc03"
+  assert_no_file_reads "stop-after"
+  info "ok: stop --after (stop plan)"
+
+  # next-issue commits a one-shot priority; --follow reaches the final state
+  # with the same ID (the producer argv is `next issue N`).
+  export CONTRACT_STATUS_FIXTURE=next-issue-accepted.json
+  export CONTRACT_COMMAND_FIXTURE=resume-accepted.json
+  run_operate --context rpi5 foo next-issue 122 --follow --request-id req-bb02cc03dd04
+  [ "$CODE" -eq 0 ] || fail "next-issue: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "one-shot priority: issue #122" "next-issue (effect)"
+  assert_contains "$WORK_ROOT/out.txt" "acknowledgement: completed" "next-issue (final)"
+  assert_contains "$WORK_ROOT/out.txt" "state:           final (completed)" "next-issue (final state)"
+  grep -q -- '--contract 1 next issue 122' "$ARGV_LOG" || fail "next-issue: no 'next issue 122' in mutation argv"
+  assert_mutation_carries_guards "next-issue" "req-bb02cc03dd04"
+  assert_single_request_id "next-issue" "req-bb02cc03dd04"
+  assert_no_file_reads "next-issue"
+  info "ok: next-issue followed to completed"
+
+  # A lost race is final (superseded) but reported distinctly from success.
+  export CONTRACT_COMMAND_FIXTURE=command-superseded.json
+  run_operate --context rpi5 foo next-issue 122 --follow --request-id req-cc03dd04ee05
+  [ "$CODE" -eq 0 ] || fail "next-issue-superseded: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "state:           final (superseded)" "next-issue-superseded"
+  assert_single_request_id "next-issue-superseded" "req-cc03dd04ee05"
+  info "ok: next-issue followed to superseded"
+
+  # A not_fulfilled priority is final yet reported as not done, never as
+  # success: the operator must re-decide.
+  export CONTRACT_COMMAND_FIXTURE=command-not-fulfilled.json
+  run_operate --context rpi5 foo next-issue 122 --follow --request-id req-dd04ee05ff06
+  [ "$CODE" -eq 0 ] || fail "next-issue-not-fulfilled: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "state:           final (not_fulfilled)" "next-issue-not-fulfilled (final)"
+  assert_contains "$WORK_ROOT/out.txt" "not done" "next-issue-not-fulfilled (not done)"
+  assert_not_contains "$WORK_ROOT/out.txt" "final (completed)" "next-issue-not-fulfilled (never success)"
+  assert_single_request_id "next-issue-not-fulfilled" "req-dd04ee05ff06"
+  info "ok: next-issue not_fulfilled reported as not done"
+
+  # handoff commits where the instance advertises operator-handoff.
+  export CONTRACT_IDENTITY_FIXTURE=identity-full.json
+  export CONTRACT_STATUS_FIXTURE=handoff-accepted.json
+  run_operate --context rpi5 foo handoff --request-id req-ee05ff06aa07
+  [ "$CODE" -eq 0 ] || fail "handoff: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "Operator Handoff of the active attempt" "handoff (effect)"
+  assert_contains "$WORK_ROOT/out.txt" "acknowledgement: accepted" "handoff"
+  assert_contains "$WORK_ROOT/out.txt" "accepted (committed, effect not yet applied)" "handoff (accepted distinct)"
+  assert_contains "$WORK_ROOT/out.txt" "command req-ee05ff06aa07" "handoff (follow-up keeps the ID)"
+  grep -q -- '--contract 1 handoff now' "$ARGV_LOG" || fail "handoff: no 'handoff now' in mutation argv"
+  assert_mutation_carries_guards "handoff" "req-ee05ff06aa07"
+  assert_no_file_reads "handoff"
+  info "ok: handoff (accepted distinct from final)"
+
+  # recovery-retry commits where advertised, carrying the guards.
+  export CONTRACT_STATUS_FIXTURE=recovery-retry-completed.json
+  run_operate --context rpi5 foo recovery-retry stub-1 --request-id req-ff06aa07bb08
+  [ "$CODE" -eq 0 ] || fail "recovery-retry: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "retry safe finalization of attempt stub-1" "recovery-retry (effect)"
+  assert_contains "$WORK_ROOT/out.txt" "acknowledgement: completed" "recovery-retry"
+  assert_contains "$WORK_ROOT/out.txt" "state:           final (completed)" "recovery-retry (final state)"
+  grep -q -- '--contract 1 recovery retry stub-1' "$ARGV_LOG" || fail "recovery-retry: no 'recovery retry stub-1' in mutation argv"
+  assert_mutation_carries_guards "recovery-retry" "req-ff06aa07bb08"
+  assert_no_file_reads "recovery-retry"
+  info "ok: recovery-retry"
+
+  # recovery-retry is refused before submission when not advertised.
+  export CONTRACT_IDENTITY_FIXTURE=identity.json
+  run_operate --context rpi5 foo recovery-retry stub-1 --request-id req-aa07bb08cc09
+  [ "$CODE" -eq 3 ] || fail "recovery-retry-unadvertised: exit $CODE, want 3"
+  assert_contains "$WORK_ROOT/err.txt" "does not advertise 'recovery-retry'" "recovery-retry-unadvertised"
+  assert_contains "$WORK_ROOT/err.txt" "advertised_capabilities:" "recovery-retry-unadvertised (caps listed)"
+  if grep -q -- '--contract 1 recovery' "$ARGV_LOG"; then
+    fail "recovery-retry-unadvertised: the mutation was submitted anyway"
+  fi
+  info "ok: recovery-retry refused when unadvertised"
+
+  # recovery-retry rejection is reported with the request ID; nothing is
+  # stored, so there is no command follow-up.
+  export CONTRACT_IDENTITY_FIXTURE=identity-full.json
+  export CONTRACT_STATUS_FIXTURE=recovery-retry-rejected.json
+  run_operate --context rpi5 foo recovery-retry stub-1 --request-id req-bb08cc09dd10
+  [ "$CODE" -eq 1 ] || fail "recovery-retry-rejection: exit $CODE, want 1"
+  assert_contains "$WORK_ROOT/err.txt" "rejected" "recovery-retry-rejection"
+  assert_contains "$WORK_ROOT/out.txt" "request_id:      req-bb08cc09dd10" "recovery-retry-rejection (ID surfaced)"
+  if grep -q -- '--contract 1 command' "$ARGV_LOG"; then
+    fail "recovery-retry-rejection: nothing was stored, so no command follow-up may run"
+  fi
+  assert_mutation_carries_guards "recovery-retry-rejection" "req-bb08cc09dd10"
+  assert_no_file_reads "recovery-retry-rejection"
+  info "ok: recovery-retry rejection"
+
+  # recovery-release commits where advertised, carrying --saved-at with the
+  # location (never a credential).
+  export CONTRACT_STATUS_FIXTURE=recovery-release-completed.json
+  run_operate --context rpi5 foo recovery-release stub-1 --saved-at shelf-303 --request-id req-cc09dd10ee11
+  [ "$CODE" -eq 0 ] || fail "recovery-release: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "secured at shelf-303" "recovery-release (location echoed)"
+  assert_contains "$WORK_ROOT/out.txt" "acknowledgement: completed" "recovery-release"
+  grep -q -- '--contract 1 recovery release stub-1 --saved-at shelf-303' "$ARGV_LOG" || fail "recovery-release: no 'recovery release stub-1 --saved-at shelf-303' in mutation argv"
+  assert_mutation_carries_guards "recovery-release" "req-cc09dd10ee11"
+  assert_no_file_reads "recovery-release"
+  info "ok: recovery-release"
+
+  # recovery-release is refused before submission when not advertised.
+  export CONTRACT_IDENTITY_FIXTURE=identity.json
+  run_operate --context rpi5 foo recovery-release stub-1 --saved-at shelf-303 --request-id req-dd10ee11ff12
+  [ "$CODE" -eq 3 ] || fail "recovery-release-unadvertised: exit $CODE, want 3"
+  assert_contains "$WORK_ROOT/err.txt" "does not advertise 'recovery-release'" "recovery-release-unadvertised"
+  if grep -q -- '--contract 1 recovery' "$ARGV_LOG"; then
+    fail "recovery-release-unadvertised: the mutation was submitted anyway"
+  fi
+  info "ok: recovery-release refused when unadvertised"
+
+  # recovery-release without --saved-at is a usage error: nothing submitted.
+  export CONTRACT_IDENTITY_FIXTURE=identity-full.json
+  run_operate --context rpi5 foo recovery-release stub-1 --request-id req-ee11ff12aa13
+  [ "$CODE" -eq 2 ] || fail "recovery-release-no-saved-at: exit $CODE, want 2"
+  assert_contains "$WORK_ROOT/err.txt" "--saved-at" "recovery-release-no-saved-at (asks for a location)"
+  if grep -q -- '--contract 1' "$ARGV_LOG"; then
+    fail "recovery-release-no-saved-at: nothing may be submitted without --saved-at"
+  fi
+  info "ok: recovery-release without --saved-at refused"
+
+  # recovery-release refuses a credential-shaped --saved-at before
+  # submission and asks for a location instead; the value is never echoed
+  # and no submission (not even identity) runs.
+  for _secret in "ghp_0123456789abcdef0123456789abcdef0123" "token=0123456789abcdef0123456789abcdef" "0123456789abcdef0123456789abcdef0123456789abcdef"; do
+    run_operate --context rpi5 foo recovery-release stub-1 --saved-at "$_secret" --request-id req-ff12aa13bb14
+    [ "$CODE" -eq 2 ] || fail "recovery-release-secret: exit $CODE, want 2 for '$_secret'"
+    assert_contains "$WORK_ROOT/err.txt" "looks like a credential" "recovery-release-secret (refused)"
+    assert_contains "$WORK_ROOT/err.txt" "location" "recovery-release-secret (asks for a location)"
+    if grep -q -- '--contract 1' "$ARGV_LOG"; then
+      fail "recovery-release-secret: nothing may be submitted with a credential-shaped --saved-at"
+    fi
+    if grep -q "$_secret" "$WORK_ROOT/out.txt" || grep -q "$_secret" "$WORK_ROOT/err.txt"; then
+      fail "recovery-release-secret: the refused value must never be echoed"
+    fi
+  done
+  info "ok: recovery-release refuses credential-shaped --saved-at"
+
+  # errors-reset commits where advertised, carrying the guards.
+  export CONTRACT_STATUS_FIXTURE=errors-reset-completed.json
+  run_operate --context rpi5 foo errors-reset --request-id req-aa13bb14cc15
+  [ "$CODE" -eq 0 ] || fail "errors-reset: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "infrastructure-error guard" "errors-reset (effect)"
+  assert_contains "$WORK_ROOT/out.txt" "acknowledgement: completed" "errors-reset"
+  assert_contains "$WORK_ROOT/out.txt" "state:           final (completed)" "errors-reset (final state)"
+  grep -q -- '--contract 1 errors reset' "$ARGV_LOG" || fail "errors-reset: no 'errors reset' in mutation argv"
+  assert_mutation_carries_guards "errors-reset" "req-aa13bb14cc15"
+  assert_no_file_reads "errors-reset"
+  info "ok: errors-reset"
+
+  # errors-reset is rejected with no change while the guard is already
+  # clear; nothing is stored, so there is no command follow-up.
+  export CONTRACT_STATUS_FIXTURE=errors-reset-rejected.json
+  run_operate --context rpi5 foo errors-reset --request-id req-bb14cc15dd16
+  [ "$CODE" -eq 1 ] || fail "errors-reset-rejection: exit $CODE, want 1"
+  assert_contains "$WORK_ROOT/err.txt" "rejected" "errors-reset-rejection"
+  if grep -q -- '--contract 1 command' "$ARGV_LOG"; then
+    fail "errors-reset-rejection: nothing was stored, so no command follow-up may run"
+  fi
+  assert_mutation_carries_guards "errors-reset-rejection" "req-bb14cc15dd16"
+  assert_no_file_reads "errors-reset-rejection"
+  info "ok: errors-reset rejection when the guard is clear"
+
+  # errors-reset is refused before submission when not advertised.
+  export CONTRACT_IDENTITY_FIXTURE=identity.json
+  run_operate --context rpi5 foo errors-reset --request-id req-cc15dd16ee17
+  [ "$CODE" -eq 3 ] || fail "errors-reset-unadvertised: exit $CODE, want 3"
+  assert_contains "$WORK_ROOT/err.txt" "does not advertise 'errors-reset'" "errors-reset-unadvertised"
+  if grep -q -- '--contract 1 errors' "$ARGV_LOG"; then
+    fail "errors-reset-unadvertised: the mutation was submitted anyway"
+  fi
+  info "ok: errors-reset refused when unadvertised"
+  export CONTRACT_IDENTITY_FIXTURE=identity-full.json
+
   # --context reaches agentfleet through the Docker context mechanism.
   export CONTRACT_STATUS_FIXTURE=stop-accepted.json
   run_operate --context rpi5 foo stop --request-id req-8b9c0d1e2f3a
@@ -367,6 +613,45 @@ main() {
   assert_contains "$WORK_ROOT/out.txt" "request_id:      req-legacy0000000001" "legacy-stop"
   grep -q 'agentctl stop --expect-repo=example-owner/example-repo' "$ARGV_LOG" || fail "legacy-stop: no --expect-repo in agentctl argv"
   info "ok: legacy stop (legacy agentctl with --expect-repo)"
+
+  # Legacy path: stop --after passes the plan through to agentctl.
+  run_operate --context rpi5 plain stop --after 2
+  [ "$CODE" -eq 0 ] || fail "legacy-stop-after: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "legacy agentctl" "legacy-stop-after"
+  assert_contains "$WORK_ROOT/out.txt" "request_id:      req-legacy0000000001" "legacy-stop-after"
+  grep -q 'agentctl stop --after 2 --expect-repo=example-owner/example-repo' "$ARGV_LOG" || fail "legacy-stop-after: no 'agentctl stop --after 2 --expect-repo=' in agentctl argv"
+  info "ok: legacy stop --after"
+
+  # Legacy path: recovery retry (the legacy grammar takes no --expect-repo).
+  run_operate --context rpi5 plain recovery-retry att-7
+  [ "$CODE" -eq 0 ] || fail "legacy-recovery-retry: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "legacy agentctl" "legacy-recovery-retry"
+  assert_contains "$WORK_ROOT/out.txt" "request_id:      req-legacy0000000002" "legacy-recovery-retry"
+  grep -q 'agentctl recovery retry att-7' "$ARGV_LOG" || fail "legacy-recovery-retry: no 'agentctl recovery retry att-7' in argv"
+  assert_not_contains "$ARGV_LOG" "expect-repo" "legacy-recovery-retry (legacy recovery takes no guard flag)"
+  info "ok: legacy recovery retry"
+
+  # Legacy path: recovery release carries --saved-at (and refuses a
+  # credential-shaped one before running anything, as on the contract path).
+  run_operate --context rpi5 plain recovery-release att-7 --saved-at shelf-303
+  [ "$CODE" -eq 0 ] || fail "legacy-recovery-release: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "request_id:      req-legacy0000000003" "legacy-recovery-release"
+  grep -q 'agentctl recovery release att-7 --saved-at shelf-303' "$ARGV_LOG" || fail "legacy-recovery-release: no 'agentctl recovery release att-7 --saved-at shelf-303' in argv"
+  assert_not_contains "$ARGV_LOG" "expect-repo" "legacy-recovery-release (legacy recovery takes no guard flag)"
+  run_operate --context rpi5 plain recovery-release att-7 --saved-at "ghp_0123456789abcdef0123456789abcdef0123"
+  [ "$CODE" -eq 2 ] || fail "legacy-recovery-release-secret: exit $CODE, want 2"
+  assert_contains "$WORK_ROOT/err.txt" "looks like a credential" "legacy-recovery-release-secret"
+  if grep -q 'agentctl recovery release' "$ARGV_LOG"; then
+    fail "legacy-recovery-release-secret: nothing may run with a credential-shaped --saved-at"
+  fi
+  info "ok: legacy recovery release"
+
+  # Legacy path: errors reset.
+  run_operate --context rpi5 plain errors-reset
+  [ "$CODE" -eq 0 ] || fail "legacy-errors-reset: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "request_id:      req-legacy0000000004" "legacy-errors-reset"
+  grep -q 'agentctl errors reset' "$ARGV_LOG" || fail "legacy-errors-reset: no 'agentctl errors reset' in argv"
+  info "ok: legacy errors reset"
 
   # Legacy path: command lookup reads the stored command.
   run_operate --context rpi5 plain command req-legacy0000000001

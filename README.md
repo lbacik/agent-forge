@@ -20,7 +20,7 @@ agent-forge/
 ├── .agents/skills/
 │   ├── create-agent/          # Instance scaffolding instructions and templates
 │   ├── manage-pool/           # Add, remove, stop and resume Workers of an instance
-│   ├── operate-agent/         # Operator Commands (stop, resume, command lookup) and helper
+│   ├── operate-agent/         # Operator Commands (stop, resume, next-issue, handoff, recovery, errors-reset, command lookup) and helper
 │   └── debug-agent/           # Diagnostics instructions and helper scripts
 ├── .claude -> .agents        # Exposes the same skills to Claude Code
 ├── .gitignore
@@ -429,9 +429,11 @@ pinned tag — no copied fixtures. It pins `operate-agent`'s `operate.sh`
 the same way: `stop`, `resume` and command lookup on the contract path
 (success with `accepted` distinct from the final states, rejection,
 `unsupported`, the ambiguous same-ID `command` follow-up, contract
-mismatch with no legacy fallback, malformed stdout), the pre-submission
-refusal of an unadvertised operation, and the legacy `agentctl` stop and
-command lookup for an unlabelled container.
+mismatch with no legacy fallback, malformed stdout), the optional commands
+(`stop --after`, `next-issue` followed to each final state, `handoff`,
+`recovery-retry`, `recovery-release --saved-at` with its credential
+refusal, `errors-reset`), the pre-submission refusal of each unadvertised
+operation, and the legacy `agentctl` argv for an unlabelled container.
 
 Run the same check locally (needs `agentfleet` from the pinned tag, no Docker):
 
