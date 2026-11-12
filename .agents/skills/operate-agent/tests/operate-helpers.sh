@@ -31,10 +31,11 @@
 # a gh that fails if ever called). CONTRACT_FIXTURES_DIR points at a scratch
 # farm of symlinks to the fixtures of the pinned agent-operator-contract tag
 # (the installed package matching CONTRACT_TAG, or a checkout via
-# CONTRACT_CHECKOUT), plus three envelopes derived at run time from those
-# fixtures (a full-capability identity, a `not_fulfilled` command read and a
-# `superseded` command read — the tag ships no such fixture); no fixture is
-# copied into this repo. Shell internals are not tested: only exit status,
+# CONTRACT_CHECKOUT), plus five envelopes derived at run time from those
+# fixtures (a full-capability identity, two single-capability identities, a
+# `not_fulfilled` command read and a `superseded` command read — the tag
+# ships no such fixture); no fixture is copied into this repo. Shell
+# internals are not tested: only exit status,
 # stdout/stderr content (via grep) and the stub's argv log (no `docker cp`,
 # no legacy `agentctl status` on the contract path, one request ID per
 # submit-then-follow-up sequence).
@@ -242,7 +243,7 @@ main() {
 
   # The pinned tag ships no full-capability identity and no `not_fulfilled`
   # or `superseded` command fixture, so derive them at run time from the
-  # pinned fixtures (a symlink farm plus three generated envelopes): nothing
+  # pinned fixtures (a symlink farm plus five generated envelopes): nothing
   # is copied, and the derived envelopes cannot go stale.
   FIXFARM="$WORK_ROOT/fixfarm"
   mkdir -p "$FIXFARM"
@@ -255,6 +256,25 @@ doc = json.load(open(sys.argv[1]))
 env = json.loads(doc["stdout"])
 env["result"]["capabilities"] = ["next-issue", "stop-after", "operator-handoff",
                                  "recovery-retry", "recovery-release", "errors-reset", "pool"]
+doc["stdout"] = json.dumps(env) + "\n"
+json.dump(doc, open(sys.argv[2], "w"))
+PYEOF
+  # Single-capability identities: the pinned identity advertises
+  # next-issue and stop-after together, so derive the one-sided variants
+  # to pin the unadvertised refusal of each optional command.
+  python3 - "$FIXDIR/identity.json" "$FIXFARM/identity-next-only.json" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+env = json.loads(doc["stdout"])
+env["result"]["capabilities"] = ["next-issue"]
+doc["stdout"] = json.dumps(env) + "\n"
+json.dump(doc, open(sys.argv[2], "w"))
+PYEOF
+  python3 - "$FIXDIR/identity.json" "$FIXFARM/identity-stop-only.json" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+env = json.loads(doc["stdout"])
+env["result"]["capabilities"] = ["stop-after"]
 doc["stdout"] = json.dumps(env) + "\n"
 json.dump(doc, open(sys.argv[2], "w"))
 PYEOF
@@ -410,6 +430,34 @@ PYEOF
   assert_no_file_reads "stop-after"
   info "ok: stop --after (stop plan)"
 
+  # stop --after rejection is reported with the request ID; nothing is
+  # stored, so there is no command follow-up.
+  export CONTRACT_STATUS_FIXTURE=rejected.json
+  run_operate --context rpi5 foo stop --after 2 --request-id req-aa02bb03cc04
+  [ "$CODE" -eq 1 ] || fail "stop-after-rejection: exit $CODE, want 1"
+  assert_contains "$WORK_ROOT/err.txt" "rejected" "stop-after-rejection"
+  assert_contains "$WORK_ROOT/out.txt" "request_id:      req-aa02bb03cc04" "stop-after-rejection (ID surfaced)"
+  if grep -q -- '--contract 1 command' "$ARGV_LOG"; then
+    fail "stop-after-rejection: nothing was stored, so no command follow-up may run"
+  fi
+  assert_mutation_carries_guards "stop-after-rejection" "req-aa02bb03cc04"
+  assert_no_file_reads "stop-after-rejection"
+  info "ok: stop --after rejection"
+
+  # stop --after is refused before submission where the instance does not
+  # advertise stop-after, listing the advertised capabilities.
+  export CONTRACT_IDENTITY_FIXTURE=identity-next-only.json
+  export CONTRACT_STATUS_FIXTURE=stop-after-accepted.json
+  run_operate --context rpi5 foo stop --after 2 --request-id req-aa03bb04cc05
+  [ "$CODE" -eq 3 ] || fail "stop-after-unadvertised: exit $CODE, want 3"
+  assert_contains "$WORK_ROOT/err.txt" "does not advertise 'stop-after'" "stop-after-unadvertised"
+  assert_contains "$WORK_ROOT/err.txt" "advertised_capabilities: next-issue" "stop-after-unadvertised (caps listed)"
+  if grep -q -- '--contract 1 stop' "$ARGV_LOG"; then
+    fail "stop-after-unadvertised: the mutation was submitted anyway"
+  fi
+  export CONTRACT_IDENTITY_FIXTURE=identity.json
+  info "ok: stop --after refused when unadvertised"
+
   # next-issue commits a one-shot priority; --follow reaches the final state
   # with the same ID (the producer argv is `next issue N`).
   export CONTRACT_STATUS_FIXTURE=next-issue-accepted.json
@@ -444,6 +492,34 @@ PYEOF
   assert_single_request_id "next-issue-not-fulfilled" "req-dd04ee05ff06"
   info "ok: next-issue not_fulfilled reported as not done"
 
+  # next-issue rejection is reported with the request ID; nothing is
+  # stored, so there is no command follow-up.
+  export CONTRACT_IDENTITY_FIXTURE=identity.json
+  export CONTRACT_STATUS_FIXTURE=rejected.json
+  run_operate --context rpi5 foo next-issue 122 --request-id req-dd05ee06ff07
+  [ "$CODE" -eq 1 ] || fail "next-issue-rejection: exit $CODE, want 1"
+  assert_contains "$WORK_ROOT/err.txt" "rejected" "next-issue-rejection"
+  assert_contains "$WORK_ROOT/out.txt" "request_id:      req-dd05ee06ff07" "next-issue-rejection (ID surfaced)"
+  if grep -q -- '--contract 1 command' "$ARGV_LOG"; then
+    fail "next-issue-rejection: nothing was stored, so no command follow-up may run"
+  fi
+  assert_mutation_carries_guards "next-issue-rejection" "req-dd05ee06ff07"
+  assert_no_file_reads "next-issue-rejection"
+  info "ok: next-issue rejection"
+
+  # next-issue is refused before submission where the instance does not
+  # advertise it, listing the advertised capabilities.
+  export CONTRACT_IDENTITY_FIXTURE=identity-stop-only.json
+  export CONTRACT_STATUS_FIXTURE=next-issue-accepted.json
+  run_operate --context rpi5 foo next-issue 122 --request-id req-dd06ee07ff08
+  [ "$CODE" -eq 3 ] || fail "next-issue-unadvertised: exit $CODE, want 3"
+  assert_contains "$WORK_ROOT/err.txt" "does not advertise 'next-issue'" "next-issue-unadvertised"
+  assert_contains "$WORK_ROOT/err.txt" "advertised_capabilities: stop-after" "next-issue-unadvertised (caps listed)"
+  if grep -q -- '--contract 1 next' "$ARGV_LOG"; then
+    fail "next-issue-unadvertised: the mutation was submitted anyway"
+  fi
+  info "ok: next-issue refused when unadvertised"
+
   # handoff commits where the instance advertises operator-handoff.
   export CONTRACT_IDENTITY_FIXTURE=identity-full.json
   export CONTRACT_STATUS_FIXTURE=handoff-accepted.json
@@ -457,6 +533,20 @@ PYEOF
   assert_mutation_carries_guards "handoff" "req-ee05ff06aa07"
   assert_no_file_reads "handoff"
   info "ok: handoff (accepted distinct from final)"
+
+  # handoff rejection is reported with the request ID; nothing is stored,
+  # so there is no command follow-up.
+  export CONTRACT_STATUS_FIXTURE=handoff-rejected.json
+  run_operate --context rpi5 foo handoff --request-id req-ee06ff07aa08
+  [ "$CODE" -eq 1 ] || fail "handoff-rejection: exit $CODE, want 1"
+  assert_contains "$WORK_ROOT/err.txt" "rejected" "handoff-rejection"
+  assert_contains "$WORK_ROOT/out.txt" "request_id:      req-ee06ff07aa08" "handoff-rejection (ID surfaced)"
+  if grep -q -- '--contract 1 command' "$ARGV_LOG"; then
+    fail "handoff-rejection: nothing was stored, so no command follow-up may run"
+  fi
+  assert_mutation_carries_guards "handoff-rejection" "req-ee06ff07aa08"
+  assert_no_file_reads "handoff-rejection"
+  info "ok: handoff rejection"
 
   # recovery-retry commits where advertised, carrying the guards.
   export CONTRACT_STATUS_FIXTURE=recovery-retry-completed.json
@@ -544,6 +634,20 @@ PYEOF
     fi
   done
   info "ok: recovery-release refuses credential-shaped --saved-at"
+
+  # recovery-release rejection is reported with the request ID; nothing is
+  # stored, so there is no command follow-up.
+  export CONTRACT_STATUS_FIXTURE=recovery-release-rejected.json
+  run_operate --context rpi5 foo recovery-release stub-1 --saved-at shelf-303 --request-id req-ff13aa14bb15
+  [ "$CODE" -eq 1 ] || fail "recovery-release-rejection: exit $CODE, want 1"
+  assert_contains "$WORK_ROOT/err.txt" "rejected" "recovery-release-rejection"
+  assert_contains "$WORK_ROOT/out.txt" "request_id:      req-ff13aa14bb15" "recovery-release-rejection (ID surfaced)"
+  if grep -q -- '--contract 1 command' "$ARGV_LOG"; then
+    fail "recovery-release-rejection: nothing was stored, so no command follow-up may run"
+  fi
+  assert_mutation_carries_guards "recovery-release-rejection" "req-ff13aa14bb15"
+  assert_no_file_reads "recovery-release-rejection"
+  info "ok: recovery-release rejection"
 
   # errors-reset commits where advertised, carrying the guards.
   export CONTRACT_STATUS_FIXTURE=errors-reset-completed.json
