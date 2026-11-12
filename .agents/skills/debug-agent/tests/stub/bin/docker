@@ -29,13 +29,16 @@
 # same tests/stub/bin mechanism: `ps` with the contract label serves
 # $scene/fleet.json, `inspect` without `-f` serves it as JSON, the per-container
 # contract label is read from $scene/<project>/contract-label-<container>.txt,
-# and `exec`/`run` of `/usr/local/bin/agentctl --contract ...` replays one
-# fixture from $CONTRACT_FIXTURES_DIR (the pinned tag checkout, never copied).
-# A test can pin one member's fixture with
-# $scene/contract-status-<name>.txt (or contract-identity-<name>.txt), naming
-# the fixture file; tests without a mapping keep the suite-wide
-# CONTRACT_STATUS_FIXTURE default. A bare `ps` (no project filter, as the fleet
-# overview's legacy list runs) serves $scene/ps-ALL.txt.
+# fixture from $CONTRACT_FIXTURES_DIR (the pinned tag checkout, never copied):
+# identity, command and status/mutation reads via CONTRACT_IDENTITY_FIXTURE,
+# CONTRACT_COMMAND_FIXTURE and CONTRACT_STATUS_FIXTURE. A test can pin one
+# member's fixture with $scene/contract-<op>-<name>.txt (op one of status,
+# identity, command), naming the fixture file; tests without a mapping keep
+# the suite-wide defaults. Legacy `agentctl stop|resume|command|next issue|
+# handoff` (no --contract flag) replays a recorded text reply per op from
+# $scene/<project>/exec-agentctl-<op>-<container>.txt. A bare `ps` (no
+# project filter, as the fleet overview's legacy list runs) serves
+# $scene/ps-ALL.txt.
 #
 # This fake never delegates to a real docker: there is no code path here that
 # reaches a Docker host.
@@ -231,6 +234,7 @@ PY
           (*" attempts list "*|*" attempts ls "*) _op=attlist ;;
           (*" attempts show "*) _op=attshow ;;
           (*" attempts export "*) _op=attexport ;;
+          (*" command "*) _op=command ;;
         esac
         case "$_op" in
           (attlist)
@@ -369,6 +373,8 @@ PYEOF
         esac
         if [ "$_op" = identity ]; then
           _fix=${CONTRACT_IDENTITY_FIXTURE:-identity.json}
+        elif [ "$_op" = command ]; then
+          _fix=${CONTRACT_COMMAND_FIXTURE:-command-found.json}
         else
           _fix=${CONTRACT_STATUS_FIXTURE:-status-active.json}
         fi
@@ -475,6 +481,30 @@ PYEOF
           cat "$f"
         else
           stub_fail "stub docker: no recorded reply: add $proj/exec-agentctl-$cont.txt"
+        fi
+        exit 0
+        ;;
+      (*"/usr/local/bin/agentctl stop"*|*"/usr/local/bin/agentctl resume"*|*"/usr/local/bin/agentctl command "*|*"/usr/local/bin/agentctl next issue"*|*"/usr/local/bin/agentctl handoff"*)
+        # Legacy agentctl mutation/lookup replay for the operate-agent
+        # consumer suite (no --contract flag anywhere above matched). Reply
+        # fixture: $scene/<project>/exec-agentctl-<op>-<container>.txt with
+        # <op> one of stop, resume, command, next-issue, handoff.
+        case "$script" in
+          (*"/usr/local/bin/agentctl stop"*) _lop=stop ;;
+          (*"/usr/local/bin/agentctl resume"*) _lop=resume ;;
+          (*"/usr/local/bin/agentctl command "*) _lop=command ;;
+          (*"/usr/local/bin/agentctl next issue"*) _lop=next-issue ;;
+          (*"/usr/local/bin/agentctl handoff"*) _lop=handoff ;;
+        esac
+        # shellcheck disable=SC2086 # word-splitting one positional is intended
+        set -- $pos
+        cont=${1:?stub docker: legacy agentctl mutation without a container}
+        proj=$(proj_of_container "$cont")
+        f="$scene/$proj/exec-agentctl-$_lop-$cont.txt"
+        if [ -f "$f" ]; then
+          cat "$f"
+        else
+          stub_fail "stub docker: no recorded reply: add $proj/exec-agentctl-$_lop-$cont.txt"
         fi
         exit 0
         ;;

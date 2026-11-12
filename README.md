@@ -5,7 +5,8 @@ Agent Forge is a clean starting point for creating and operating dedicated
 for GitHub repositories. It follows the same workflow as the sibling
 `../simple-coding-agent-env` project: create an agent with `create-agent`, build
 its Docker image, start it with Docker Compose, change its Workers with
-`manage-pool`, and investigate problems with `debug-agent`.
+`manage-pool`, stop and resume them with `operate-agent`, and investigate
+problems with `debug-agent`.
 
 Each instance targets one repository and has its own toolchain, repository
 profile and configuration. It runs one or more Workers (containers), each
@@ -19,6 +20,7 @@ agent-forge/
 ├── .agents/skills/
 │   ├── create-agent/          # Instance scaffolding instructions and templates
 │   ├── manage-pool/           # Add, remove, stop and resume Workers of an instance
+│   ├── operate-agent/         # Operator Commands (stop, resume, command lookup) and helper
 │   └── debug-agent/           # Diagnostics instructions and helper scripts
 ├── .claude -> .agents        # Exposes the same skills to Claude Code
 ├── .gitignore
@@ -243,12 +245,32 @@ rpi5 context.
 
 It covers adding a Worker (on the shared login, or with its own GitHub
 account in `.env.worker-<n>`), removing one, stopping and resuming one Worker
-or the whole Pool, and `agentctl next issue` for a chosen Worker, including
-the order above when a login gets its second Worker. Every change waits for
+or the whole Pool, and `next issue` for a chosen Worker, including
+the order above when a login gets its second Worker. The stop, resume and
+`next issue` submissions themselves go through `operate-agent` (next
+section). Every change waits for
 your go-ahead, a Worker holding a Claim is never removed, and volumes are
 deleted only by you.
 
-### 5. Debug problems
+### 5. Operate an instance
+
+Ask your coding assistant to use the
+[`operate-agent`](.agents/skills/operate-agent/SKILL.md) skill to stop or
+resume a Worker and to read back a committed Operator Command. For example:
+
+```text
+Use operate-agent to stop agent-instances/agent-repository on the rpi5
+context.
+```
+
+`stop` drains the Worker (the active attempt finishes, then Intake closes);
+`resume` reopens Intake. Neither ever stops or starts a container. Every
+command runs only on your explicit request with a confirmed target
+(instance, repository, backend, effect), carries the Target Repository and a
+request ID, and reports its acknowledgement (`accepted` vs `completed`,
+`superseded`, `not_fulfilled`). Read-only diagnosis stays in `debug-agent`.
+
+### 6. Debug problems
 
 Ask your coding assistant to use the
 [`debug-agent`](.agents/skills/debug-agent/SKILL.md) skill. Include the instance,
@@ -401,6 +423,22 @@ Run the same checks locally (needs `agentfleet` from the pinned tag, no Docker):
 .agents/skills/debug-agent/tests/contract-pool-fleet.sh
 ```
 
+Every pull request also runs the operate-agent consumer suite
+([`operate-helpers.yml`](.github/workflows/operate-helpers.yml)) from the
+pinned tag — no copied fixtures. It pins `operate-agent`'s `operate.sh`
+the same way: `stop`, `resume` and command lookup on the contract path
+(success with `accepted` distinct from the final states, rejection,
+`unsupported`, the ambiguous same-ID `command` follow-up, contract
+mismatch with no legacy fallback, malformed stdout), the pre-submission
+refusal of an unadvertised operation, and the legacy `agentctl` stop and
+command lookup for an unlabelled container.
+
+Run the same check locally (needs `agentfleet` from the pinned tag, no Docker):
+
+```bash
+.agents/skills/operate-agent/tests/operate-helpers.sh
+```
+
 ## Relationship to simple-coding-agent-env
 
 The skills and templates originate from `../simple-coding-agent-env`. They
@@ -412,5 +450,5 @@ sibling project and are read from there when it is available.
 The operating workflow remains the same:
 
 ```text
-create-agent → docker compose build → docker compose up -d → manage-pool → debug-agent
+create-agent → docker compose build → docker compose up -d → manage-pool → operate-agent → debug-agent
 ```

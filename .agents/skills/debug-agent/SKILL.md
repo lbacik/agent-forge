@@ -270,9 +270,11 @@ container's live runtime, not its files:
 
 - the agent's live control state: `agentctl status` (intake running or
   stopped, active attempt, pending commands, recovery, handoff). It's
-  read-only, like `agentctl command`. Every other `agentctl` subcommand
-  (`stop`, `resume`, `next issue`, `handoff now`, `recovery …`) changes what
-  the agent does, so run those only when the user asks
+  read-only. This skill never mutates: for `stop`, `resume`, `next issue`,
+  `handoff now`, `recovery …`, or reading back a command (`agentctl
+  command`, the `command <request-id>` lookup), use
+  [operate-agent](../operate-agent/SKILL.md) instead, and only when the user
+  asks
 - process state: whether MySQL/Redis from `agent-entrypoint.sh` are up
   (bundled-services instances: `agent-jsonhub-api`, `agent-paysubscriptions`).
   Images built from the create-agent template before it added `procps` have
