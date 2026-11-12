@@ -31,6 +31,11 @@
 # contract label is read from $scene/<project>/contract-label-<container>.txt,
 # and `exec`/`run` of `/usr/local/bin/agentctl --contract ...` replays one
 # fixture from $CONTRACT_FIXTURES_DIR (the pinned tag checkout, never copied).
+# A test can pin one member's fixture with
+# $scene/contract-status-<name>.txt (or contract-identity-<name>.txt), naming
+# the fixture file; tests without a mapping keep the suite-wide
+# CONTRACT_STATUS_FIXTURE default. A bare `ps` (no project filter, as the fleet
+# overview's legacy list runs) serves $scene/ps-ALL.txt.
 #
 # This fake never delegates to a real docker: there is no code path here that
 # reaches a Docker host.
@@ -101,9 +106,16 @@ case "$cmd" in
       fi
       exit 0
     fi
-    [ -n "$proj" ] || {
-      stub_fail "stub docker: no recorded reply: ps without project filter"
-    }
+    if [ -z "$proj" ]; then
+      # Fleet overview legacy list: one ps for every project on the context.
+      f="$scene/ps-ALL.txt"
+      if [ -f "$f" ]; then
+        cat "$f"
+      else
+        stub_fail "stub docker: no recorded reply: add ps-ALL.txt (empty file means no containers)"
+      fi
+      exit 0
+    fi
     if [ -n "$svc" ]; then
       f="$scene/$proj/ps-$svc.txt"
     else
@@ -359,6 +371,51 @@ PYEOF
           _fix=${CONTRACT_IDENTITY_FIXTURE:-identity.json}
         else
           _fix=${CONTRACT_STATUS_FIXTURE:-status-active.json}
+        fi
+        # Per-member override: $scene/contract-<op>-<name>.txt names the
+        # fixture for one Fleet member (exec carries the container id, an
+        # Offline Read run carries the image; both map through fleet.json).
+        # Tests without a mapping keep the suite-wide default above.
+        _key=""
+        _prev=""
+        _want=0
+        for _a in "$@"; do
+          if [ "$_want" -eq 1 ]; then
+            _key=$_a
+            _want=0
+          elif [ "$_prev" = "--user" ]; then
+            _prev="gotuser"
+          elif [ "$_prev" = "gotuser" ]; then
+            case "$cmd" in
+              (exec) _key=$_a ;;
+            esac
+            _prev=""
+          elif [ "$_a" = "/usr/local/bin/agentctl" ] && [ "$cmd" = "run" ]; then
+            _want=1
+          else
+            _prev=$_a
+          fi
+        done
+        _member=""
+        if [ -n "$_key" ] && [ -f "$scene/fleet.json" ]; then
+          _member=$(python3 - "$scene/fleet.json" "$_key" <<'PYEOF' || true
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+key = sys.argv[2]
+for c in doc.get("containers", []):
+    if not isinstance(c, dict):
+        continue
+    if c.get("id") == key or c.get("image") == key:
+        sys.stdout.write(str(c.get("name", "")))
+        break
+PYEOF
+)
+        fi
+        if [ -n "$_member" ] && [ -f "$scene/contract-$_op-$_member.txt" ]; then
+          _fix=$(tr -d '[:space:]' <"$scene/contract-$_op-$_member.txt")
         fi
         if [ -z "$_fixdir" ]; then
           stub_fail "stub docker: CONTRACT_FIXTURES_DIR is not set for contract agentctl replay"

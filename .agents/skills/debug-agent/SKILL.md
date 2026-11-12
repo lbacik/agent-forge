@@ -114,18 +114,52 @@ itself):
 .claude/skills/debug-agent/scripts/pool-status.sh [--context <ctx>] [--github] <name-fragment>
 ```
 
-It prints one block per Worker — container state, intake state, active issue
-and `pending_next_issue` — from `agentctl status` via one `docker exec` per
-running Worker (one SSH round trip each on a remote context; a stopped
+On the contract path (the Instance compose file carries the contract
+discovery label) it prints one block per Worker from its Status Snapshot:
+container state, instance state, Intake with pending stop or stop plan,
+priority, current issue and native phase, each with its `observed_at`. A
+stopped Worker is read through Offline Read, never reported as a gap. Each
+Worker is read on its own path: a Worker whose container carries no contract
+label stays on the legacy block below, so mixed-Worker Instances are read
+per Worker. With `--github` (needs `gh`) the `claimed-by:<worker-id>`
+comparison runs only for Workers whose backend is `simple-coding-agent` —
+Claim markers are its native protocol; any other backend is listed with a
+skip note and takes no part in the comparison. Nothing is changed on Docker
+or GitHub.
+
+The rest of this subsection is legacy: it applies only to unlabelled
+instances on the legacy path, and goes away when the legacy path is removed.
+There each block — container state, intake state, active issue and
+`pending_next_issue` — comes from `agentctl status` via one `docker exec`
+per running Worker (one SSH round trip each on a remote context; a stopped
 container is reported, not an error). It works for a single-Worker Instance
-too. With `--github` (needs `gh`) it also compares the live attempts with
-the `claimed-by:<worker-id>` labels and assignees in the repository
+too. With `--github` it also compares the live attempts with the
+`claimed-by:<worker-id>` labels and assignees in the repository
 (`TARGET_REPO` from the Instance `.env`; no GitHub call is made without the
 flag), flagging orphaned claims (a label whose Worker has no active attempt
 on that issue, or names no Worker of the Instance — remove stale labels by
 hand) and claims without labels (a Worker active on an issue that lacks its
 label; expected while `WORKER_ID` is unset, so reported as a note instead of
-a flag). Nothing is changed on Docker or GitHub.
+a flag).
+
+### Fleet overview
+
+To answer "what agents run on this host", run the read-only Fleet overview
+for one Docker context (default `orbstack`, local mode; pass
+`--context <ctx>` for a remote host):
+
+```bash
+.claude/skills/debug-agent/scripts/fleet.sh [--context <ctx>]
+```
+
+It lists every contract Managed Instance from `agentfleet ls` — backend,
+Target Repository, contract, instance state and Intake per member, each read
+through its Status Snapshot (Offline Read for a stopped member; a member
+whose status cannot be read is listed with a `status unavailable` note while
+the rest are still listed, and the overview exits non-zero) — plus,
+separately, the containers of every unlabelled legacy Instance directory on
+that context, which `agentfleet` cannot manage (one-off containers are
+skipped). Nothing is changed on Docker.
 
 ### Which docker context
 

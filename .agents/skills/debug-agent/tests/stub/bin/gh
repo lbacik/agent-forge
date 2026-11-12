@@ -7,4 +7,10 @@ set -eu
 # shellcheck disable=SC1091 # resolved at runtime from STUB_LIB, not statically
 . "${STUB_LIB:?STUB_LIB is not set}/log-argv.sh"
 log_argv gh "$@"
+# A test that passes --github serves one recorded reply: the post-jq lines
+# `gh issue list --jq ...` would print. Tests without it fail, as before.
+if [ -n "${STUB_GH_REPLY:-}" ] && [ -f "$STUB_GH_REPLY" ]; then
+  cat "$STUB_GH_REPLY"
+  exit 0
+fi
 stub_fail "stub gh: no recorded reply (the test makes no GitHub calls)"
