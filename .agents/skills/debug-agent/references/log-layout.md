@@ -183,10 +183,12 @@ agent is idle and the user can't see why, check this file and
 `intake` `running`/`stopped`, pending command, stop-after plan, requested next
 issue, handoff), and `counted_attempts`. Don't open it with `sqlite3`: it's a
 live WAL database, the images don't ship the CLI, and a copy without its
-`-wal` file is stale. Ask the live process with `agentctl status` (and
-`agentctl command <request-id>`) through `docker exec -u agent`. If the agent
-is idle, `intake: stopped` there, or a pending stop plan, explains why as
-often as `consecutive_errors.json` does.
+`-wal` file is stale. Ask the live process with `agentctl status` through
+`docker exec -u agent` (read-only). For reading back a command
+(`agentctl command <request-id>`), use
+[operate-agent](../operate-agent/SKILL.md) instead of raw `agentctl`. If the
+agent is idle, `intake: stopped` there, or a pending stop plan, explains why
+as often as `consecutive_errors.json` does.
 
 `attempt.json`, the active-attempt checkpoint:
 ```json

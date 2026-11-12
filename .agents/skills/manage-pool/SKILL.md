@@ -1,6 +1,6 @@
 ---
 name: manage-pool
-description: Change or steer the Pool of an existing simple-coding-agent Instance in this agent-forge project (`agent-instances/agent-<name>/`) - add a Worker (on the shared login or with its own GitHub identity), remove a Worker, stop or resume one Worker or the whole Pool, or point a Worker at an issue with `agentctl next issue`. Use this whenever the user wants more or fewer Workers, to pause or restart intake, or to prioritise an issue, e.g. "add a second worker to battles", "dodaj workera do agent-cli", "remove worker 3", "zatrzymaj pool na rpi5", "resume agent-2", "let a worker take #57 next".
+description: Change or steer the Pool of an existing simple-coding-agent Instance in this agent-forge project (`agent-instances/agent-<name>/`) - add a Worker (on the shared login or with its own GitHub identity), remove a Worker, stop or resume one Worker or the whole Pool, or point a Worker at an issue (`next issue`, submitted through operate-agent). Use this whenever the user wants more or fewer Workers, to pause or restart intake, or to prioritise an issue, e.g. "add a second worker to battles", "dodaj workera do agent-cli", "remove worker 3", "zatrzymaj pool na rpi5", "resume agent-2", "let a worker take #57 next".
 ---
 
 # manage-pool
@@ -16,10 +16,11 @@ decides: there is no generator and no script of its own.
 ## Ground rules
 
 - **Go-ahead per state change.** Every edit of instance files, every
-  `docker compose up|stop|rm`, and every mutating `agentctl` command needs
-  the user's go-ahead (AGENTS.md). Show the plan (files, commands, which
-  Workers are affected), then act. Read-only checks (`agentctl status`,
-  `agentctl command <id>`, `pool-status.sh`, `gh` queries) need none.
+  `docker compose up|stop|rm`, and every mutation submitted through
+  `operate-agent` needs the user's go-ahead (AGENTS.md). Show the plan (files,
+  commands, which Workers are affected), then act. Read-only checks
+  (`agentctl status`, `pool-status.sh`, `gh` queries) need none; reading back
+  a committed command goes through `operate-agent`.
 - **One context.** A Pool is one Compose project on one Docker context with
   one model backend. Workers on another host or backend are another
   Instance, not a change to this Pool.
@@ -76,51 +77,63 @@ operator docs require the absolute path):
 docker compose exec -u agent <service> /usr/local/bin/agentctl status
 ```
 
-Pass `--expect-repo=<TARGET_REPO>` to mutating commands when the Worker's
-`agent version:` is v0.8.0 or newer; on older ones check the `repository:`
-line of `status` first. A mutating command prints a `request_id`;
-`agentctl command <request-id>` reads its outcome later (`accepted`,
-`completed`, `superseded` or `not fulfilled`).
+`status` is read-only and stays here. Every mutation — `stop`, `resume`,
+`next issue`, `handoff` — goes through
+[operate-agent](../operate-agent/SKILL.md) instead of a raw `agentctl`
+call: that skill owns the confirmed target, the `--expect-repo` guard, the
+request ID, and the acknowledgement report. Its helper resolves the same
+Worker from the instance name:
+
+```bash
+.agents/skills/operate-agent/scripts/operate.sh [--context <ctx>] [--worker <n|worker-id>] [--expect-repo <owner/repo>] [--request-id <id>] [--follow] <name> <stop [--after <n>]|resume|next-issue <n>|handoff|command <request-id>>
+```
+
+This skill picks the Worker and the order; operate-agent submits.
 
 ## 2. Stop and resume
 
-`agentctl stop` lets the active attempt finish and then stops intake; the
+Stopping drains: the active attempt finishes and then intake stops. The
 intake state lives on the Worker's `/data`, so it survives restarts and
-recreation, and a stopped Worker stays stopped until `agentctl resume`.
+recreation, and a stopped Worker stays stopped until it is resumed. Submit
+through [operate-agent](../operate-agent/SKILL.md), never with a raw
+`agentctl` call; that skill states the drain semantics (`stop` is never
+`docker stop`, `resume` never starts a container).
 
-**Drain** a Worker: `agentctl stop` on it, then wait until its `status`
-shows `active_attempt: none`. Other sections and the references drain
-Workers this way.
+**Drain** a Worker: `operate.sh --worker <n> <name> stop` on it, then wait
+until its `status` shows `active_attempt: none`. Other sections and the
+references drain Workers this way.
 
 - **Stop a Worker:** drain it. When the user also wants the container down,
   then `docker compose stop <service>`. Stopping the container mid-attempt
   kills the attempt and leaves recovery work for the next start; do it only
   on the user's explicit request.
 - **Resume a Worker:** `docker compose up -d <service>` if its container is
-  down, then `agentctl resume` on it.
-- **Whole Pool:** the same on every Worker, one `exec` each; for the
-  containers, `docker compose stop` once every Worker is drained, and
-  `docker compose up -d` to bring them back.
+  down (a separate deployment action, on the user's authorization), then
+  `operate.sh --worker <n> <name> resume` on it.
+- **Whole Pool:** the same on every Worker, one operate-agent submission
+  each; for the containers, `docker compose stop` once every Worker is
+  drained, and `docker compose up -d` to bring them back.
 
 Done when `pool-status.sh` shows the intended intake state on every Worker
 the user named.
 
 ## 3. `next issue` in a Pool
 
-`agentctl next issue <n>` is per Worker: it sets a one-shot priority on that
-Worker's next claim. Choose the Worker:
+`next issue` is per Worker: it sets a one-shot priority on that Worker's
+next claim. Choose the Worker:
 
 - exactly one Worker with `intake: running` and `active_attempt: none` →
   that one;
 - none, or several → ask the user, listing the Workers with their state.
 
-Send it (`agentctl next issue <n> --expect-repo=<TARGET_REPO>`) and keep the
-`request_id`. A Worker on another login or Instance may claim the issue
-first: the command then ends `not fulfilled`, naming the other claimant,
-which is a normal outcome. Sending the same issue to another Worker is a new
-decision for the user.
+Send it through [operate-agent](../operate-agent/SKILL.md)
+(`operate.sh --worker <n> <name> next-issue <n>`) and keep the `request_id`.
+A Worker on another login or Instance may claim the issue first: the
+command then ends `not fulfilled`, naming the other claimant, which is a
+normal outcome. Sending the same issue to another Worker is a new decision
+for the user.
 
-Done when `agentctl command <request-id>` shows `completed`,
+Done when `operate.sh <name> command <request-id>` shows `completed`,
 `not fulfilled` or `superseded`, and the report names the Worker (service
 and Worker id), the request id and that outcome; while it is still
 `accepted`, report that and how to check it later.
@@ -175,8 +188,9 @@ instead, section 2). A Worker id never changes: to rename a Worker, remove
 it and add a new one.
 
 1. **Drain** it (section 2). With the user's consent,
-   `agentctl handoff now` ends the active attempt sooner with a published
-   handoff.
+   `operate.sh --worker <n> <name> handoff` (via
+   [operate-agent](../operate-agent/SKILL.md)) ends the active attempt
+   sooner with a published handoff.
 2. **Claim check.** The Worker holds a Claim while any of these is true:
    - its `status` shows an active attempt;
    - an open issue carries its Claim marker:

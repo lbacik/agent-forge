@@ -54,9 +54,20 @@ has no shared application test suite or Compose deployment.
 ## Managing Pools
 
 To add, remove, stop or resume Workers of an existing instance, or to send
-`agentctl next issue` to one Worker, read and use
+`next issue` to one Worker, read and use
 [manage-pool](.agents/skills/manage-pool/SKILL.md). It owns Worker numbering,
 the order for a login's first N>=2, and the Claim checks before removal.
+
+## Operating instances
+
+To stop or resume a Worker (drain and reopen Intake) or read back a
+committed Operator Command, read and use
+[operate-agent](.agents/skills/operate-agent/SKILL.md). It owns Operator
+Commands on both paths — the contract path through `agentfleet` and the
+legacy `agentctl` path for unlabelled instances — separate from the
+read-only diagnosis in `debug-agent`. Every command runs only on the
+operator's explicit request with a confirmed target. The helpers default to
+`orbstack`; pass `--context <name>` for another context.
 
 ## Debugging instances
 
