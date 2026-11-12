@@ -129,6 +129,19 @@ Worker on the login, upgrade and set `WORKER_ID` on all of them at once, and
 only then add Workers. The `create-agent` skill describes the order in
 `references/pools.md`; `manage-pool` carries it out for an existing instance.
 
+**Contract discovery labels.** When the `AGENT_SRC_REF` the instance builds
+from speaks the operator contract (its `agentctl` answers
+`agentctl --contract 1`), every managed Worker service (`agent` and
+`agent-2..N`) carries four Compose `labels:` — contract major `1`, the
+Managed Instance name (`<short-name>`, or the Worker id `<short-name>-<n>`
+for Worker n ≥ 2), exec user `agent` and backend `simple-coding-agent` — so
+contract consumers route the instance to the contract path. The labels are
+never baked into the image, and one-off containers are never labelled.
+Until simple-coding-agent ships the contract (simple-coding-agent#334), no
+ref qualifies and every instance renders without labels, staying on the
+legacy path exactly as today. The minimum release tag will be recorded in
+the `create-agent` skill once it exists.
+
 ### 2. Build
 
 Run Compose commands from the instance directory:
@@ -243,8 +256,11 @@ context.
 Every pull request runs the template render check
 ([`render-check.yml`](.github/workflows/render-check.yml)). It renders the
 `create-agent` templates with placeholder values — no secrets — and runs
-`docker compose config` on the plain and the LiteLLM Compose variants to prove
-the result is a valid Compose model.
+`docker compose config` on four Compose variants to prove each result is a
+valid Compose model: plain and LiteLLM without labels (a ref that does not
+speak the operator contract, unchanged from today's layout), and an N=1
+instance plus an N=2 Pool with the contract discovery labels kept on every
+managed Worker service.
 
 Run the same check locally (needs Docker with Compose v2.17 or newer):
 
