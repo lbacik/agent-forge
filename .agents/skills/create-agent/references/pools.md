@@ -27,8 +27,13 @@ When `AGENT_SRC_REF` speaks the operator contract (no release does yet — see
 `SKILL.md`, "Pools", "Contract discovery labels" and "Minimum upstream"),
 every Worker service this Pool renders carries all four discovery labels:
 `agent` with the instance name `<short-name>`, each `agent-<n>` with its
-Worker id `<short-name>-<n>`. The labels are set through Compose `labels:`
+Worker id `<short-name>-<n>`, and the backend label naming the engine backend
+from step 0 (`simple-coding-agent`; the `coding-agent` adapter is not
+available yet). The labels are set through Compose `labels:`
 only, never as an image `LABEL`, so one-off containers stay unlabelled.
+A Pool of N ≥ 2 Workers on the contract path requires `pool` in the
+`identity.capabilities` the running instance reports; without it the backend
+cannot run a Pool here. No backend advertises `pool` yet.
 
 ## Hard rule and the order to N>=2
 

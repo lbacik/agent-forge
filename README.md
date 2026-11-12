@@ -72,7 +72,25 @@ Use create-agent to create an agent for https://github.com/owner/repository
 in agent-instances/agent-repository/.
 ```
 
-The skill inspects the target repository's stack and CI, prepares its Docker
+The skill first asks which engine backend to deploy: `simple-coding-agent`
+(default) or `coding-agent`. The backend selects the deployment adapter while
+target identification, token verification and the report stay shared; the
+`coding-agent` adapter is not available yet, so choosing it stops with that
+notice and scaffolds nothing. The `simple-coding-agent` flow is otherwise
+unchanged.
+
+Before scaffolding, the skill checks the Fleet on the target Docker context
+(the context the instance will run on, `orbstack` unless the user names
+another): it lists the Fleet with `agentfleet ls` and reads `identity` of
+every Managed Instance — including stopped ones through Offline Read inside
+`agentfleet` — comparing each Target Repository case-insensitively, and it
+scans legacy instances' env files for `TARGET_REPO` (file names only, never
+reading or printing tokens). Another instance already targeting the same
+repository refuses the new one unless the chosen backend advertises the
+`pool` Operator Capability (none does yet), and a short name already present
+in the Fleet refuses with a request for another name.
+
+The skill then inspects the target repository's stack and CI, prepares its Docker
 toolchain, and writes a local profile containing dependency setup and validation
 commands. The profile should mirror the repository's gating CI checks. Instances
 that require services such as MySQL or Redis may also include an entrypoint to
@@ -134,13 +152,18 @@ from speaks the operator contract (its `agentctl` answers
 `agentctl --contract 1`), every managed Worker service (`agent` and
 `agent-2..N`) carries four Compose `labels:` — contract major `1`, the
 Managed Instance name (`<short-name>`, or the Worker id `<short-name>-<n>`
-for Worker n ≥ 2), exec user `agent` and backend `simple-coding-agent` — so
+for Worker n ≥ 2), exec user `agent` and the engine backend
+(`simple-coding-agent`; the `coding-agent` adapter is not available yet) — so
 contract consumers route the instance to the contract path. The labels are
 never baked into the image, and one-off containers are never labelled.
 Until simple-coding-agent ships the contract (simple-coding-agent#334), no
 ref qualifies and every instance renders without labels, staying on the
 legacy path exactly as today. The minimum release tag will be recorded in
-the `create-agent` skill once it exists.
+the `create-agent` skill once it exists. Once the operator starts a contract
+instance, the creation report carries `agentfleet identity` (backend,
+repository, contract major, capabilities) and readiness (`instance.state`
+other than `starting`); a Pool of N ≥ 2 Workers on the contract path needs
+`pool` in `identity.capabilities`.
 
 ### 2. Build
 

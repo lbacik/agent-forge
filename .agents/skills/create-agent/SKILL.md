@@ -1,6 +1,6 @@
 ---
 name: create-agent
-description: Create a new, dedicated simple-coding-agent instance (Dockerfile, compose.yaml, .env, .env.example and a local repository profile) for a GitHub repository, in this agent-forge project (always under `agent-instances/agent-<name>/`). Use this whenever the user gives a repository URL or owner/repo and wants an agent "for" it — e.g. "create an agent for https://github.com/x/y", "set up simple-coding-agent for my Go service", "przygotuj agenta dla ...", "new agent instance like agent-jsonhub-api" — even if they don't say "create-agent" explicitly.
+description: Create a new, dedicated agent instance (Dockerfile, compose.yaml, .env, .env.example and a local repository profile) for a GitHub repository, in this agent-forge project (always under `agent-instances/agent-<name>/`). The engine backend is simple-coding-agent by default (a coding-agent adapter is not available yet). Use this whenever the user gives a repository URL or owner/repo and wants an agent "for" it — e.g. "create an agent for https://github.com/x/y", "set up simple-coding-agent for my Go service", "przygotuj agenta dla ...", "new agent instance like agent-jsonhub-api" — even if they don't say "create-agent" explicitly.
 ---
 
 # create-agent
@@ -77,8 +77,10 @@ Worker identity, or when a Worker has its own identity.
   `io.github.lbacik.agent-operator.contract` = `1`,
   `io.github.lbacik.agent-operator.instance` = the Managed Instance name,
   `io.github.lbacik.agent-operator.exec-user` = `agent` (the non-root user
-  both engine images run as),
-  `io.github.lbacik.agent-operator.backend` = `simple-coding-agent`. The
+  the engine image runs as),
+  `io.github.lbacik.agent-operator.backend` = the engine backend chosen in
+  step 0 (`simple-coding-agent`; the `coding-agent` adapter is not available
+  yet). The
   first Worker's instance name is `<short-name>`; Worker n ≥ 2 uses its
   Worker id `<short-name>-<n>`. Both must match
   `^[a-z0-9][a-z0-9-]{0,62}$`: refuse a short name that would produce a
@@ -108,9 +110,26 @@ Ask the user whenever something below is genuinely ambiguous (use
 AskUserQuestion, with a recommended option first). Don't ask about things you
 can determine by reading the repository.
 
+### 0. Choose the engine backend
+
+- Ask first which engine backend to deploy (use AskUserQuestion, with the
+  recommended option first): `simple-coding-agent` (default) or
+  `coding-agent`. This is the deployment adapter (engine image, discovery
+  labels, contract capabilities) — not the model route in
+  `references/model-backend.md`, which is chosen in step 1.
+- The backend selects the deployment adapter; target identification, token
+  verification and the report stay shared.
+- `coding-agent`: the adapter is not available yet. Say so and stop; do not
+  scaffold anything.
+- `simple-coding-agent`: continue below; the flow is otherwise unchanged.
+
 ### 1. Identify the target
 
 - Parse the URL / `owner/repo`. That is `TARGET_REPO`.
+- Ask which Docker context the instance will run on (default `orbstack`
+  when the user names none). That is the target context for the Fleet check
+  below and for every `agentfleet` and `docker` command in this skill
+  (`DOCKER_CONTEXT=<ctx>` on the command's environment).
 - Propose a directory name `agent-instances/agent-<short-name>` (look at how
   the existing instances, in `agent-instances/` and in
   `../simple-coding-agent-env/`, are named — they use the product name, not always the GitHub repo name, e.g.
@@ -123,18 +142,75 @@ can determine by reading the repository.
   name (`<short-name>` and `<short-name>-<N>` must each match
   `^[a-z0-9][a-z0-9-]{0,62}$`); refuse a short name that fails either and
   ask for another.
-- Look for other Instances on the same repository, listing file names only so
-  no token is read into the output:
+- Fleet check, before scaffolding anything, on the target context. Two
+  single-instance engines must never compete for one repository. First make
+  sure `agentfleet` is present and speaks the expected contract major, as
+  `../debug-agent/scripts/lib/contract.sh` (`require_agentfleet`) does: if
+  it is missing or speaks another major, stop with its install command and
+  read nothing from the containers.
 
   ```bash
-  grep -liE "^TARGET_REPO=[\"']?<owner>/<repo>[\"']?[[:space:]]*$" agent-instances/*/.env 2>/dev/null
+  DOCKER_CONTEXT=<ctx> agentfleet ls
   ```
 
-  For each match, ask the user whether that Instance's `GITHUB_TOKEN` acts as
-  the same GitHub login as this one's. Never compare or print the tokens. A
-  shared Worker identity means a Worker id for every Worker here, and
-  `references/pools.md` ("Hard rule and the order to N>=2") applies to the
-  other Instance too.
+  lists the Fleet members on the target context. Then read `identity` of
+  every Managed Instance — including stopped ones, through Offline Read
+  inside `agentfleet` (never `docker cp`, never a throwaway container):
+
+  ```bash
+  DOCKER_CONTEXT=<ctx> agentfleet identity <name>
+  ```
+
+  (`--json` for machine reading.) Compare each identity's Target Repository
+  case-insensitively with `TARGET_REPO` (lowercase both sides before
+  comparing):
+
+  ```bash
+  DOCKER_CONTEXT=<ctx> agentfleet identity <name> --json \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["repository"].lower())'
+  ```
+
+  Then scan legacy Instances' env files for the same repository — file names
+  only, reading just the `TARGET_REPO` line so no token is read into the
+  output or printed (the `-i` makes the comparison case-insensitive, as in
+  the Fleet check above; the pattern also tolerates an `export` prefix and
+  spaces around `=`):
+
+  ```bash
+  grep -liE "^[[:space:]]*(export[[:space:]]+)?TARGET_REPO[[:space:]]*=[\"']?<owner>/<repo>[\"']?[[:space:]]*$" agent-instances/*/.env ../simple-coding-agent-env/agent-*/.env 2>/dev/null
+  ```
+
+  (The sibling path covers reference instances when that project is
+  available; it may match instances that run on another context, so confirm
+  with the user before treating such a match as a clash.)
+  List the Fleet's instance names to check the short name against:
+
+  ```bash
+  DOCKER_CONTEXT=<ctx> agentfleet ls --json \
+    | python3 -c 'import json,sys; [print(i["name"]) for i in json.load(sys.stdin)["instances"]]'
+  ```
+
+- Refusals from the Fleet check:
+  - Another instance targeting the same repository — found running or
+    stopped through `agentfleet identity` (Offline Read), or as an
+    unlabelled legacy Instance through the env scan above — is refused:
+    stop and tell the user which instance holds the repository. The only
+    exception is a chosen backend that advertises the `pool` Operator
+    Capability in `identity.capabilities`: only then may two instances
+    share one Target Repository. No backend advertises `pool` yet, so every
+    same-repository clash refuses for now.
+  - A short name already present in the Fleet of the target context is
+    refused even for another repository: the Managed Instance name
+    (`<short-name>`, or `<short-name>-<n>` for Worker n ≥ 2) must be unique
+    there. Ask for another short name.
+  - When the backend advertises `pool` and the same-repository instance is
+    allowed, fall through to the shared-login question: for each match, ask
+    the user whether that Instance's `GITHUB_TOKEN` acts as the same GitHub
+    login as this one's. Never compare or print the tokens. A shared Worker
+    identity means a Worker id for every Worker here, and
+    `references/pools.md` ("Hard rule and the order to N>=2") applies to the
+    other Instance too. While no backend advertises `pool`, this question
+    only matters for N>=2 Workers sharing this Instance's own login.
 - `AGENT_SRC_REF` (which commit of `simple-coding-agent` the image builds
   from) defaults to `main`. If the user names a tag — e.g. "build it against
   tag v1.4.0" — use that as `AGENT_SRC_REF` instead; see step 3. It's not a
@@ -163,7 +239,8 @@ existing instance's `.env` (`agent-instances/agent-*/.env`, else
 
 ### 3. Get the agent's source (`AGENT_SRC_REF`)
 
-Generated agents build from
+This step is the `simple-coding-agent` deployment adapter (the only adapter
+available; step 0 stops for `coding-agent`). Generated agents build from
 `https://github.com/lbacik/simple-coding-agent.git#<AGENT_SRC_REF>`, not the
 local checkout. `AGENT_SRC_REF` defaults to `main`; if the user names a tag
 (or branch/commit) of `simple-coding-agent` to pin instead, use that value
@@ -492,18 +569,35 @@ contents, pull requests and issues need read & write.
   with `/sbin/docker-init`. Further Workers' containers are
   `<dir>-agent-<n>-1`. With a Worker id, `docker exec -u agent <container>
   git var GIT_AUTHOR_IDENT` names `Claude Code (<worker-id>)`.
+- Once the operator starts a contract instance (a ref whose `agentctl`
+  speaks the contract, so every Worker service carries the discovery
+  labels), confirm each Managed Instance through `agentfleet` on the target
+  context — never by reading the container's files:
+
+  ```bash
+  DOCKER_CONTEXT=<ctx> agentfleet identity <managed-name>
+  DOCKER_CONTEXT=<ctx> agentfleet status <managed-name>
+  ```
+
+  `<managed-name>` is `<short-name>` for the first Worker and the Worker id
+  `<short-name>-<n>` for Worker n ≥ 2. The instance is ready when
+  `instance.state` is anything other than `starting`. A Pool of N ≥ 2
+  Workers on the contract path requires `pool` in `identity.capabilities`;
+  without it, stop and tell the user the backend cannot run a Pool here.
 - LiteLLM backend: with the built image, offer the gateway check from
   `references/model-backend.md` ("Verifying the gateway"). Prompt caching
   can only be confirmed on the first real attempt; say so.
 
 ### 8. Report
 
-Tell the user in their language: files created, stack decisions and the reasons
+Tell the user in their language: the engine backend chosen in step 0, files
+created, stack decisions and the reasons
 for them (runtime version, included/excluded checks, bundled services), the
 model and its route (and, for LiteLLM, the gateway network), the Workers
-(N, their Worker ids or why none was rendered, the resource limits, and any
-other Instance found on the same repository), which
-`simple-coding-agent` ref the image builds from (`main`, or the pinned tag —
+(N, their Worker ids or why none was rendered, the resource limits, the
+target Docker context, and the Fleet check result — which Fleet was listed
+and that no other instance holds the repository, or which one does), which
+engine ref the image builds from (`AGENT_SRC_REF`: `main`, or the pinned tag —
 and if pinned, that rebuilds won't pick up new agent code until `AGENT_SRC_REF`
 in `.env` is bumped or changed back to `main`, then rebuilt — no other file
 needs editing), whether the contract discovery labels were rendered and why
@@ -511,3 +605,9 @@ needs editing), whether the contract discovery labels were rendered and why
 on the legacy path), token check result, what was and wasn't validated, and the
 start command (`cd agent-instances/agent-<name> && docker compose up --build -d`).
 The instance is ignored by Git, so there is nothing to commit there.
+Once the operator starts a contract instance, extend the report with
+`agentfleet identity` (engine backend, Target Repository, contract major,
+Operator Capabilities) and readiness from the Status Snapshot
+(`instance.state`: ready when anything other than `starting`) for every
+Managed Instance — `<short-name>` and each `<short-name>-<n>`. Name a Pool
+(N ≥ 2) on the contract path only with `pool` in `identity.capabilities`.
