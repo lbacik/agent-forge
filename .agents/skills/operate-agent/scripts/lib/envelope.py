@@ -4,7 +4,7 @@
 Usage: envelope.py <envelope-file> <query>
 
 Queries: ok, code, retryable, request_id, ack, kind, replayed, caps,
-backend, repository, mode, contract_major, detail. Prints the value (or an
+backend, repository, mode, contract_major, stored, detail. Prints the value (or an
 empty line when the envelope is valid but the field is absent) and exits 0.
 Exits 1 when the file is not a valid envelope (not JSON, or neither/both of
 ok:true with a result document and ok:false with an error document), so the

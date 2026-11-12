@@ -16,10 +16,11 @@ decides: there is no generator and no script of its own.
 ## Ground rules
 
 - **Go-ahead per state change.** Every edit of instance files, every
-  `docker compose up|stop|rm`, and every mutating `agentctl` command needs
-  the user's go-ahead (AGENTS.md). Show the plan (files, commands, which
-  Workers are affected), then act. Read-only checks (`agentctl status`,
-  `agentctl command <id>`, `pool-status.sh`, `gh` queries) need none.
+  `docker compose up|stop|rm`, and every mutation submitted through
+  `operate-agent` needs the user's go-ahead (AGENTS.md). Show the plan (files,
+  commands, which Workers are affected), then act. Read-only checks
+  (`agentctl status`, `pool-status.sh`, `gh` queries) need none; reading back
+  a committed command goes through `operate-agent`.
 - **One context.** A Pool is one Compose project on one Docker context with
   one model backend. Workers on another host or backend are another
   Instance, not a change to this Pool.
@@ -84,7 +85,7 @@ request ID, and the acknowledgement report. Its helper resolves the same
 Worker from the instance name:
 
 ```bash
-.agents/skills/operate-agent/scripts/operate.sh [--context <ctx>] --worker <n|worker-id> <name> <stop|resume|next-issue <n>|handoff|command <request-id>>
+.agents/skills/operate-agent/scripts/operate.sh [--context <ctx>] [--worker <n|worker-id>] [--expect-repo <owner/repo>] [--request-id <id>] [--follow] <name> <stop [--after <n>]|resume|next-issue <n>|handoff|command <request-id>>
 ```
 
 This skill picks the Worker and the order; operate-agent submits.

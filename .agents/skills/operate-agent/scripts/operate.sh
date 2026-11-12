@@ -132,7 +132,7 @@ if [ -z "$expect_repo" ]; then
   expect_repo=$(grep -h '^TARGET_REPO=' "$env_file" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)
   expect_repo=$(printf '%s' "$expect_repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//;s/^'"'"'//;s/'"'"'$//')
   if [ -z "$expect_repo" ]; then
-    wf_repo=$(grep -h -E '^[[:space:]]*repository:' "$root/$dir"/workflow.yml "$root/$dir"/workflow.yaml "$root/$dir"/*.yml 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//;s/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//;s/^'"'"'//;s/'"'"'$//' || true)
+    wf_repo=$(grep -h -E '^[[:space:]]*repository:' "$root/$dir"/workflow.yml "$root/$dir"/workflow.yaml 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//;s/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//;s/^'"'"'//;s/'"'"'$//' || true)
     expect_repo=$wf_repo
   fi
 fi
