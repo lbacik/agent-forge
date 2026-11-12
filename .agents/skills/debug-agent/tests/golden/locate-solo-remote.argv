@@ -1,0 +1,18 @@
+CTX=rpi5 docker ps -a --filter label=com.docker.compose.project=agent-solo --filter label=com.docker.compose.service=agent --format {{.Names}}
+CTX=rpi5 docker inspect -f '{{.State.Status}}|{{.State.ExitCode}}|{{.State.StartedAt}}|{{.Config.Image}}' agent-solo-agent-1
+CTX=rpi5 docker exec -u agent -w /data agent-solo-agent-1 sh -c 'set -- '\'''\''; 
+for f in state/*.json; do [ -e "$f" ] && echo "  $(basename "$f"): $(cat "$f")"; done
+[ -d logs ] && echo "issues_with_logs: $(ls logs | sort -n | tr "\n" " ")"
+if [ -n "$1" ]; then
+  echo "runs_for_issue_$1:"
+  if [ -d "logs/$1" ]; then
+    for r in $(ls "logs/$1" | sort); do
+      o=$(sed -n "s/.*\"outcome\": *\"\([^\"]*\)\".*/\1/p" "logs/$1/$r/attempt.json" 2>/dev/null || true)
+      k=$(sed -n "s/.*\"attempt_kind\": *\"\([^\"]*\)\".*/\1/p" "logs/$1/$r/attempt.json" 2>/dev/null || true)
+      if [ -f "logs/$1/$r/attempt.json" ] && [ -z "$k" ]; then k=ordinary; fi
+      echo "  $r  outcome=${o:-<none: still running or crashed before finishing>} attempt_kind=${k:-<none>}"
+    done
+  else
+    echo "  (none)"
+  fi
+fi'

@@ -1,0 +1,4 @@
+instance:        agent-solo (project agent-solo) on context orbstack (local)
+worker 1 (first Worker) service=agent:
+  container:           agent-solo-agent-1 [Exited (2) 1 hour ago]
+  status:              unavailable (container not running)

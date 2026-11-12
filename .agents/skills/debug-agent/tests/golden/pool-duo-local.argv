@@ -1,0 +1,5 @@
+CTX=orbstack docker ps -a --filter label=com.docker.compose.project=agent-duo --filter label=com.docker.compose.service=agent --format {{.Names}}
+CTX=orbstack docker inspect -f '{{.State.Status}}|{{.State.ExitCode}}|{{.State.StartedAt}}|{{.Config.Image}}' agent-duo-agent-1
+CTX=orbstack docker ps -a --filter label=com.docker.compose.project=agent-duo --format '{{.Label "com.docker.compose.service"}}|{{.Names}}|{{.State}}|{{.Status}}'
+CTX=orbstack docker exec -u agent agent-duo-agent-1 sh -c 'echo "WORKER_ID=$WORKER_ID"; agentctl status'
+CTX=orbstack docker exec -u agent agent-duo-agent-2-1 sh -c 'echo "WORKER_ID=$WORKER_ID"; agentctl status'

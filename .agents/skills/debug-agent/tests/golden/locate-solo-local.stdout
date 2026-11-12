@@ -1,0 +1,11 @@
+agent_dir:       @T@/instances/agent-solo
+docker_context:  orbstack (local)
+compose_project: agent-solo
+container:       agent-solo-agent-1
+container_state: running (exit 0, started 2026-11-10T10:00:00Z)
+image:           agent-solo-image:latest
+volume:          agent-solo_agent_data
+host_data:       @T@/home/OrbStack/docker/volumes/agent-solo_agent_data   (= /data in the container)
+state_files:
+  consecutive_errors.json: {"consecutive_errors":0}
+issues_with_logs: 42 
