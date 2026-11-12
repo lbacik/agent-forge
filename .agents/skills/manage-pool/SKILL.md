@@ -58,7 +58,10 @@ match. Establish, and keep for the report:
 
   It prints, per Worker, container state, intake, active issue and
   `pending_next_issue`, and flags orphaned Claim markers and claims without
-  labels.
+  labels. On a contract Instance the same overview reads each Worker from its
+  Status Snapshot (a stopped Worker through Offline Read), and `--github`
+  skips the Claim-marker comparison for non-`simple-coding-agent` backends —
+  see the `debug-agent` skill.
 
 **Command conventions** for this skill and its references: repository paths
 (`.agents/…`, `agent-instances/…`) are relative to the project root;

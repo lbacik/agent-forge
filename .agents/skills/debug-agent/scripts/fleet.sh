@@ -62,7 +62,7 @@ if ! ls -d "$root"/agent-*/ >/dev/null 2>&1; then
   exit 2
 fi
 context=${context:-orbstack}
-export DOCKER_CONTEXT=$context
+export DOCKER_CONTEXT="$context"
 if [ "$context" = orbstack ]; then
   mode=local
 else

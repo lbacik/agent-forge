@@ -250,10 +250,8 @@ contract_worker_block() {
   cw_cstate=$(echo "$cw_line" | cut -d'|' -f4)
   [ -n "$cw_cstate" ] || cw_cstate=$(echo "$cw_line" | cut -d'|' -f3)
   if [ "$(echo "$cw_line" | cut -d'|' -f3)" = running ]; then
-    cw_running=1
     cw_offline=0
   else
-    cw_running=0
     cw_offline=1
   fi
 
@@ -291,7 +289,7 @@ contract_worker_block() {
     echo "  container:           $cw_cont [$cw_cstate]"
     echo "  error:               agentfleet status failed for managed instance '$cw_managed' (exit $cw_code, no legacy fallback):"
     head -n 3 "$cw_err" | sed 's/^/    /'
-    cat "$cw_tmp" 2>/dev/null | head -n 3 | sed 's/^/    /' || true
+    head -n 3 "$cw_tmp" 2>/dev/null | sed 's/^/    /' || true
     [ "$failcode" -eq 0 ] && failcode=$cw_code
     cw_backend="$cw_backend_label"
     cw_active="-"

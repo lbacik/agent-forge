@@ -331,6 +331,20 @@ on the legacy path: today's `locate-agent.sh` output (container, volume and
 `state/*.json` files), unchanged. The `--context` flag (default `orbstack`) is
 passed to `agentfleet` through the standard Docker context mechanism.
 
+`pool-status.sh` answers "which Worker works on what" on the same path
+selection: on a contract Instance it prints one block per Worker from its
+Status Snapshot (instance state, Intake with pending stop or stop plan,
+priority, current issue and native phase, each with its `observed_at`; a
+stopped Worker is read through Offline Read, never reported as a gap), and
+`--github` compares Claim markers only for Workers whose backend is
+`simple-coding-agent`, skipping any other backend with a note. An unlabelled
+Instance keeps today's `pool-status.sh` output, unchanged. `fleet.sh` answers
+"what agents run on this host" for one Docker context (default `orbstack`,
+`--context` for a remote host): one line per Managed Instance from
+`agentfleet ls` (backend, Target Repository, contract, instance state and
+Intake), plus a separate list of the unlabelled legacy containers on that
+context, which `agentfleet` cannot manage.
+
 Every pull request also runs the contract consumer suite
 ([`contract-helpers.yml`](.github/workflows/contract-helpers.yml)) from the
 pinned tag — no copied fixtures. It installs `agentfleet` from the tag named
@@ -341,10 +355,19 @@ resolution, `--context` propagation, the snapshot summary, and every failure
 class (success, rejection, `unsupported`, ambiguous outcome, contract mismatch
 with no legacy fallback, malformed stdout).
 
-Run the same check locally (needs `agentfleet` from the pinned tag, no Docker):
+The pool and fleet consumer suite
+([`contract-pool-fleet.yml`](.github/workflows/contract-pool-fleet.yml)) pins
+contract-path `pool-status.sh` (every block field, Offline Read for a stopped
+Worker, the `--github` skip for other backends, failure classes with no
+legacy fallback, unlabelled output unchanged) and `fleet.sh` (Managed
+Instances plus the separate legacy list, `--context` propagation), backed by
+the same stubbed Docker.
+
+Run the same checks locally (needs `agentfleet` from the pinned tag, no Docker):
 
 ```bash
 .agents/skills/debug-agent/tests/contract-helpers.sh
+.agents/skills/debug-agent/tests/contract-pool-fleet.sh
 ```
 
 ## Relationship to simple-coding-agent-env

@@ -458,14 +458,14 @@ PYEOF
   printf 'status-simple-coding-agent.json\n' >"$WORK_ROOT/scene/contract-status-sca.txt"
 
   # The renderers report a non-envelope stdin instead of parsing it.
-  set +e
-  printf 'not json' | python3 "$SCRIPTS_DIR/lib/render_pool.py" --meta \
-    >"$WORK_ROOT/render-out.txt" 2>"$WORK_ROOT/render-err.txt"
-  [ "$?" -ne 0 ] || fail "render-pool-meta: exit 0 on non-JSON stdin"
-  printf 'not json' | python3 "$SCRIPTS_DIR/lib/render_fleet_member.py" \
-    --name x --backend b --contract 1 >"$WORK_ROOT/render-out.txt" 2>/dev/null
-  [ "$?" -ne 0 ] || fail "render-fleet-member: exit 0 on non-JSON stdin"
-  set -e
+  if printf 'not json' | python3 "$SCRIPTS_DIR/lib/render_pool.py" --meta \
+    >"$WORK_ROOT/render-out.txt" 2>"$WORK_ROOT/render-err.txt"; then
+    fail "render-pool-meta: exit 0 on non-JSON stdin"
+  fi
+  if printf 'not json' | python3 "$SCRIPTS_DIR/lib/render_fleet_member.py" \
+    --name x --backend b --contract 1 >"$WORK_ROOT/render-out.txt" 2>/dev/null; then
+    fail "render-fleet-member: exit 0 on non-JSON stdin"
+  fi
   assert_contains "$WORK_ROOT/render-out.txt" "status unreadable" "render-fleet-member"
 
   # Missing agentfleet stops pool-status and fleet with the install command
