@@ -1,12 +1,13 @@
 # Agent Forge
 
 Agent Forge is a clean starting point for creating and operating dedicated
-[simple-coding-agent](https://github.com/lbacik/simple-coding-agent) instances
-for GitHub repositories. It follows the same workflow as the sibling
+agent instances for GitHub repositories: [simple-coding-agent](https://github.com/lbacik/simple-coding-agent)
+by default, [coding-agent](https://github.com/lbacik/coding-agent) on request.
+It follows the same workflow as the sibling
 `../simple-coding-agent-env` project: create an agent with `create-agent`, build
 its Docker image, start it with Docker Compose, change its Workers with
-`manage-pool`, stop and resume them with `operate-agent`, and investigate
-problems with `debug-agent`.
+`manage-pool` (simple-coding-agent only), stop and resume them with
+`operate-agent`, and investigate problems with `debug-agent`.
 
 Each instance targets one repository and has its own toolchain, repository
 profile and configuration. It runs one or more Workers (containers), each
@@ -44,6 +45,15 @@ ignored by Git, including generated configuration and secrets. There are no
 preconfigured instances in this starting version; keep backups of local
 configuration separately if needed.
 
+A `coding-agent` instance holds a different layout: `compose.yaml` (the
+labelled `worker` plus the unlabelled `agent` and `validate` one-off seats),
+`workflow/workflow.yml` with its `workflow/prompts/*.md` prompt files,
+`.env`/`.env.example` — and no `Dockerfile`, no repository profile, no
+`compose.litellm.yaml` and no `.env.worker-<n>` (exactly one Worker per Target
+Repository, so Pools never apply; see the
+[`create-agent`](.agents/skills/create-agent/SKILL.md) skill and its
+`references/coding-agent.md`).
+
 ## Prerequisites
 
 - Docker with BuildKit and Docker Compose v2.17 or newer, for additional build
@@ -59,7 +69,9 @@ configuration separately if needed.
   runs separately on a shared Docker network, the agent holds only its master
   key as `MODEL_API_KEY`, and `COMPOSE_FILE` in `.env` adds
   `compose.litellm.yaml` to attach the agent to that network. Anthropic models
-  connect directly.
+  connect directly. A `coding-agent` instance instead sets the single model
+  key its Workflow Configuration names (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`,
+  at the documented ref) alongside `GITHUB_TOKEN`; values live only in `.env`.
 
 ## Workflow
 
@@ -76,10 +88,15 @@ in agent-instances/agent-repository/.
 
 The skill first asks which engine backend to deploy: `simple-coding-agent`
 (default) or `coding-agent`. The backend selects the deployment adapter while
-target identification, token verification and the report stay shared; the
-`coding-agent` adapter is not available yet, so choosing it stops with that
-notice and scaffolds nothing. The `simple-coding-agent` flow is otherwise
-unchanged.
+target identification, token verification and the report stay shared. Choosing
+`coding-agent` scaffolds the adapter described in the skill's
+`references/coding-agent.md`: the image builds from coding-agent's git
+repository at the ref named by `CODING_AGENT_REF` (default `main`), the
+labelled `worker` runs coding-agent's `implement` Workflow from the instance's
+`workflow/workflow.yml`, and `agent`/`validate` stay available as unlabelled
+one-off seats against the same state volume. There is no instance Dockerfile
+and no stack block — the toolchain is fixed by coding-agent's Supported
+Toolchain Matrix.
 
 Before scaffolding, the skill checks the Fleet on the target Docker context
 (the context the instance will run on, `orbstack` unless the user names
@@ -104,7 +121,9 @@ defaults to `main`. Runtime versions are not pinned per instance: upstream at
 `AGENT_SRC_REF` decides `claude-agent-sdk` (its `pyproject.toml`), and the
 Claude Code CLI is the one bundled in that SDK release. To upgrade, move
 upstream or `AGENT_SRC_REF` and rebuild; do not set `CLAUDE_AGENT_SDK_VERSION`
-in `.env`.
+in `.env`. (A `coding-agent` instance names its ref `CODING_AGENT_REF` instead,
+default `main`, read from the `build.context` git URL; its toolchain follows
+the same ref.)
 
 **Conflict requeue (optional, off by default).** When the published pull
 request of an issue falls behind its base branch and reports a conflict, the
@@ -124,9 +143,10 @@ budget. The setting is independent of `PR_AUTO_MERGE`: conflicts block manual
 merges too. It needs an upstream agent that contains the feature
 (`AGENT_SRC_REF` v0.6.0 or newer; `main` tracks upstream).
 
-**Pools (several Workers).** An instance runs one Worker by default; ask
+**Pools (several Workers; simple-coding-agent only).** An instance runs one Worker by default; ask
 `create-agent` for N to get a Pool of N Workers taking issues from the same
-Queue. A Pool is one instance and one Compose project, so it runs on one Docker
+Queue. A `coding-agent` instance always runs exactly one Worker — Pool
+rendering never applies to it and `manage-pool` does not apply. A Pool is one instance and one Compose project, so it runs on one Docker
 context with one model backend; Workers on another host or backend are a
 separate instance (see `docs/adr/0002-one-pool-per-docker-context-without-swarm.md`).
 In `compose.yaml` the first Worker is the service `agent` with the volume
@@ -155,13 +175,16 @@ from speaks the operator contract (its `agentctl` answers
 `agent-2..N`) carries four Compose `labels:` — contract major `1`, the
 Managed Instance name (`<short-name>`, or the Worker id `<short-name>-<n>`
 for Worker n ≥ 2), exec user `agent` and the engine backend
-(`simple-coding-agent`; the `coding-agent` adapter is not available yet) — so
+(`simple-coding-agent`, or `coding-agent` on that adapter) — so
 contract consumers route the instance to the contract path. The labels are
 never baked into the image, and one-off containers are never labelled.
 Until simple-coding-agent ships the contract (simple-coding-agent#334), no
 ref qualifies and every instance renders without labels, staying on the
 legacy path exactly as today. The minimum release tag will be recorded in
-the `create-agent` skill once it exists. Once the operator starts a contract
+the `create-agent` skill once it exists. A `coding-agent` instance's `worker`
+always carries the four labels (`backend: coding-agent`); until that backend
+ships its contract producer (step 4), its identity and readiness report as
+unverified. Once the operator starts a contract
 instance, the creation report carries `agentfleet identity` (backend,
 repository, contract major, capabilities) and readiness (`instance.state`
 other than `starting`); a Pool of N ≥ 2 Workers on the contract path needs
@@ -301,11 +324,14 @@ context.
 Every pull request runs the template render check
 ([`render-check.yml`](.github/workflows/render-check.yml)). It renders the
 `create-agent` templates with placeholder values — no secrets — and runs
-`docker compose config` on four Compose variants to prove each result is a
+`docker compose config` on five Compose variants to prove each result is a
 valid Compose model: plain and LiteLLM without labels (a ref that does not
-speak the operator contract, unchanged from today's layout), and an N=1
+speak the operator contract, unchanged from today's layout), an N=1
 instance plus an N=2 Pool with the contract discovery labels kept on every
-managed Worker service.
+managed Worker service, and the coding-agent instance (three services sharing
+one state volume, the four discovery labels on the `worker` only, the Workflow
+Configuration mounted read-only, the Compose project name equal to the
+instance directory name).
 
 Run the same check locally (needs Docker with Compose v2.17 or newer):
 
