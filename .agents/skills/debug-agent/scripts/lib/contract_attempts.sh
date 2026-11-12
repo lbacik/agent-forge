@@ -53,7 +53,7 @@ contract_identity_envelope() {
   _managed=$1
   _out=$2
   _err=$(mktemp) || return 1
-  if agentfleet identity "$_managed" --json >"$_out" 2>"_err"; then
+  if agentfleet identity "$_managed" --json >"$_out" 2>"$_err"; then
     rm -f "$_err"
     return 0
   fi
@@ -74,10 +74,10 @@ contract_attempts_ls_page() {
   _err=$(mktemp) || return 1
   if [ -n "$_cursor" ]; then
     _ok=0
-    agentfleet attempts ls "$_managed" --json --before "$_cursor" >"$_out" 2>"_err" || _ok=$?
+    agentfleet attempts ls "$_managed" --json --before "$_cursor" >"$_out" 2>"$_err" || _ok=$?
   else
     _ok=0
-    agentfleet attempts ls "$_managed" --json >"$_out" 2>"_err" || _ok=$?
+    agentfleet attempts ls "$_managed" --json >"$_out" 2>"$_err" || _ok=$?
   fi
   if [ "$_ok" -eq 0 ]; then
     rm -f "$_err"
@@ -121,7 +121,7 @@ contract_attempt_show() {
   _attempt=$2
   _out=$3
   _err=$(mktemp) || return 1
-  if agentfleet attempts show "$_managed" "$_attempt" --json >"$_out" 2>"_err"; then
+  if agentfleet attempts show "$_managed" "$_attempt" --json >"$_out" 2>"$_err"; then
     rm -f "$_err"
     return 0
   fi

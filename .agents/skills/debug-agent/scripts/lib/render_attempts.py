@@ -11,8 +11,9 @@ IDs, one per line, for the caller's report line.
 Unsealed archives are labelled as moving snapshots: they change while the
 Attempt runs and are fetched again on every request, never served from cache.
 
-Exits 0 on success (an empty match prints ``none`` and still exits 0), 1 when
-the file is not an ok envelope (the caller reports the failure reply instead).
+Exits 0 on success (an empty match prints nothing and still exits 0; the
+caller reports ``none``), 1 when the file is not an ok envelope (the caller
+reports the failure reply instead).
 """
 
 import json
