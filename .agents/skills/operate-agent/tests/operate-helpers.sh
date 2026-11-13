@@ -74,7 +74,7 @@ setup_fixture() {
   : >"$ARGV_LOG"
   : >"$ERROR_LOG"
 
-  mkdir -p "$T_INSTANCES/agent-foo" "$T_INSTANCES/agent-plain"
+  mkdir -p "$T_INSTANCES/agent-foo" "$T_INSTANCES/agent-plain" "$T_INSTANCES/agent-coding"
   cat >"$T_INSTANCES/agent-foo/compose.yaml" <<'EOF'
 services:
   agent:
@@ -90,17 +90,39 @@ services:
   agent:
     image: plain-image:latest
 EOF
+  cat >"$T_INSTANCES/agent-coding/compose.yaml" <<'EOF'
+services:
+  agent:
+    image: coding-agent-seat:latest
+  validate:
+    image: coding-agent-validate:latest
+  worker:
+    image: coding-image:latest
+    labels:
+      io.github.lbacik.agent-operator.contract: "1"
+      io.github.lbacik.agent-operator.instance: "coding"
+      io.github.lbacik.agent-operator.exec-user: "agent"
+      io.github.lbacik.agent-operator.backend: "coding-agent"
+EOF
   printf 'TARGET_REPO=example-owner/example-repo\n' >"$T_INSTANCES/agent-foo/.env"
   printf 'TARGET_REPO=example-owner/example-repo\n' >"$T_INSTANCES/agent-plain/.env"
+  printf 'TARGET_REPO=example-owner/example-repo\n' >"$T_INSTANCES/agent-coding/.env"
   mkdir -p "$T_HOME/OrbStack/docker/volumes/agent-plain_agent_data/state"
   printf '{"consecutive_errors":0}\n' >"$T_HOME/OrbStack/docker/volumes/agent-plain_agent_data/state/consecutive_errors.json"
 
   SCENE="$WORK_ROOT/scene"
-  mkdir -p "$SCENE/agent-foo" "$SCENE/agent-plain"
+  mkdir -p "$SCENE/agent-foo" "$SCENE/agent-plain" "$SCENE/agent-coding"
   printf 'agent-foo-agent-1\n' >"$SCENE/agent-foo/ps-agent.txt"
   printf 'agent-foo-agent-1\n' >"$SCENE/agent-foo/ps-PROJECT.txt"
   printf 'running|0|2026-11-10T10:00:00Z|foo-image:latest\n' >"$SCENE/agent-foo/inspect-agent-foo-agent-1.txt"
   printf '1\n' >"$SCENE/agent-foo/contract-label-agent-foo-agent-1.txt"
+  # Coding-agent layout: only `worker` carries the discovery labels; the
+  # unlabelled `agent`/`validate` seats have no container, so there is
+  # deliberately no ps-agent.txt here: a seat lookup fails loudly.
+  printf 'agent-coding-worker-1\n' >"$SCENE/agent-coding/ps-worker.txt"
+  printf 'agent-coding-worker-1\n' >"$SCENE/agent-coding/ps-PROJECT.txt"
+  printf 'running|0|2026-11-10T10:00:00Z|coding-image:latest\n' >"$SCENE/agent-coding/inspect-agent-coding-worker-1.txt"
+  printf '1\n' >"$SCENE/agent-coding/contract-label-agent-coding-worker-1.txt"
   printf 'agent-plain-agent-1\n' >"$SCENE/agent-plain/ps-agent.txt"
   printf 'agent-plain-agent-1\n' >"$SCENE/agent-plain/ps-PROJECT.txt"
   printf 'running|0|2026-11-10T10:00:00Z|plain-image:latest\n' >"$SCENE/agent-plain/inspect-agent-plain-agent-1.txt"
@@ -156,7 +178,8 @@ detail: infrastructure-error guard reset
 EOF
   cat >"$SCENE/fleet.json" <<'EOF'
 {"containers": [
-  {"id": "cid-foo-1", "name": "foo", "backend": "simple-coding-agent", "contract": "1", "exec_user": "agent", "state": "running"}
+  {"id": "cid-foo-1", "name": "foo", "backend": "simple-coding-agent", "contract": "1", "exec_user": "agent", "state": "running"},
+  {"id": "cid-coding-1", "name": "coding", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "running"}
 ]}
 EOF
 }
@@ -249,7 +272,7 @@ main() {
   export STUB_ERROR_LOG="$ERROR_LOG"
   export STUB_SCENARIO_DIR="$WORK_ROOT/scene"
   export STUB_VOLUMES_ROOT="$T_HOME/OrbStack/docker/volumes"
-  export STUB_PROJECTS="agent-foo agent-plain"
+  export STUB_PROJECTS="agent-foo agent-plain agent-coding"
   export STUB_LIB
   export PATH="$STUB_BIN:$PATH"
 
@@ -708,6 +731,39 @@ PYEOF
     fail "--context rpi5 did not reach agentfleet (no CTX=rpi5 contract call)"
   fi
   info "ok: --context reaches agentfleet"
+
+  # Coding-agent layout: the Managed Instance is service `worker`; the
+  # unlabelled `agent`/`validate` seats have no container and are never
+  # addressed. A labelled Instance always takes the contract path.
+  export CONTRACT_IDENTITY_FIXTURE=identity-full.json
+  export CONTRACT_STATUS_FIXTURE=stop-accepted.json
+  run_operate --context rpi5 coding stop --request-id req-c0d1e2f3a4b5
+  [ "$CODE" -eq 0 ] || fail "coding-stop: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "path:            contract (agentfleet)" "coding-stop"
+  assert_contains "$WORK_ROOT/out.txt" "managed_instance: coding" "coding-stop"
+  assert_contains "$WORK_ROOT/out.txt" "container:       agent-coding-worker-1" "coding-stop"
+  assert_not_contains "$WORK_ROOT/out.txt" "legacy agentctl" "coding-stop (no legacy fallback)"
+  if ! grep -q 'service=worker' "$ARGV_LOG"; then
+    fail "coding-stop: no service=worker lookup in $(cat "$ARGV_LOG")"
+  fi
+  assert_not_contains "$ARGV_LOG" "service=agent" "coding-stop (the seat is never addressed)"
+  assert_not_contains "$ARGV_LOG" "/usr/local/bin/agentctl stop" "coding-stop (no bare legacy agentctl argv)"
+  assert_mutation_carries_guards "coding-stop" "req-c0d1e2f3a4b5"
+  assert_no_file_reads "coding-stop"
+  info "ok: stop on a coding-agent instance takes the contract path"
+
+  # A stubbed agentfleet refusal is reported verbatim, with no legacy fallback.
+  export CONTRACT_IDENTITY_FIXTURE=identity-full.json
+  export CONTRACT_STATUS_FIXTURE=unsupported.json
+  run_operate --context rpi5 coding stop --request-id req-c1d2e3f4a5b6
+  [ "$CODE" -eq 3 ] || fail "coding-unsupported: exit $CODE, want 3"
+  if ! grep -q 'unsupported' "$WORK_ROOT/err.txt"; then
+    grep -q 'unsupported' "$WORK_ROOT/out.txt" || fail "coding-unsupported: expected 'unsupported' in output"
+  fi
+  assert_contains "$WORK_ROOT/out.txt" "path:            contract (agentfleet)" "coding-unsupported"
+  assert_not_contains "$WORK_ROOT/out.txt" "legacy agentctl" "coding-unsupported (no legacy fallback)"
+  assert_no_file_reads "coding-unsupported"
+  info "ok: agentfleet refusal on a coding-agent instance is reported verbatim"
 
   # Missing agentfleet stops with the install command and reads no files.
   (

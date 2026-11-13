@@ -135,7 +135,7 @@ i = r.get("identity", {}) if isinstance(r.get("identity"), dict) else {}
 sys.exit(0 if not i.get("repository") else 1)' "$st_tmp" 2>/dev/null; then
     id_tmp=$(mktemp) || exit 1
     if agentfleet identity "$mname" --json >"$id_tmp" 2>/dev/null; then
-      fallback_repo=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get("result",{}) if isinstance(d.get("result"),dict) else {}; i=r.get("identity",{}) if isinstance(r.get("identity"),dict) else {}; sys.stdout.write(i.get("repository","") if isinstance(i.get("repository"),str) else "")' "$id_tmp" 2>/dev/null || true)
+      fallback_repo=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get("result",{}) if isinstance(d.get("result"),dict) else {}; sys.stdout.write(r.get("repository","") if isinstance(r.get("repository"),str) else "")' "$id_tmp" 2>/dev/null || true)
     fi
     rm -f "$id_tmp"
   fi

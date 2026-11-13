@@ -60,7 +60,8 @@ setup_fixture() {
   : >"$ARGV_LOG"
   : >"$ERROR_LOG"
 
-  mkdir -p "$T_INSTANCES/agent-foo" "$T_INSTANCES/agent-duo" "$T_INSTANCES/agent-plain"
+  mkdir -p "$T_INSTANCES/agent-foo" "$T_INSTANCES/agent-duo" "$T_INSTANCES/agent-plain" \
+    "$T_INSTANCES/agent-coding" "$T_INSTANCES/agent-late"
   cat >"$T_INSTANCES/agent-foo/compose.yaml" <<'EOF'
 services:
   agent:
@@ -93,14 +94,41 @@ services:
   agent:
     image: plain-image:latest
 EOF
+  cat >"$T_INSTANCES/agent-coding/compose.yaml" <<'EOF'
+services:
+  agent:
+    image: coding-agent-seat:latest
+  validate:
+    image: coding-agent-validate:latest
+  worker:
+    image: coding-image:latest
+    labels:
+      io.github.lbacik.agent-operator.contract: "1"
+      io.github.lbacik.agent-operator.instance: "coding"
+      io.github.lbacik.agent-operator.exec-user: "agent"
+      io.github.lbacik.agent-operator.backend: "coding-agent"
+EOF
+  cat >"$T_INSTANCES/agent-late/compose.yaml" <<'EOF'
+services:
+  worker:
+    image: late-image:latest
+    labels:
+      io.github.lbacik.agent-operator.contract: "1"
+      io.github.lbacik.agent-operator.instance: "late"
+      io.github.lbacik.agent-operator.exec-user: "agent"
+      io.github.lbacik.agent-operator.backend: "coding-agent"
+EOF
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-foo/.env"
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-duo/.env"
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-plain/.env"
+  printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-coding/.env"
+  printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-late/.env"
   mkdir -p "$T_HOME/OrbStack/docker/volumes/agent-plain_agent_data/state"
   printf '{"consecutive_errors":0}\n' >"$T_HOME/OrbStack/docker/volumes/agent-plain_agent_data/state/consecutive_errors.json"
 
   SCENE="$WORK_ROOT/scene"
-  mkdir -p "$SCENE/agent-foo" "$SCENE/agent-duo" "$SCENE/agent-plain"
+  mkdir -p "$SCENE/agent-foo" "$SCENE/agent-duo" "$SCENE/agent-plain" \
+    "$SCENE/agent-coding" "$SCENE/agent-late"
   printf 'agent-foo-agent-1\n' >"$SCENE/agent-foo/ps-agent.txt"
   printf 'agent-foo-agent-1\n' >"$SCENE/agent-foo/ps-PROJECT.txt"
   printf 'running|0|2026-11-10T10:00:00Z|foo-image:latest\n' >"$SCENE/agent-foo/inspect-agent-foo-agent-1.txt"
@@ -115,11 +143,21 @@ EOF
   printf 'agent-plain-agent-1\n' >"$SCENE/agent-plain/ps-agent.txt"
   printf 'agent-plain-agent-1\n' >"$SCENE/agent-plain/ps-PROJECT.txt"
   printf 'running|0|2026-11-10T10:00:00Z|plain-image:latest\n' >"$SCENE/agent-plain/inspect-agent-plain-agent-1.txt"
+  # Coding-agent layout: only `worker` carries the discovery labels; the
+  # unlabelled `agent`/`validate` seats have no container, so there is
+  # deliberately no ps-agent.txt here: a seat lookup fails loudly.
+  printf 'agent-coding-worker-1\n' >"$SCENE/agent-coding/ps-worker.txt"
+  printf 'agent-coding-worker-1\n' >"$SCENE/agent-coding/ps-PROJECT.txt"
+  printf 'running|0|2026-11-10T10:00:00Z|coding-image:latest\n' >"$SCENE/agent-coding/inspect-agent-coding-worker-1.txt"
+  printf '1\n' >"$SCENE/agent-coding/contract-label-agent-coding-worker-1.txt"
+  # Labelled but never created: an empty ps-worker.txt means no container.
+  : >"$SCENE/agent-late/ps-worker.txt"
   cat >"$SCENE/fleet.json" <<'EOF'
 {"containers": [
   {"id": "cid-foo-1", "name": "foo", "backend": "simple-coding-agent", "contract": "1", "exec_user": "agent", "state": "running"},
   {"id": "cid-duo-1", "name": "duo", "backend": "simple-coding-agent", "contract": "1", "exec_user": "agent", "state": "running"},
-  {"id": "cid-duo-2", "name": "duo-2", "backend": "simple-coding-agent", "contract": "1", "exec_user": "agent", "state": "running"}
+  {"id": "cid-duo-2", "name": "duo-2", "backend": "simple-coding-agent", "contract": "1", "exec_user": "agent", "state": "running"},
+  {"id": "cid-coding-1", "name": "coding", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "running"}
 ]}
 EOF
 }
@@ -217,7 +255,7 @@ main() {
   export STUB_ERROR_LOG="$ERROR_LOG"
   export STUB_SCENARIO_DIR="$WORK_ROOT/scene"
   export STUB_VOLUMES_ROOT="$T_HOME/OrbStack/docker/volumes"
-  export STUB_PROJECTS="agent-foo agent-duo agent-plain"
+  export STUB_PROJECTS="agent-foo agent-duo agent-plain agent-coding agent-late"
   export STUB_LIB
   export PATH="$STUB_BIN:$PATH"
 
@@ -257,6 +295,55 @@ main() {
     fail "--context rpi5 did not reach agentfleet (no CTX=rpi5 contract call)"
   fi
   info "ok: --context reaches agentfleet"
+
+  # Coding-agent layout: the Managed Instance is service `worker`; the
+  # unlabelled `agent`/`validate` seats have no container and are never
+  # addressed (no ps-agent.txt scene file, so a seat lookup fails loudly).
+  run_locate --context rpi5 coding
+  check_success_snapshot "coding-worker-service"
+  assert_contains "$WORK_ROOT/out.txt" "managed_instance: coding" "coding-worker-service"
+  assert_contains "$WORK_ROOT/out.txt" "agent-coding-worker-1" "coding-worker-service"
+  assert_contains "$WORK_ROOT/out.txt" "backend coding-agent" "coding-worker-service (identity backend in the report)"
+  assert_not_contains "$WORK_ROOT/out.txt" "agent_data" "coding-worker-service (no legacy volume)"
+  assert_not_contains "$WORK_ROOT/out.txt" "host_data" "coding-worker-service (no host-data path)"
+  assert_not_contains "$WORK_ROOT/out.txt" "volume:" "coding-worker-service (no legacy volume line)"
+  assert_not_contains "$WORK_ROOT/out.txt" "state_files:" "coding-worker-service (no legacy state files)"
+  assert_not_contains "$WORK_ROOT/out.txt" "legacy" "coding-worker-service (contract path only)"
+  if ! grep -q 'service=worker' "$ARGV_LOG"; then
+    fail "coding-worker-service: no service=worker lookup in $(cat "$ARGV_LOG")"
+  fi
+  assert_not_contains "$ARGV_LOG" "service=agent" "coding-worker-service (the seat is never addressed)"
+  info "ok: coding-agent Managed Instance resolves to service worker"
+
+  # --worker 1 prints the resolved service.
+  run_locate --context rpi5 --worker 1 coding
+  check_success_snapshot "coding-worker-1"
+  assert_contains "$WORK_ROOT/out.txt" "service:         worker" "coding-worker-1"
+  assert_not_contains "$WORK_ROOT/out.txt" "service:         agent" "coding-worker-1"
+  info "ok: --worker 1 prints service worker"
+
+  # Labelled with no created container: reported as not created through
+  # agentfleet, never through the legacy path.
+  run_locate --context rpi5 late
+  [ "$CODE" -eq 5 ] || fail "late-no-container: exit $CODE, want 5 (agentfleet unknown_instance)"
+  assert_contains "$WORK_ROOT/out.txt" "managed_instance: late" "late-no-container"
+  assert_contains "$WORK_ROOT/out.txt" "agent-late-worker-1 (not created)" "late-no-container"
+  assert_contains "$WORK_ROOT/err.txt" "no legacy fallback" "late-no-container"
+  if ! grep -q 'unknown_instance' "$WORK_ROOT/err.txt"; then
+    if ! grep -q 'unknown_instance' "$WORK_ROOT/out.txt"; then
+      fail "late-no-container: expected 'unknown_instance' in output"
+    fi
+  fi
+  assert_not_contains "$WORK_ROOT/out.txt" "agent_data" "late-no-container (no legacy volume)"
+  assert_not_contains "$WORK_ROOT/out.txt" "host_data" "late-no-container (no host-data path)"
+  assert_not_contains "$WORK_ROOT/out.txt" "volume:" "late-no-container (no legacy volume line)"
+  assert_not_contains "$WORK_ROOT/out.txt" "state_files:" "late-no-container (no legacy state files)"
+  assert_not_contains "$WORK_ROOT/out.txt" "legacy" "late-no-container (contract path only)"
+  if ! grep -q 'service=worker' "$ARGV_LOG"; then
+    fail "late-no-container: no service=worker lookup in $(cat "$ARGV_LOG")"
+  fi
+  assert_not_contains "$ARGV_LOG" "service=agent" "late-no-container (the seat is never addressed)"
+  info "ok: labelled instance with no container stays on the contract path"
 
   # Rejection is reported, never retried through the legacy grammar.
   export CONTRACT_STATUS_FIXTURE=rejected.json
