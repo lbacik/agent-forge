@@ -10,11 +10,12 @@
 # coding-agent variants. Exits non-zero when a rendered result is not a valid
 # Compose model.
 #
-# The contract-labels variants simulate an AGENT_SRC_REF that speaks the
-# operator contract (no release does yet — see the create-agent skill,
-# "Contract discovery labels"): the labels blocks the template carries are
-# kept instead of deleted. The plain and LiteLLM variants render without
-# labels and must stay byte-identical in the Compose model to today's layout.
+# The contract-labels variants render an AGENT_SRC_REF that speaks the
+# operator contract (`main` or a release tag v0.9.0 or newer — see the
+# create-agent skill, "Contract discovery labels"): the labels blocks the
+# template carries are kept instead of deleted. The plain and LiteLLM
+# variants render an older ref (before v0.9.0) without labels and must stay
+# byte-identical in the Compose model to today's layout.
 # The coding-agent variant always carries its four discovery labels on the
 # worker only and carries no Forge-owned profile (see
 # references/coding-agent.md).
@@ -85,8 +86,9 @@ fail() {
 #
 # MODE is `labels` (the ref speaks the operator contract: keep the discovery
 # labels blocks on every managed Worker service) or `no-labels` (an older
-# ref: delete them, so the model is unchanged from today's layout). No
-# release speaks the contract yet; the `labels` mode simulates one.
+# ref: delete them, so the model is unchanged from today's layout).
+# `labels` models `main` or a release tag v0.9.0 or newer; `no-labels`
+# models a release tag older than v0.9.0.
 #
 # N is 1 (drop the example agent-<n> stanza with its volume, as SKILL.md
 # instructs for N=1) or 2 (instantiate it as agent-2). Both drop the Worker id

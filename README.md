@@ -178,10 +178,11 @@ for Worker n ≥ 2), exec user `agent` and the engine backend
 (`simple-coding-agent`, or `coding-agent` on that adapter) — so
 contract consumers route the instance to the contract path. The labels are
 never baked into the image, and one-off containers are never labelled.
-Until simple-coding-agent ships the contract (simple-coding-agent#334), no
-ref qualifies and every instance renders without labels, staying on the
-legacy path exactly as today. The minimum release tag will be recorded in
-the `create-agent` skill once it exists. A `coding-agent` instance's `worker`
+Release tags `v0.9.0` or newer (the first contract-speaking release,
+simple-coding-agent#334) and `main` render with labels; older tags render
+without labels, staying on the legacy path exactly as today; any other
+branch or commit SHA renders with labels when that checkout contains
+`simple_coding_agent/contract_adapter.py`. A `coding-agent` instance's `worker`
 always carries the four labels (`backend: coding-agent`); until that backend
 ships its contract producer (step 4), its identity and readiness report as
 unverified. Once the operator starts a contract

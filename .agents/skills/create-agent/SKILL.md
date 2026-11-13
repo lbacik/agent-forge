@@ -101,10 +101,13 @@ Worker identity, or when a Worker has its own identity.
 - **Minimum upstream.** A Worker id needs `AGENT_SRC_REF` `v0.7.0` or newer
   (lbacik/simple-coding-agent#302); N>=2 on one identity needs `v0.9.0` or
   newer, the first release with the startup recovery fix of
-  lbacik/simple-coding-agent#364. Contract discovery labels need a ref whose
-  `agentctl` speaks the contract; until simple-coding-agent#334 ships a
-  release, no ref qualifies and every instance renders without labels.
-  Record the minimum release tag here once it exists.
+  lbacik/simple-coding-agent#364. Contract discovery labels need `v0.9.0` or
+  newer, the first release whose `agentctl` answers `agentctl --contract 1`
+  (lbacik/simple-coding-agent#334): `main` always speaks the contract, a
+  release tag `v0.9.0` or newer speaks it (semantic version comparison), a
+  release tag older than `v0.9.0` does not, and any other branch or commit
+  SHA speaks it when that checkout contains the upstream contract adapter
+  (`simple_coding_agent/contract_adapter.py`), otherwise it does not.
 - **Hard rule.** Never run Workers of different Claim protocol versions on
   one Worker identity. Moving an identity to N>=2 follows the order in
   `references/pools.md` (release, stop and drain every Worker on it, upgrade
@@ -264,10 +267,14 @@ context resolves like `git checkout <ref>` (works for tags, branches and
 commit SHAs alike). Don't ask for one unprompted; only use a non-`main` ref
 when the user gave it. A rendered Worker id needs a minimum ref ("Pools",
 "Minimum upstream"): if a pinned ref is older, ask the user to bump it.
-Contract discovery labels need a ref whose `agentctl` speaks the contract;
-until simple-coding-agent#334 ships a release, no ref qualifies ("Pools",
-"Minimum upstream"): render the instance without labels. The minimum release
-tag will be recorded there once it exists.
+Contract discovery labels need a ref whose `agentctl` speaks the contract
+("Pools", "Minimum upstream": `v0.9.0` is the minimum release, `main` always
+qualifies, release tags compare semantically against `v0.9.0`, other
+branches/SHAs qualify when the checkout contains
+`simple_coding_agent/contract_adapter.py`): render the instance with labels
+when the cloned ref qualifies, without them when it does not. A pinned tag
+older than `v0.9.0` stays on the legacy path — tell the user bumping to
+`v0.9.0` or newer moves it to the contract path.
 
 Shallow-clone that same ref into the scratchpad and read, at that commit
 (`git clone --depth 1 --branch <AGENT_SRC_REF> ...` — for a bare commit SHA,
@@ -494,8 +501,11 @@ render the Workers (see "Pools"):
   replacing `<n>`; for N=1 delete both. Delete the stanza's `env_file` unless
   that Worker has its own Worker identity (`references/pools.md`).
 - Render the contract discovery labels ("Pools", "Contract discovery
-  labels") only when `AGENT_SRC_REF` speaks the contract; otherwise delete
-  both labels blocks — the rendered model is then unchanged from today.
+  labels") only when `AGENT_SRC_REF` speaks the contract (`main`, a release
+  tag `v0.9.0` or newer, or another branch/SHA whose checkout contains
+  `simple_coding_agent/contract_adapter.py`); otherwise delete
+  both labels blocks — the rendered model (a tag older than `v0.9.0`, or a
+  ref without the adapter) is then unchanged from today.
   Never set them as an image `LABEL`; ad hoc `docker compose run`
   containers are never labelled.
 - If the anchor's `environment:` block was deleted, delete every
@@ -691,8 +701,10 @@ engine ref the image builds from (`AGENT_SRC_REF` or `CODING_AGENT_REF`:
 `main`, or the pinned tag — and if pinned, that rebuilds won't pick up new
 agent code until the ref in `.env` is bumped or changed back to `main`, then
 rebuilt — no other file needs editing); whether the contract discovery labels
-were rendered and why (for simple-coding-agent, the ref speaks the contract,
-or no release does yet so the instance stays on the legacy path; for
+were rendered and why in terms of the rule (for simple-coding-agent, e.g.
+"`main` speaks the contract", "`v0.9.1` is newer than `v0.9.0`", "`v0.8.2`
+is older than `v0.9.0` so the instance stays on the legacy path", or the
+branch/SHA checkout does or does not contain the contract adapter; for
 coding-agent, the `worker` is always labelled); token check result, what was
 and wasn't validated, and the start command
 (`cd agent-instances/agent-<name> && docker compose up --build -d` —
