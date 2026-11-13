@@ -350,8 +350,12 @@ check_coding_agent_instance() {
       END { exit !found }'; then
     fail "$label: Workflow Configuration is not mounted read-only"
   fi
-  assert_contains "$config_output" '/var/lib/coding-agent/operator' \
-    "$label: private-IPC tmpfs missing from the Compose model"
+  assert_contains "$config_output" '/var/lib/coding-agent/operator:uid=1000,gid=1000,mode=0700' \
+    "$label: private-IPC tmpfs missing its ownership and mode options in the Compose model"
+  operator_tmpfs_count=$(printf '%s\n' "$config_output" | grep -cF -- '/var/lib/coding-agent/operator' || true)
+  if [ "$operator_tmpfs_count" != 1 ]; then
+    fail "$label: want exactly one operator tmpfs entry (worker only), found $operator_tmpfs_count"
+  fi
   assert_contains "$config_output" 'stop_grace_period:' \
     "$label: stop_grace_period missing from the Compose model"
   # All four discovery labels appear exactly once in the whole model: on the
