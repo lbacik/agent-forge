@@ -88,9 +88,10 @@ Semantics that are easy to get wrong:
   Retry keeps the attempt and finishes it from retained evidence; release
   abandons the attempt after its work was secured elsewhere. Release needs
   the `--saved-at` location; retry takes none.
-- **Mutations are `unsupported` offline.** A stopped instance takes no
-  Operator Command through `agentfleet` or `agentctl`. Read it offline
-  (`debug-agent`); do not start it as a side effect of operating it.
+- **`client.instance_stopped`: a mutation is never sent to a stopped
+  instance.** A stopped instance takes no Operator Command through
+  `agentfleet` or `agentctl`. Read it offline through `debug-agent`; never
+  start it as a side effect of operating it.
 `next-issue` and `handoff` beyond one Worker follow
 [manage-pool](../manage-pool/SKILL.md): that skill picks the Worker (intake
 running, no active attempt; ask when none or several qualify) and the Claim

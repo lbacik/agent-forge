@@ -855,6 +855,174 @@ EOF
   grep -q 'agentctl command req-legacy0000000001' "$ARGV_LOG" || fail "legacy-command: no agentctl command argv"
   info "ok: legacy command lookup"
 
+  # Follow-up hints repeat --context/--worker when given (contract accepted).
+  export CONTRACT_IDENTITY_FIXTURE=identity-full.json
+  export CONTRACT_STATUS_FIXTURE=stop-accepted.json
+  run_operate --context rpi5 --worker 1 foo stop --request-id req-follow01aa02bb
+  [ "$CODE" -eq 0 ] || fail "follow-flags: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "follow up:" "follow-flags"
+  assert_contains "$WORK_ROOT/out.txt" "--context rpi5" "follow-flags (context repeated)"
+  assert_contains "$WORK_ROOT/out.txt" "--worker 1" "follow-flags (worker repeated)"
+  assert_contains "$WORK_ROOT/out.txt" "command req-follow01aa02bb" "follow-flags (same ID)"
+  info "ok: contract accepted follow-up repeats --context/--worker"
+
+  # Without the selectors the hint contains neither flag.
+  run_operate foo stop --request-id req-follow02bb03cc
+  [ "$CODE" -eq 0 ] || fail "follow-noflags: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "follow up:" "follow-noflags"
+  assert_not_contains "$WORK_ROOT/out.txt" "--context" "follow-noflags (no context flag)"
+  assert_not_contains "$WORK_ROOT/out.txt" "--worker" "follow-noflags (no worker flag)"
+  info "ok: contract accepted follow-up omits flags when not given"
+
+  # Legacy follow-up repeats the selectors when given, omits them otherwise.
+  unset CONTRACT_STATUS_FIXTURE
+  unset CONTRACT_IDENTITY_FIXTURE
+  unset CONTRACT_COMMAND_FIXTURE
+  run_operate --context rpi5 --worker 1 plain stop
+  [ "$CODE" -eq 0 ] || fail "legacy-follow-flags: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "follow up:" "legacy-follow-flags"
+  assert_contains "$WORK_ROOT/out.txt" "--context rpi5" "legacy-follow-flags (context repeated)"
+  assert_contains "$WORK_ROOT/out.txt" "--worker 1" "legacy-follow-flags (worker repeated)"
+  info "ok: legacy follow-up repeats --context/--worker"
+  run_operate plain stop
+  [ "$CODE" -eq 0 ] || fail "legacy-follow-noflags: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "follow up:" "legacy-follow-noflags"
+  assert_not_contains "$WORK_ROOT/out.txt" "--context" "legacy-follow-noflags (no context flag)"
+  assert_not_contains "$WORK_ROOT/out.txt" "--worker" "legacy-follow-noflags (no worker flag)"
+  info "ok: legacy follow-up omits flags when not given"
+
+  # Malformed stdout follow-up repeats the selectors when given. Force the
+  # helper's malformed branch (non-envelope mutation stdout) with a fake
+  # agentfleet that answers the mutation with garbage but delegates
+  # everything else (identity) to the real client.
+  export CONTRACT_IDENTITY_FIXTURE=identity-full.json
+  _real_agentfleet=$(command -v agentfleet)
+  mkdir -p "$WORK_ROOT/fakebin"
+  cat >"$WORK_ROOT/fakebin/agentfleet" <<EOF
+#!/bin/sh
+case " \$* " in
+  *" req-follow03cc04dd "*|*" req-follow04dd05ee "*) printf 'not json at all\n'; exit 1 ;;
+esac
+exec "$_real_agentfleet" "\$@"
+EOF
+  chmod +x "$WORK_ROOT/fakebin/agentfleet"
+  # shellcheck disable=SC2031 # PATH save/restore around the fake agentfleet above
+  _saved_path=$PATH
+  # shellcheck disable=SC2031 # fake agentfleet first on PATH for two run_operate calls
+  export PATH="$WORK_ROOT/fakebin:$PATH"
+  run_operate --context rpi5 --worker 1 foo stop --request-id req-follow03cc04dd
+  [ "$CODE" -ne 0 ] || fail "malformed-follow-flags: exit 0, want non-zero"
+  if ! grep -q 'malformed' "$WORK_ROOT/err.txt"; then
+    grep -q 'malformed' "$WORK_ROOT/out.txt" || fail "malformed-follow-flags: expected 'malformed' in output"
+  fi
+  assert_contains "$WORK_ROOT/err.txt" "--context rpi5" "malformed-follow-flags (context repeated)"
+  assert_contains "$WORK_ROOT/err.txt" "--worker 1" "malformed-follow-flags (worker repeated)"
+  assert_contains "$WORK_ROOT/err.txt" "req-follow03cc04dd" "malformed-follow-flags (same ID)"
+  info "ok: malformed stdout follow-up repeats --context/--worker"
+  run_operate foo stop --request-id req-follow04dd05ee
+  # shellcheck disable=SC2031 # restore the saved PATH
+  export PATH="$_saved_path"
+  [ "$CODE" -ne 0 ] || fail "malformed-follow-noflags: exit 0, want non-zero"
+  assert_contains "$WORK_ROOT/err.txt" "req-follow04dd05ee" "malformed-follow-noflags (same ID)"
+  assert_not_contains "$WORK_ROOT/err.txt" "--context" "malformed-follow-noflags (no context flag)"
+  assert_not_contains "$WORK_ROOT/err.txt" "--worker" "malformed-follow-noflags (no worker flag)"
+  info "ok: malformed stdout follow-up omits flags when not given"
+
+  # No container on the selected context: names the context, suggests
+  # --context, and never assumes the legacy path or a mutation.
+  mkdir -p "$T_INSTANCES/agent-nocont"
+  cat >"$T_INSTANCES/agent-nocont/compose.yaml" <<'EOF'
+services:
+  agent:
+    image: nocont-image:latest
+EOF
+  printf 'TARGET_REPO=example-owner/example-repo\n' >"$T_INSTANCES/agent-nocont/.env"
+  mkdir -p "$SCENE/agent-nocont"
+  : >"$SCENE/agent-nocont/ps-agent.txt"
+  : >"$SCENE/agent-nocont/ps-PROJECT.txt"
+  run_operate --context rpi5 nocont stop --request-id req-nocont01aa02
+  [ "$CODE" -ne 0 ] || fail "no-container: exit 0, want non-zero"
+  assert_contains "$WORK_ROOT/err.txt" "no container" "no-container (names the miss)"
+  assert_contains "$WORK_ROOT/err.txt" "rpi5" "no-container (names the context)"
+  assert_contains "$WORK_ROOT/err.txt" "--context" "no-container (suggests --context)"
+  assert_not_contains "$WORK_ROOT/out.txt" "legacy agentctl" "no-container (no legacy path)"
+  assert_not_contains "$WORK_ROOT/err.txt" "legacy agentctl" "no-container (no legacy path)"
+  assert_not_contains "$WORK_ROOT/out.txt" "unlabelled" "no-container (no unlabelled)"
+  assert_not_contains "$WORK_ROOT/err.txt" "unlabelled" "no-container (no unlabelled)"
+  info "ok: no container reports only the miss"
+  run_operate --context rpi5 nocont command req-legacy0000000001
+  [ "$CODE" -ne 0 ] || fail "no-container-command: exit 0, want non-zero"
+  assert_contains "$WORK_ROOT/err.txt" "no container" "no-container-command"
+  assert_not_contains "$WORK_ROOT/out.txt" "legacy agentctl" "no-container-command (no legacy path)"
+  assert_not_contains "$WORK_ROOT/err.txt" "legacy agentctl" "no-container-command (no legacy path)"
+  assert_not_contains "$WORK_ROOT/out.txt" "mutation" "no-container-command (no mutation mention)"
+  assert_not_contains "$WORK_ROOT/err.txt" "mutation" "no-container-command (no mutation mention)"
+  info "ok: no container command read stays mutation-free"
+
+  # A mutation against a labelled but non-running container is refused before
+  # any agentfleet call and before identity, with no request_id line.
+  printf 'exited|1|2026-11-10T10:00:00Z|foo-image:latest\n' >"$SCENE/agent-foo/inspect-agent-foo-agent-1.txt"
+  python3 - "$SCENE/fleet.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+for c in doc.get("containers", []):
+    if c.get("name") == "foo":
+        c["state"] = "exited"
+json.dump(doc, open(path, "w"))
+PYEOF
+  export CONTRACT_IDENTITY_FIXTURE=identity-full.json
+  export CONTRACT_STATUS_FIXTURE=stop-accepted.json
+  run_operate --context rpi5 foo stop --request-id req-stopped01aa02
+  [ "$CODE" -eq 1 ] || fail "stopped-refusal: exit $CODE, want 1"
+  assert_not_contains "$WORK_ROOT/out.txt" "request_id:" "stopped-refusal (no request ID printed)"
+  assert_contains "$WORK_ROOT/err.txt" "exited" "stopped-refusal (states the container state)"
+  assert_contains "$WORK_ROOT/err.txt" "nothing was submitted" "stopped-refusal (nothing submitted)"
+  assert_contains "$WORK_ROOT/err.txt" "never sent to a stopped instance" "stopped-refusal (never sent)"
+  assert_contains "$WORK_ROOT/err.txt" "debug-agent" "stopped-refusal (offline read)"
+  assert_contains "$WORK_ROOT/err.txt" "separate deployment action" "stopped-refusal (starting is separate)"
+  if grep -q -- '--contract 1' "$ARGV_LOG"; then
+    fail "stopped-refusal: refused before any agentfleet call (no --contract 1 in argv)"
+  fi
+  info "ok: stopped instance refused before submission"
+  # Restore the running fixture for the safety-net case below.
+  printf 'running|0|2026-11-10T10:00:00Z|foo-image:latest\n' >"$SCENE/agent-foo/inspect-agent-foo-agent-1.txt"
+
+  # Safety net: the container stopped between the running check and the
+  # submission (inspect says running, Fleet says stopped). agentfleet
+  # refuses client-side; the helper reports nothing submitted with no
+  # same-ID command follow-up.
+  python3 - "$SCENE/fleet.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+for c in doc.get("containers", []):
+    if c.get("name") == "foo":
+        c["state"] = "exited"
+json.dump(doc, open(path, "w"))
+PYEOF
+  run_operate --context rpi5 foo stop --request-id req-safety01bb03
+  [ "$CODE" -eq 1 ] || fail "instance-stopped: exit $CODE, want 1"
+  assert_contains "$WORK_ROOT/err.txt" "client.instance_stopped" "instance-stopped (code reported)"
+  assert_contains "$WORK_ROOT/err.txt" "nothing was stored" "instance-stopped (nothing stored)"
+  assert_contains "$WORK_ROOT/err.txt" "request ID was not used" "instance-stopped (ID not used)"
+  assert_contains "$WORK_ROOT/err.txt" "never sent to a stopped instance" "instance-stopped (never sent)"
+  assert_contains "$WORK_ROOT/err.txt" "debug-agent" "instance-stopped (offline read)"
+  assert_not_contains "$WORK_ROOT/err.txt" "ambiguous outcome" "instance-stopped (never ambiguous)"
+  if grep -q -- '--contract 1 command' "$ARGV_LOG"; then
+    fail "instance-stopped: no same-ID command follow-up may run"
+  fi
+  info "ok: client.instance_stopped safety net (nothing submitted, no follow-up)"
+  python3 - "$SCENE/fleet.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+for c in doc.get("containers", []):
+    if c.get("name") == "foo":
+        c["state"] = "running"
+json.dump(doc, open(path, "w"))
+PYEOF
+
   info "PASS: operate-agent helper behaves as specified (fixtures from the pinned tag, no copies)"
 }
 

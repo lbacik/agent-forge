@@ -79,6 +79,14 @@ op_arg=${3:-}
 op_extra=${4:-}
 [ -z "${5:-}" ] || { echo "error: too many arguments" >&2; exit 2; }
 
+# Follow-up hints repeat the target selectors exactly when they were given on
+# this invocation (same rule as the automatic re-invocations below).
+_given_context=$context
+_given_worker=$worker
+_follow_opts=""
+if [ -n "$_given_context" ]; then _follow_opts="$_follow_opts --context $_given_context"; fi
+if [ -n "$_given_worker" ]; then _follow_opts="$_follow_opts --worker $_given_worker"; fi
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd) || exit 1
 # shellcheck disable=SC1091 # resolved at runtime, not statically
 . "$SCRIPT_DIR/../../debug-agent/scripts/lib/resolve.sh"
@@ -230,14 +238,9 @@ case "$expect_repo" in
   *) echo "error: cannot read the Target Repository for $dir: pass --expect-repo owner/repo" >&2; exit 2 ;;
 esac
 
-# --- Request ID: flag, else generated before submission ----------------------
-if [ -z "$request_id" ] && [ "$op" != "command" ]; then
-  request_id=$(python3 -c 'from agent_operator_contract.client import new_request_id; print(new_request_id())' 2>/dev/null || true)
-  if [ -z "$request_id" ]; then
-    # Same shape as agentfleet's own generator (req- plus 16 hex digits).
-    request_id="req-$(od -An -tx1 -N8 /dev/urandom 2>/dev/null | tr -d ' \n' || printf '%s%s' "$$" "$(date +%s)")"
-  fi
-fi
+# --- Request ID: flag, else generated on the contract path after the running
+# check below (a stopped instance is refused before any ID is generated or
+# printed). Reads use the lookup ID directly.
 if [ "$op" = "command" ]; then
   request_id=$lookup_id
 fi
@@ -245,9 +248,6 @@ case "$request_id" in
   [A-Za-z0-9][A-Za-z0-9._:-]*|"") : ;;
   *) echo "error: invalid request ID: '$request_id'" >&2; exit 2 ;;
 esac
-if [ "$op" != "command" ] && [ -z "$request_id" ]; then
-  echo "error: cannot establish a request ID" >&2; exit 2
-fi
 
 # --- Path selection (same hint as locate-agent.sh) ---------------------------
 _use_contract=0
@@ -268,12 +268,48 @@ echo "target_repo:     $expect_repo"
 echo "operation:       $op"
 echo "effect:          $effect"
 
+# No container on the selected context: report only that (labelled vs
+# unlabelled is decided only after a container exists). Suggest checking
+# --context; never assume the legacy path or a mutation here.
+if [ -z "${container:-}" ]; then
+  echo "error: no container for project $project service $service on context $context; check --context (selected context $context)" >&2
+  exit 1
+fi
+
 if [ "$_use_contract" -eq 1 ]; then
   echo "path:            contract (agentfleet)"
   if ! require_agentfleet; then
     exit 3
   fi
-  echo "container:       ${container:-${project}-${service}-1 (not created)}"
+  echo "container:       $container"
+
+  # Running-state check for mutations (mirrors the legacy-path check): a
+  # mutation is never sent to a stopped instance. Refuse before generating
+  # or printing a request ID and before the identity pre-flight.
+  if [ "$op" != "command" ]; then
+    case "${container_state:-unknown}" in
+      running*) : ;;
+      *)
+        echo "error: container state is '${container_state:-unknown}' for managed instance '$_managed' on context $context; nothing was submitted" >&2
+        echo "note:            a mutation is never sent to a stopped instance; read it offline through debug-agent" >&2
+        echo "note:            starting the container is a separate deployment action" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  # Request ID for a mutation that passed the running check above.
+  if [ -z "$request_id" ]; then
+    request_id=$(python3 -c 'from agent_operator_contract.client import new_request_id; print(new_request_id())' 2>/dev/null || true)
+    if [ -z "$request_id" ]; then
+      # Same shape as agentfleet's own generator (req- plus 16 hex digits).
+      request_id="req-$(od -An -tx1 -N8 /dev/urandom 2>/dev/null | tr -d ' \n' || printf '%s%s' "$$" "$(date +%s)")"
+    fi
+  fi
+  case "$request_id" in
+    [A-Za-z0-9][A-Za-z0-9._:-]*) : ;;
+    *) echo "error: cannot establish a request ID" >&2; exit 2 ;;
+  esac
 
   # Identity pre-flight: refuse an unadvertised operation before submission,
   # listing the advertised Operator Capabilities.
@@ -394,7 +430,7 @@ if [ "$_use_contract" -eq 1 ]; then
     cat "$_merr" >&2 || true
     echo "request_id:      $request_id" >&2
     echo "error: malformed mutation stdout for request '$request_id'; the outcome is unknown." >&2
-    echo "follow up with 'operate.sh $fragment command $request_id' (same ID, never a new submission)" >&2
+    echo "follow up with 'operate.sh$_follow_opts $fragment command $request_id' (same ID, never a new submission)" >&2
     rm -f "$_mout" "$_merr"
     # shellcheck disable=SC2086 # _mcode is a plain number
     exit "$_mcode"
@@ -418,7 +454,7 @@ if [ "$_use_contract" -eq 1 ]; then
           # shellcheck disable=SC2086 # internal re-invocation with known-safe fields
           exec "$0" ${context:+--context "$context"} ${worker:+--worker "$worker"} --expect-repo "$expect_repo" --follow "$fragment" command "$request_id"
         else
-          echo "follow up:       operate.sh $fragment command $request_id"
+          echo "follow up:       operate.sh$_follow_opts $fragment command $request_id"
         fi
         ;;
       completed|superseded|not_fulfilled)
@@ -435,6 +471,21 @@ if [ "$_use_contract" -eq 1 ]; then
   _stored=$(python3 "$ENVELOPE" "$_mout" stored)
   _mdetail=$(python3 "$ENVELOPE" "$_mout" detail)
   rm -f "$_mout"
+  # Safety net: the container stopped between the running check and the
+  # submission. Nothing was sent and the request ID was not used; never a
+  # same-ID `command` follow-up.
+  case "$_code" in
+    client.instance_stopped)
+      cat "$_merr" >&2 || true
+      rm -f "$_merr"
+      echo "error: mutation for request '$request_id' was not submitted: $_code: $_mdetail" >&2
+      echo "note:            the request ID was not used; nothing was stored" >&2
+      echo "note:            a mutation is never sent to a stopped instance; read it offline through debug-agent" >&2
+      echo "note:            starting the container is a separate deployment action" >&2
+      # shellcheck disable=SC2086 # _mcode is a plain number
+      exit "$_mcode"
+      ;;
+  esac
   _ambiguous=0
   case "$_code" in
     agent_unreachable|timeout|client.docker_unavailable|client.exec_failed)
@@ -470,12 +521,9 @@ if [ "$_use_contract" -eq 1 ]; then
 fi
 
 # --- Legacy path: today's agentctl usage ("legacy agentctl") ----------------
+# A missing container exits above before any path is assumed; here a container
+# exists and the unlabelled instance stays on the legacy path.
 echo "path:            legacy agentctl (unlabelled instance)"
-if [ -z "${container:-}" ]; then
-  echo "error: no container for project $project service $service on context $context; legacy agentctl needs a container" >&2
-  echo "note:            a stopped instance takes no mutations; starting the container is a separate deployment action" >&2
-  exit 1
-fi
 echo "container:       $container"
 if [ "$op" != "command" ]; then
   case "${container_state:-unknown}" in
@@ -596,7 +644,7 @@ if [ -n "$_leg_id" ]; then
       esac
     done
   else
-    echo "follow up:       operate.sh $fragment command $_leg_id"
+    echo "follow up:       operate.sh$_follow_opts $fragment command $_leg_id"
   fi
 fi
 # shellcheck disable=SC2086 # _lcode is a plain number
