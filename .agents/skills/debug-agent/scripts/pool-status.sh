@@ -185,7 +185,7 @@ legacy_worker_block() {
     # One docker call per running Worker: the live status plus the WORKER_ID
     # the claim labels are built from. A failure is reported inline and the
     # rest of the pool is still listed.
-    lw_status_out=$(docker exec -u agent "$lw_cont" sh -c 'echo "WORKER_ID=$WORKER_ID"; agentctl status' 2>&1 || true)
+    lw_status_out=$(docker exec -u agent "$lw_cont" sh -c 'echo "WORKER_ID=$WORKER_ID"; /usr/local/bin/agentctl status' 2>&1 || true)
     if echo "$lw_status_out" | grep -q '^intake: '; then
       lw_wid=$(echo "$lw_status_out" | sed -n 's/^WORKER_ID=//p' | head -n 1 | tr -d '\r' \
         | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -208,7 +208,7 @@ legacy_worker_block() {
   echo "$lw_disp service=$lw_svc:"
   echo "  container:           $lw_cont [$lw_cstate]"
   if [ -n "$lw_status_err" ]; then
-    echo "  error:               agentctl status failed:"
+    echo "  error:               /usr/local/bin/agentctl status failed:"
     echo "$lw_status_err" | sed 's/^/    /'
   elif [ "$lw_running" -eq 1 ]; then
     echo "  intake:              $lw_intake"

@@ -19,7 +19,7 @@ decides: there is no generator and no script of its own.
   `docker compose up|stop|rm`, and every mutation submitted through
   `operate-agent` needs the user's go-ahead (AGENTS.md). Show the plan (files,
   commands, which Workers are affected), then act. Read-only checks
-  (`agentctl status`, `pool-status.sh`, `gh` queries) need none; reading back
+  (`/usr/local/bin/agentctl status`, `pool-status.sh`, `gh` queries) need none; reading back
   a committed command goes through `operate-agent`.
 - **One context.** A Pool is one Compose project on one Docker context with
   one model backend. Workers on another host or backend are another
@@ -49,7 +49,7 @@ match. Establish, and keep for the report:
   own Worker identity (an `.env.worker-<n>` in its `env_file`).
 - `TARGET_REPO` and `AGENT_SRC_REF` (`grep -E '^(TARGET_REPO|AGENT_SRC_REF)=' <env file>`;
   no `AGENT_SRC_REF` means `main`). The version a Worker actually runs is
-  the `agent version:` line of its `agentctl status`.
+  the `agent version:` line of its `/usr/local/bin/agentctl status`.
 - **Live state.** One read-only overview (it reads `TARGET_REPO` from `.env`
   only, so `--github` needs that file to carry it):
 
@@ -71,7 +71,9 @@ with `DOCKER_CONTEXT=<ctx>` set and, for an alternative env file,
 `docker compose --env-file <file>`. The examples leave both out.
 
 Talking to one Worker (`<service>` is `agent` or `agent-<n>`; upstream's
-operator docs require the absolute path):
+operator docs require the absolute path, because the target repo's venv can
+come first on `PATH` in the container and a target repo can ship its own
+`agentctl` that shadows the agent's):
 
 ```bash
 docker compose exec -u agent <service> /usr/local/bin/agentctl status

@@ -42,7 +42,7 @@ shared one. Commands follow the conventions of `SKILL.md`, section 1.
    2. Set `PEER_LOGINS` in the shared env file.
    3. `docker compose config -q`, then `docker compose up -d` (this also
       starts `agent-<n>`).
-   4. `agentctl resume` on every Worker that was running before step 1.
+   4. `/usr/local/bin/agentctl resume` on every Worker that was running before step 1.
 7. **Start** (when step 6 was skipped): `docker compose config -q`, then
    `docker compose up -d agent-<n>`.
 

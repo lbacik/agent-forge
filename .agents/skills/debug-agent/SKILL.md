@@ -130,7 +130,7 @@ or GitHub.
 The rest of this subsection is legacy: it applies only to unlabelled
 instances on the legacy path, and goes away when the legacy path is removed.
 There each block — container state, intake state, active issue and
-`pending_next_issue` — comes from `agentctl status` via one `docker exec`
+`pending_next_issue` — comes from `/usr/local/bin/agentctl status` via one `docker exec`
 per running Worker (one SSH round trip each on a remote context; a stopped
 container is reported, not an error). It works for a single-Worker Instance
 too. With `--github` it also compares the live attempts with the
@@ -268,11 +268,14 @@ only after they agree, with the container stopped or through `docker exec`.
 Use **`docker exec` / `docker compose exec`** only when you need the
 container's live runtime, not its files:
 
-- the agent's live control state: `agentctl status` (intake running or
-  stopped, active attempt, pending commands, recovery, handoff). It's
-  read-only. This skill never mutates: for `stop`, `resume`, `next issue`,
-  `handoff now`, `recovery …`, or reading back a command (`agentctl
-  command`, the `command <request-id>` lookup), use
+- the agent's live control state: `/usr/local/bin/agentctl status` (intake
+  running or stopped, active attempt, pending commands, recovery, handoff).
+  It's read-only, and always use the absolute path: the target repo's venv
+  can come first on `PATH` in the container, and a target repo can ship its
+  own `agentctl` that shadows the agent's. This skill never mutates: for
+  `stop`, `resume`, `next issue`, `handoff now`, `recovery …`, or reading
+  back a command (`/usr/local/bin/agentctl command`, the
+  `command <request-id>` lookup), use
   [operate-agent](../operate-agent/SKILL.md) instead, and only when the user
   asks
 - process state: whether MySQL/Redis from `agent-entrypoint.sh` are up
