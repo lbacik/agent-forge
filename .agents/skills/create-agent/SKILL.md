@@ -61,7 +61,9 @@ Worker identity, or when a Worker has its own identity.
   another host or behind another backend are a separate Instance.
 - **Layout.** The first Worker is service `agent` with volume `agent_data`,
   the only one with `build:`; Workers 2..N are `agent-2..N` with volumes
-  `data_2..N` and `pull_policy: never`, so one build serves all. Shared
+  `data_2..N` and `pull_policy: never`, so one build serves all. (A
+  coding-agent Instance instead runs its single Managed Instance as service
+  `worker`; see `references/coding-agent.md`.) Shared
   settings live in the `x-worker` anchor. Workers are not identical replicas
   (own `/data`, own Worker id), so don't use `--scale` or `container_name`.
 - **Worker id scheme.** `<short-name>-<n>`, where `<short-name>` is the

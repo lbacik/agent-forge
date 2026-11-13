@@ -9,10 +9,13 @@
 # the skills that names the tag; README.md names it in its Operator contract
 # section, which is the one place in the docs.
 #
-# Path selection (see locate-agent.sh): a container carrying the
+# Path selection: the Instance compose file carrying the
 # `io.github.lbacik.agent-operator.contract` Compose label is observed only
-# through `agentfleet`. A container without the label stays on the legacy
-# path. The label is only a hint; compatibility is decided by `agentfleet`'s
+# through `agentfleet`, whether or not a container exists yet. A compose file
+# without the label stays on the legacy path. The container's own label is
+# still checked per Worker (see pool-status.sh): a running container without
+# the label, under a labelled compose file, is reported as a mismatch rather
+# than silently treated as legacy. Compatibility is decided by `agentfleet`'s
 # runtime `--contract` check. A `contract_mismatch`, `unsupported` or
 # `agent_unreachable` reply is reported as such and never retried through the
 # legacy grammar.
@@ -74,4 +77,134 @@ managed_instance_name() {
       printf '%s-%s' "$_short" "$_num"
     fi
   fi
+}
+
+# compose_has_contract_label <compose-file> -- true when the Instance compose
+# file carries the contract discovery label. The compose label decides the
+# path: a labelled Instance is observed only through `agentfleet`, whether or
+# not a container exists yet. An unlabelled Instance stays on the legacy path.
+compose_has_contract_label() {
+  [ -n "${1:-}" ] && [ -f "$1" ] && grep -q "$CONTRACT_LABEL" "$1" 2>/dev/null
+}
+
+# compose_service_for_instance <compose-file> <instance> -- print the Compose
+# service whose `instance` discovery label equals <instance>. The service name
+# is never assumed: simple-coding-agent renders `agent` / `agent-<n>`, the
+# coding-agent adapter renders `worker`. Reads the compose file on disk (the
+# same file the helpers already parse for the Worker list); the rendered
+# Compose model carries the same labels. Prints nothing and returns non-zero
+# when no service names that instance.
+compose_service_for_instance() {
+  _csf=${1:-}
+  _want=${2:-}
+  [ -n "$_csf" ] && [ -f "$_csf" ] && [ -n "$_want" ] || return 1
+  _cur=""
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in
+      "  "*)
+        case "$_line" in
+          "   "* | "	"*) ;;
+          *)
+            _cur=${_line#"  "}
+            _cur=${_cur%%:*}
+            ;;
+        esac
+        ;;
+    esac
+    case "$_line" in
+      *"$INSTANCE_LABEL:"*)
+        _v=${_line##*:}
+        _v=$(printf '%s' "$_v" | sed 's/^[ 	]*//;s/[ 	]*$//;s/^"//;s/"$//;s/^'"'"'//;s/'"'"'$//')
+        if [ "$_v" = "$_want" ] && [ -n "$_cur" ]; then
+          printf '%s' "$_cur"
+          return 0
+        fi
+        ;;
+    esac
+  done < "$_csf"
+  return 1
+}
+
+# contract_service_for_worker <compose-file> <short> <n> [worker-id] -- print
+# the Compose service of one Worker of a labelled Instance: the service whose
+# `instance` label is that Worker's Managed Instance name. Falls back to the
+# backend mapping (`coding-agent` -> `worker`) for the first Worker when no
+# service names it; returns non-zero when neither resolves.
+contract_service_for_worker() {
+  _cwf=$1
+  _cwshort=${2:-}
+  _cwnum=${3:-1}
+  _cwwid=${4:-}
+  _cwmanaged=$(managed_instance_name "$_cwshort" "$_cwnum" "$_cwwid")
+  _cwsvc=$(compose_service_for_instance "$_cwf" "$_cwmanaged" || true)
+  if [ -n "$_cwsvc" ]; then
+    printf '%s' "$_cwsvc"
+    return 0
+  fi
+  if [ "$_cwnum" -eq 1 ] \
+    && grep -q "$BACKEND_LABEL.*coding-agent" "$_cwf" 2>/dev/null; then
+    printf 'worker'
+    return 0
+  fi
+  return 1
+}
+
+# contract_worker_services <compose-file> <short> -- print one `n|service`
+# line per labelled Worker service of a labelled Instance, in compose-file
+# order: the Worker number follows from the service's `instance` label
+# (`<short>` is Worker 1, `<short>-<n>` is Worker n >= 2). Unlabelled
+# services (one-off seats like the coding-agent `agent` and `validate`, or a
+# foreign service) print nothing.
+contract_worker_services() {
+  _cwsf=${1:-}
+  _cwsshort=${2:-}
+  [ -n "$_cwsf" ] && [ -f "$_cwsf" ] && [ -n "$_cwsshort" ] || return 1
+  _cur=""
+  _has=0
+  _inst=""
+  _emit_worker_service() {
+    if [ "$_has" -eq 1 ] && [ -n "$_inst" ] && [ -n "$_cur" ]; then
+      if [ "$_inst" = "$_cwsshort" ]; then
+        printf '1|%s\n' "$_cur"
+      else
+        case "$_inst" in
+          "$_cwsshort"-*)
+            _n=${_inst#"$_cwsshort-"}
+            case "$_n" in
+              ''|*[!0-9]*|0) ;;
+              *) printf '%s|%s\n' "$_n" "$_cur" ;;
+            esac
+            ;;
+        esac
+      fi
+    fi
+  }
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in
+      "  "*)
+        case "$_line" in
+          "   "* | "	"*) ;;
+          *)
+            _emit_worker_service
+            _cur=${_line#"  "}
+            _cur=${_cur%%:*}
+            _has=0
+            _inst=""
+            ;;
+        esac
+        ;;
+    esac
+    case "$_line" in
+      *"$CONTRACT_LABEL:"*) _has=1 ;;
+    esac
+    case "$_line" in
+      *"$INSTANCE_LABEL:"*)
+        _v=${_line##*:}
+        _v=$(printf '%s' "$_v" | sed 's/^[ 	]*//;s/[ 	]*$//;s/^"//;s/"$//;s/^'"'"'//;s/'"'"'$//')
+        _inst=$_v
+        ;;
+    esac
+  done < "$_cwsf"
+  _emit_worker_service
+  return 0
 }

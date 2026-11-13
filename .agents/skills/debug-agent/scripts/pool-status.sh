@@ -101,17 +101,30 @@ done
 
 command -v docker >/dev/null 2>&1 || { echo "error: docker not found on PATH" >&2; exit 1; }
 
+. "$(dirname "$0")/lib/contract.sh"
 . "$(dirname "$0")/lib/resolve.sh"
 # From resolve.sh: root dir project short context mode (DOCKER_CONTEXT is
-# exported there). $container/$volume describe the default (first) Worker
-# only; every Worker is enumerated below.
-. "$(dirname "$0")/lib/contract.sh"
-
-# Worker list from the compose services on disk (same parsing as
-# locate-agent.sh), so enumeration costs no docker call and no SSH round trip.
+# exported there) plus contract_compose, the shared path predicate. The
+# resolved $container/$volume describe the default (first) Worker only; every
+# Worker is enumerated below.
+#
+# Worker list from the compose services on disk, so enumeration costs no
+# docker call and no SSH round trip. For a labelled Instance the Workers are
+# the services carrying the contract labels, matched by their `instance`
+# label (a coding-agent Managed Instance is service `worker`,
+# simple-coding-agent Workers are `agent` / `agent-<n>`); for an unlabelled
+# Instance the legacy `agent` / `agent-<n>` service names apply, as in
+# locate-agent.sh.
 compose_file="$root/$dir/compose.yaml"
 worker_list=""
-if [ -f "$compose_file" ]; then
+svc_map=""
+if [ "${contract_compose:-0}" -eq 1 ]; then
+  svc_map=$(contract_worker_services "$compose_file" "$short" 2>/dev/null \
+    | sort -t'|' -k1,1n -u || true)
+  worker_list=$(printf '%s\n' "$svc_map" | cut -d'|' -f1 | tr '\n' ' ' || true)
+fi
+if [ -z "$worker_list" ] && [ "${contract_compose:-0}" -eq 0 ] \
+  && [ -f "$compose_file" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       "  agent:"*)
@@ -129,6 +142,24 @@ fi
 [ -n "$worker_list" ] || worker_list=" 1"
 # shellcheck disable=SC2086
 worker_list=$(echo $worker_list | tr ' ' '\n' | sort -n -u | tr '\n' ' ')
+
+# worker_service N -- the Compose service of Worker N on this Instance: from
+# the labelled services above on a labelled Instance, else the legacy
+# `agent` / `agent-<n>` mapping.
+worker_service() {
+  if [ -n "$svc_map" ]; then
+    _ws=$(printf '%s\n' "$svc_map" | sed -n "s/^$1|//p" | head -n 1 || true)
+    if [ -n "$_ws" ]; then
+      printf '%s' "$_ws"
+      return 0
+    fi
+  fi
+  if [ "$1" -eq 1 ]; then
+    printf 'agent'
+  else
+    printf 'agent-%s' "$1"
+  fi
+}
 
 # Per-Worker records for the --github pass: "n|WORKER_ID|active-or--" words
 # (WORKER_ID matches [a-z0-9-], so no word ever contains whitespace).
@@ -260,7 +291,9 @@ compose_value() {
 # path and for unlabelled containers on the contract path.
 legacy_worker_block() {
   lw_n=$1
-  if [ "$lw_n" -eq 1 ]; then
+  if [ -n "${2:-}" ]; then
+    lw_svc=$2
+  elif [ "$lw_n" -eq 1 ]; then
     lw_svc=agent
   else
     lw_svc="agent-$lw_n"
@@ -356,7 +389,9 @@ legacy_worker_block() {
 contract_worker_block() {
   cw_n=$1
   cw_line=$2
-  if [ "$cw_n" -eq 1 ]; then
+  if [ -n "${3:-}" ]; then
+    cw_svc=$3
+  elif [ "$cw_n" -eq 1 ]; then
     cw_svc=agent
   else
     cw_svc="agent-$cw_n"
@@ -443,10 +478,11 @@ contract_worker_block() {
   esac
 }
 
-# Path selection: a compose file carrying the contract discovery label takes
-# the contract path below. Unlabelled Instances run the legacy loop exactly
-# as before.
-if [ -f "$compose_file" ] && grep -q "$CONTRACT_LABEL" "$compose_file" 2>/dev/null; then
+# Path selection: the compose label decides (see lib/contract.sh and
+# lib/resolve.sh, which sets $contract_compose). A labelled Instance takes
+# the contract path below whether or not a container exists. Unlabelled
+# Instances run the legacy loop exactly as before.
+if [ "${contract_compose:-0}" -eq 1 ]; then
   contract_path=1
 fi
 
@@ -463,21 +499,13 @@ if [ "$contract_path" -eq 1 ]; then
 
   # shellcheck disable=SC2086
   for n in $worker_list; do
-    if [ "$n" -eq 1 ]; then
-      svc=agent
-    else
-      svc="agent-$n"
-    fi
+    svc=$(worker_service "$n")
     line=$(printf '%s\n' "$ps_out" | grep "^$svc|" | head -n 1 || true)
     if [ -z "$line" ]; then
       # Never created: no container for agentfleet to address. Reported as
       # such, like on the legacy path; the Instance compose file still names
-      # the Worker id and backend for the records below.
-      if [ "$n" -eq 1 ]; then
-        svc=agent
-      else
-        svc="agent-$n"
-      fi
+      # the Worker id and backend for the records below. Never a legacy-path
+      # attempt: the compose label already decided the contract path above.
       wid=$(compose_value "$svc" "WORKER_ID" || true)
       backend_label=$(compose_value "$svc" "$BACKEND_LABEL" || true)
       managed=$(managed_instance_name "$short" "$n")
@@ -503,10 +531,10 @@ if [ "$contract_path" -eq 1 ]; then
     clabel=$(echo "$line" | cut -d'|' -f5)
     case "$clabel" in
       ""|"<no value>")
-        legacy_worker_block "$n"
+        legacy_worker_block "$n" "$svc"
         ;;
       *)
-        contract_worker_block "$n" "$line"
+        contract_worker_block "$n" "$line" "$svc"
         ;;
     esac
   done

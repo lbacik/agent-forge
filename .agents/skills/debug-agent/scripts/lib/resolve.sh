@@ -6,11 +6,23 @@
 #         context mode container container_state image
 #         host_data (local mode) / cache_data (remote mode)
 #
-# Worker layout (one Compose project per Instance): the first Worker is service
-# `agent` with volume `agent_data`; further Workers are `agent-<n>` with volumes
-# `data_<n>`. A worker-id is `<short-name>-<n>` where short-name is the instance
-# directory without the `agent-` prefix. The first Worker is the default, so an
-# Instance with one Worker resolves exactly as before.
+# Worker layout (one Compose project per Instance): for an unlabelled Instance
+# the first Worker is service `agent` with volume `agent_data` and further
+# Workers are `agent-<n>` with volumes `data_<n>`. For a labelled Instance the
+# Compose service of each Managed Instance is resolved from the Instance's
+# `instance` discovery labels instead (see lib/contract.sh): a
+# simple-coding-agent Instance resolves exactly as above, while a coding-agent
+# Managed Instance resolves to service `worker`. A worker-id is
+# `<short-name>-<n>` where short-name is the instance directory without the
+# `agent-` prefix. The first Worker is the default, so an Instance with one
+# Worker resolves exactly as before.
+#
+# Callers source lib/contract.sh before this file so the label helpers are
+# available; without them this file keeps the legacy service mapping.
+# contract_compose (0/1) is the shared path predicate the helpers use: an
+# Instance whose compose.yaml carries the contract label takes the contract
+# path even when no container exists yet. Volume and host/cache paths below
+# are legacy-only and are never printed or used on the contract path.
 #
 # Resolution is anchored on the agent-instances/agent-*/ directories on disk, never on
 # `docker volume ls`, because stale volumes from old project names exist
@@ -121,6 +133,20 @@ else
   service="agent-$worker_num"
   volume="${project}_data_$worker_num"
   worker_id="$short-$worker_num"
+fi
+
+# Labelled Instances resolve the Compose service from the `instance`
+# discovery labels: the service name is the one carrying this Worker's
+# Managed Instance name (coding-agent resolves to `worker`),
+# simple-coding-agent to `agent` / `agent-<n>` exactly as above.
+contract_compose=0
+if command -v compose_has_contract_label >/dev/null 2>&1 \
+  && compose_has_contract_label "$root/$dir/compose.yaml"; then
+  contract_compose=1
+  if _svc=$(contract_service_for_worker "$root/$dir/compose.yaml" \
+    "$short" "$worker_num" "${worker_id:-}" 2>/dev/null); then
+    [ -n "$_svc" ] && service=$_svc
+  fi
 fi
 
 # Local mode = OrbStack, whose volumes are readable on the host. Any other

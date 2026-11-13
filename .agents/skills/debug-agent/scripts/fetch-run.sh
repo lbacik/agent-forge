@@ -21,7 +21,7 @@
 # unfinished run (active, or the process died) is fetched again on each call.
 # repo/ is never copied (hundreds of MB): read it remotely, see SKILL.md.
 #
-# On the contract path (a container carrying the
+# On the contract path (the Instance compose file carrying the
 # `io.github.lbacik.agent-operator.contract` label) this helper instead
 # exports Attempt Archives through `agentfleet attempts export` into a
 # separate contract cache (see lib/contract_attempts.sh): <run> is then a
@@ -48,19 +48,23 @@ fragment=${1:?usage: fetch-run.sh [--context <ctx>] [--worker <n|worker-id>] <na
 issue=${2:?missing issue number}
 which=${3:-latest}
 
-. "$(dirname "$0")/lib/resolve.sh"
 . "$(dirname "$0")/lib/contract.sh"
+. "$(dirname "$0")/lib/resolve.sh"
 . "$(dirname "$0")/lib/contract_attempts.sh"
 
-# Contract hint: same discovery as locate-agent.sh. Unlabelled instances skip
-# the extra inspect below, so their fetch output stays exactly as today.
-_use_contract=0
-if [ -n "${container:-}" ] && [ -f "$root/$dir/compose.yaml" ] \
-  && grep -q "$CONTRACT_LABEL" "$root/$dir/compose.yaml" 2>/dev/null; then
+# Contract hint: same discovery as locate-agent.sh. The compose label decides
+# the path: a labelled Instance stays on the contract path even when no
+# container exists yet. Unlabelled instances skip the extra inspect below, so
+# their fetch output stays exactly as today. A running container without the
+# label, under a labelled compose file, is only a mismatch note: never a
+# silent return to the legacy path.
+_use_contract=${contract_compose:-0}
+if [ "$_use_contract" -eq 1 ] && [ -n "${container:-}" ]; then
   _label=$(docker inspect -f '{{index .Config.Labels "io.github.lbacik.agent-operator.contract"}}' "$container" 2>/dev/null || true)
   case "$_label" in
-    ""|"<no value>") _use_contract=0 ;;
-    *) _use_contract=1 ;;
+    ""|"<no value>")
+      echo "note: container $container carries no $CONTRACT_LABEL label (mismatch; staying on the contract path)" >&2
+      ;;
   esac
 fi
 
@@ -70,7 +74,9 @@ if [ "$_use_contract" -eq 1 ]; then
   fi
   _managed=$(managed_instance_name "$short" "$worker_num" "${worker_id:-}")
   _tmpdir=$(mktemp -d) || exit 1
-  if ! contract_identity_envelope "$_managed" "$_tmpdir/identity.json"; then
+  if contract_identity_envelope "$_managed" "$_tmpdir/identity.json"; then
+    :
+  else
     _code=$?
     rm -rf "$_tmpdir"
     exit "$_code"
@@ -110,7 +116,9 @@ if [ "$_use_contract" -eq 1 ]; then
       fi
       ;;
     *)
-      if ! contract_attempt_show "$_managed" "$which" "$_tmpdir/show.json"; then
+      if contract_attempt_show "$_managed" "$which" "$_tmpdir/show.json"; then
+        :
+      else
         _code=$?
         rm -rf "$_tmpdir"
         exit "$_code"
@@ -141,7 +149,9 @@ if [ "$_use_contract" -eq 1 ]; then
   _fetched=""
   # shellcheck disable=SC2086 # word-splitting the IDs is intended
   for _id in $_ids; do
-    if ! contract_attempt_show "$_managed" "$_id" "$_tmpdir/show.json"; then
+    if contract_attempt_show "$_managed" "$_id" "$_tmpdir/show.json"; then
+      :
+    else
       _code=$?
       rm -rf "$_tmpdir"
       exit "$_code"
@@ -170,7 +180,9 @@ if [ "$_use_contract" -eq 1 ]; then
     while [ "$_try" -le 3 ]; do
       rm -rf "$_dest"
       mkdir -p "$_dest"
-      if ! contract_attempt_export "$_managed" "$_id" "$_tmpdir/export.tar"; then
+      if contract_attempt_export "$_managed" "$_id" "$_tmpdir/export.tar"; then
+        :
+      else
         _code=$?
         rm -rf "$_tmpdir" "$_dest"
         exit "$_code"

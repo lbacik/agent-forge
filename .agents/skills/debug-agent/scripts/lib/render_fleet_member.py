@@ -33,6 +33,7 @@ def main(argv):
     parser.add_argument("--contract", default="")
     parser.add_argument("--state", default="")
     parser.add_argument("--duplicate", default="0")
+    parser.add_argument("--fallback-repo", default="")
     args = parser.parse_args(argv)
     try:
         envelope = json.load(sys.stdin)
@@ -57,7 +58,7 @@ def main(argv):
         return 1
     identity = snap.get("identity") if isinstance(snap.get("identity"), dict) else {}
     backend = identity.get("backend", "") or args.backend or "unknown"
-    repo = identity.get("repository", "") or "(unknown)"
+    repo = identity.get("repository", "") or getattr(args, "fallback_repo", "") or "(unknown)"
     instance = snap.get("instance") if isinstance(snap.get("instance"), dict) else {}
     intake = snap.get("intake") if isinstance(snap.get("intake"), dict) else {}
     marker = " DUPLICATE" if args.duplicate == "1" else ""

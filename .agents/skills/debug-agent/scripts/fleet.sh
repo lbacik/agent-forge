@@ -118,9 +118,30 @@ while IFS= read -r m || [ -n "$m" ]; do
   else
     st_code=$?
   fi
+  # A Status Snapshot without an identity (some backends omit it) falls back
+  # to `agentfleet identity` for the Target Repository before the renderer
+  # prints `(unknown)`. A failed fallback keeps `(unknown)` and never fails
+  # the overview because of it.
+  fallback_repo=""
+  if [ "$st_code" -eq 0 ] && python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if d.get("ok") is not True:
+    sys.exit(1)
+r = d.get("result", {}) if isinstance(d.get("result"), dict) else {}
+i = r.get("identity", {}) if isinstance(r.get("identity"), dict) else {}
+sys.exit(0 if not i.get("repository") else 1)' "$st_tmp" 2>/dev/null; then
+    id_tmp=$(mktemp) || exit 1
+    if agentfleet identity "$mname" --json >"$id_tmp" 2>/dev/null; then
+      fallback_repo=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get("result",{}) if isinstance(d.get("result"),dict) else {}; i=r.get("identity",{}) if isinstance(r.get("identity"),dict) else {}; sys.stdout.write(i.get("repository","") if isinstance(i.get("repository"),str) else "")' "$id_tmp" 2>/dev/null || true)
+    fi
+    rm -f "$id_tmp"
+  fi
   if python3 "$(dirname "$0")/lib/render_fleet_member.py" \
     --name "$mname" --backend "$mbackend" --contract "$mcontract" \
-    --state "$mstate" --duplicate "$mdup" <"$st_tmp"; then
+    --state "$mstate" --duplicate "$mdup" --fallback-repo "$fallback_repo" <"$st_tmp"; then
     render_code=0
   else
     render_code=$?

@@ -8,7 +8,9 @@
 #                    context is remote: /data is read through the Docker API.
 #   --worker         which Worker of the instance to inspect: a number (2) or a
 #                    worker id (<short-name>-2, e.g. cli-2 for agent-cli).
-#                    Default is the first Worker (service agent). With N>=2 and
+#                    Default is the first Worker (service `agent` for
+#                    simple-coding-agent, `worker` for a coding-agent Managed
+#                    Instance, resolved from the discovery labels). With N>=2 and
 #                    no --worker, all Workers are listed instead of guessing.
 #   <name-fragment>  full or unambiguous part of an agent-instances/agent-*/ directory name
 #                    (e.g. "cli", "jsonhub-api", "agent-paysubscriptions")
@@ -31,20 +33,23 @@ done
 fragment=${1:?usage: locate-agent.sh [--context <ctx>] [--worker <n|worker-id>] <name-fragment> [issue-number]}
 issue=${2:-}
 
-. "$(dirname "$0")/lib/resolve.sh"
 . "$(dirname "$0")/lib/contract.sh"
+. "$(dirname "$0")/lib/resolve.sh"
 . "$(dirname "$0")/lib/contract_attempts.sh"
 
-# Contract hint: the Compose model carries the discovery label only when the
-# ref speaks the contract. Unlabelled instances skip the extra inspect below,
-# so their argv and output stay exactly as today.
-_use_contract=0
-if [ -n "${container:-}" ] && [ -f "$root/$dir/compose.yaml" ] \
-  && grep -q "$CONTRACT_LABEL" "$root/$dir/compose.yaml" 2>/dev/null; then
+# Contract hint: the compose label decides the path (see lib/contract.sh and
+# lib/resolve.sh). A labelled Instance stays on the contract path even when no
+# container exists yet, so unlabelled instances skip the extra inspect below
+# and their argv and output stay exactly as today. A running container without
+# the label, under a labelled compose file, is only a mismatch note: never a
+# silent return to the legacy path.
+_use_contract=${contract_compose:-0}
+if [ "$_use_contract" -eq 1 ] && [ -n "${container:-}" ]; then
   _label=$(docker inspect -f '{{index .Config.Labels "io.github.lbacik.agent-operator.contract"}}' "$container" 2>/dev/null || true)
   case "$_label" in
-    ""|"<no value>") _use_contract=0 ;;
-    *) _use_contract=1 ;;
+    ""|"<no value>")
+      echo "note: container $container carries no $CONTRACT_LABEL label (mismatch; staying on the contract path)" >&2
+      ;;
   esac
 fi
 
@@ -70,7 +75,9 @@ if [ "$_use_contract" -eq 1 ]; then
   echo "container_state: $container_state"
   echo "image:           ${image:-unknown}"
   echo "agentfleet_identity:"
-  if ! agentfleet identity "$_managed"; then
+  if agentfleet identity "$_managed"; then
+    :
+  else
     _code=$?
     echo "error: agentfleet identity failed for managed instance '$_managed' (no legacy fallback)" >&2
     exit "$_code"
@@ -79,7 +86,9 @@ if [ "$_use_contract" -eq 1 ]; then
   # (the same read fetch-run.sh uses for its cache key); the human block above
   # stays the report's identity section.
   _idjson=$(mktemp) || exit 1
-  if ! contract_identity_envelope "$_managed" "$_idjson"; then
+  if contract_identity_envelope "$_managed" "$_idjson"; then
+    :
+  else
     _code=$?
     rm -f "$_idjson"
     exit "$_code"
@@ -98,7 +107,9 @@ if [ "$_use_contract" -eq 1 ]; then
   _tmp=$(mktemp) || exit 1
   _tmperr=$(mktemp) || { rm -f "$_tmp"; exit 1; }
   if agentfleet status "$_managed" --json >"$_tmp" 2>"$_tmperr"; then
-    if ! python3 "$(dirname "$0")/lib/render_status.py" <"$_tmp"; then
+    if python3 "$(dirname "$0")/lib/render_status.py" <"$_tmp"; then
+      :
+    else
       _code=$?
       echo "error: cannot render Status Snapshot for '$_managed'" >&2
       cat "$_tmperr" >&2 || true

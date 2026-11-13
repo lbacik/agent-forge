@@ -198,7 +198,7 @@ the **compose project = directory name**. From that:
 | Local cache of `/data/logs` (remote, Worker N>=2) | `~/.cache/simple-coding-agent-env/<ctx>/<dir>/<worker-id>/logs/` | `~/.cache/simple-coding-agent-env/rpi5/agent-jsonhub-cli/jsonhub-cli-2/logs/` |
 | Container (first Worker) | `<dir>-agent-1` | `agent-jsonhub-cli-agent-1` |
 | Container (Worker N>=2) | `<dir>-agent-<n>-1` | `agent-jsonhub-cli-agent-2-1` |
-| Compose service (first Worker) | `agent` | `docker compose -f agent-instances/agent-jsonhub-cli/compose.yaml exec agent …` |
+| Compose service (first Worker) | `agent` (simple-coding-agent; `worker` for a coding-agent Managed Instance) | `docker compose -f agent-instances/agent-jsonhub-cli/compose.yaml exec agent …` |
 | Compose service (Worker N>=2) | `agent-<n>` | `docker compose -f agent-instances/agent-jsonhub-cli/compose.yaml exec agent-2 …` |
 | Worker id (Worker N>=2) | `<short-name>-<n>` | `jsonhub-cli-2` |
 

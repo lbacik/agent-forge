@@ -1,8 +1,10 @@
 # Agent data layout (`/data` = `~/OrbStack/docker/volumes/<dir>_agent_data/` for the first Worker)
 
-Each Worker of an Instance has its own `/data` volume: the first Worker uses
-`<dir>_agent_data`, further Workers use `<dir>_data_<n>` (services `agent`
-and `agent-<n>`). Pass `--worker <n|worker-id>` to `locate-agent.sh` and
+Each Worker of a simple-coding-agent Instance has its own `/data` volume:
+the first Worker uses `<dir>_agent_data`, further Workers use
+`<dir>_data_<n>` (services `agent` and `agent-<n>`; a coding-agent Managed
+Instance is service `worker` and keeps its state in its own `state` volume
+instead of a per-Worker `/data`). Pass `--worker <n|worker-id>` to `locate-agent.sh` and
 `fetch-run.sh` to address one Worker (default: the first Worker). A worker id
 is `<short-name>-<n>` (e.g. `cli-2` for `agent-cli`).
 
