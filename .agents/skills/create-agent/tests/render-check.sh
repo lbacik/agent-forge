@@ -16,7 +16,8 @@
 # kept instead of deleted. The plain and LiteLLM variants render without
 # labels and must stay byte-identical in the Compose model to today's layout.
 # The coding-agent variant always carries its four discovery labels on the
-# worker only (see references/coding-agent.md).
+# worker only and carries no Forge-owned profile (see
+# references/coding-agent.md).
 #
 # Usage (from anywhere in this repository):
 #
@@ -427,6 +428,7 @@ check_coding_agent_instance() {
       fail "$label: workflow/prompts/$prompt missing"
     fi
   done
+  assert_no_forge_profile "$dir" "$label"
 }
 
 # assert_no_agent_operator FILE MESSAGE -- Forge never bakes discovery labels
@@ -437,6 +439,28 @@ check_coding_agent_instance() {
 assert_no_agent_operator() {
   if grep -qF 'agent-operator' "$1"; then
     fail "$2"
+  fi
+}
+
+# assert_no_forge_profile DIR LABEL -- a coding-agent instance carries no
+# Forge-owned profile: no Dockerfile, no simple-coding-agent-profile.yml,
+# and no PROFILE_PATH / AGENT_SRC_REF / WORKER_ID in the rendered .env or
+# compose.yaml (the repository-owned Project Profile is the only profile).
+assert_no_forge_profile() {
+  if [ -e "$1/Dockerfile" ]; then
+    fail "$2: coding-agent instance must not contain a Dockerfile"
+  fi
+  if [ -e "$1/simple-coding-agent-profile.yml" ]; then
+    fail "$2: coding-agent instance must not contain a Forge-owned profile"
+  fi
+  if grep -qF 'PROFILE_PATH' "$1/.env"; then
+    fail "$2: .env sets PROFILE_PATH (no Forge-owned profile on this backend)"
+  fi
+  if grep -qF 'AGENT_SRC_REF' "$1/.env"; then
+    fail "$2: .env sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)"
+  fi
+  if grep -qF 'WORKER_ID' "$1/compose.yaml"; then
+    fail "$2: compose.yaml sets WORKER_ID (this backend runs one Worker, never a Pool)"
   fi
 }
 
@@ -581,6 +605,12 @@ main() {
   fi
   if grep -qF '<n>' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
     fail 'compose.coding-agent.yaml.template renders a Pool (this backend runs one Worker)'
+  fi
+  if grep -qF 'PROFILE_PATH' "$ASSETS_DIR/env.coding-agent.example.template"; then
+    fail 'env.coding-agent.example.template sets PROFILE_PATH (no Forge-owned profile on this backend)'
+  fi
+  if grep -qF 'AGENT_SRC_REF' "$ASSETS_DIR/env.coding-agent.example.template"; then
+    fail 'env.coding-agent.example.template sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)'
   fi
 
   assert_no_placeholders "$plain_dir" 'plain'
