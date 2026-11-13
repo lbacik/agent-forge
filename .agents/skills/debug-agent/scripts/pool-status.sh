@@ -44,7 +44,8 @@
 # Its rows are the open issues carrying merge-conflict (live when a Worker
 # of this Instance holds an active attempt on them, naming the Worker, else
 # queued) or escalated (ready-for-human plus the escalation comment marker;
-# a bare ready-for-human triage label never lists an issue), each with its
+# a bare ready-for-human triage label never lists an issue; an issue
+# satisfying both is shown as escalated only, never as live), each with its
 # standing k/N from the most recent `**Conflict attempts**: k/N` comment
 # line (0/N with the configured N when there is none). Marker and standing
 # comments are accepted from any author and only displayed, never acted on.
@@ -196,11 +197,24 @@ if [ -n "$github" ]; then
         ;;
     esac
   done
+  # Candidate lists stay numerically sorted for the ordered rows below. The
+  # escalation list is collected in visit order (a both-label issue is met
+  # at its merge-conflict position), so it is sorted explicitly.
+  # shellcheck disable=SC2086 # word-splitting the candidate lists is intended
+  escalated_nums=$(printf '%s\n' $escalated_nums | grep -v '^$' | sort -n | tr '\n' ' ' || true)
 fi
 
 # issue_has_mc_label NUM -- true when the issue carries merge-conflict.
 issue_has_mc_label() {
   case " $mc_nums " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# issue_is_escalated NUM -- true when the issue is a Conflict escalation
+# (ready-for-human plus the escalation marker). An escalated issue is never
+# live: escalation is the terminal state, so rows and Worker-block marks
+# treat it as escalated only.
+issue_is_escalated() {
+  case " $escalated_nums " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
 # conflict_standing NUM -- "k/N" from the most recent standing comment line,
@@ -298,7 +312,8 @@ legacy_worker_block() {
       lw_bl=$(compose_value "$lw_svc" "$BACKEND_LABEL" || true)
       case "$lw_bl" in ""|simple-coding-agent) ;; *) lw_sca=0 ;; esac
     fi
-    if [ "$lw_sca" -eq 1 ] && issue_has_mc_label "$lw_active_issue"; then
+    if [ "$lw_sca" -eq 1 ] && issue_has_mc_label "$lw_active_issue" \
+      && ! issue_is_escalated "$lw_active_issue"; then
       lw_conflict=$(conflict_standing "$lw_active_issue")
     fi
   fi
@@ -375,9 +390,9 @@ contract_worker_block() {
       # A live Conflict attempt mark, for simple-coding-agent Workers only.
       cw_conflict=""
       case "$cw_backend" in
-        simple-coding-agent|"")
+        simple-coding-agent)
           if [ -n "$github" ] && [ -n "$cw_active" ] && [ "$cw_active" != "-" ] \
-            && issue_has_mc_label "$cw_active"; then
+            && issue_has_mc_label "$cw_active" && ! issue_is_escalated "$cw_active"; then
             cw_conflict=$(conflict_standing "$cw_active")
           fi
           ;;
@@ -678,12 +693,7 @@ conflict_queued=""
 conflict_escl=""
 # shellcheck disable=SC2086 # word-splitting the candidate lists is intended
 for _cn in $mc_nums; do
-  _cskip=0
-  # shellcheck disable=SC2086
-  for _ce in $escalated_nums; do
-    if [ "$_ce" = "$_cn" ]; then _cskip=1; break; fi
-  done
-  if [ "$_cskip" -eq 1 ]; then continue; fi
+  if issue_is_escalated "$_cn"; then continue; fi
   _cs=$(conflict_standing "$_cn")
   _cowners=""
   # shellcheck disable=SC2086

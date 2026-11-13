@@ -406,6 +406,10 @@ EOF
   cat >"$WORK_ROOT/gh-views/view-21.txt" <<'EOF'
 Human triage note, not an escalation.
 EOF
+  # No standing comment: the row shows 0/N with the configured N.
+  cat >"$WORK_ROOT/gh-views/view-30.txt" <<'EOF'
+A Conflict attempt with no result comment yet.
+EOF
   cat >"$WORK_ROOT/scene/gh-conflict.txt" <<'EOF'
 42 issue
 42 conflict merge-conflict
@@ -416,6 +420,8 @@ EOF
 9 conflict ready-for-human
 21 issue
 21 conflict ready-for-human
+30 issue
+30 conflict merge-conflict
 EOF
   export STUB_GH_REPLY="$WORK_ROOT/scene/gh-conflict.txt"
   export STUB_GH_VIEW_DIR="$WORK_ROOT/gh-views"
@@ -427,6 +433,7 @@ EOF
   assert_contains "$WORK_ROOT/out.txt" "#42 live (worker 1) 1/3" "pool-sca-conflict"
   assert_contains "$WORK_ROOT/out.txt" "#15 queued 2/3" "pool-sca-conflict"
   assert_contains "$WORK_ROOT/out.txt" "#9 escalated 3/3" "pool-sca-conflict"
+  assert_contains "$WORK_ROOT/out.txt" "#30 queued 0/3" "pool-sca-conflict (no standing comment)"
   assert_not_contains "$WORK_ROOT/out.txt" "  #21 " "pool-sca-conflict (bare ready-for-human triage label never listed)"
   assert_not_contains "$WORK_ROOT/out.txt" "Conflict requeue comparison skipped" "pool-sca-conflict (nothing skipped)"
   assert_no_file_reads "pool-sca-conflict"

@@ -314,6 +314,8 @@ main() {
 9 conflict ready-for-human
 21 issue
 21 conflict ready-for-human
+30 issue
+30 conflict merge-conflict
 EOF
   cat >"$WORK_ROOT/gh-views/view-42.txt" <<'EOF'
 Rebased onto main, checks green.
@@ -335,6 +337,10 @@ EOF
   cat >"$WORK_ROOT/gh-views/view-21.txt" <<'EOF'
 Human triage note, not an escalation.
 EOF
+  # No standing comment: the row shows 0/N with the configured N.
+  cat >"$WORK_ROOT/gh-views/view-30.txt" <<'EOF'
+A Conflict attempt with no result comment yet.
+EOF
   export STUB_GH_REPLY="$WORK_ROOT/gh-conflict-list.txt"
   export STUB_GH_VIEW_DIR="$WORK_ROOT/gh-views"
 
@@ -348,11 +354,12 @@ EOF
   conflict_assert '#42 live (worker 1) 1/3'
   conflict_assert '#15 queued 2/3'
   conflict_assert '#9 escalated 3/3'
+  conflict_assert '#30 queued 0/3'
   if grep -q '  #21 ' "$WORK_ROOT/out.txt"; then
     fail "pool-conflict-solo: bare ready-for-human issue #21 must not be listed"
   fi
-  [ "$(grep -c 'gh issue view' "$ARGV_LOG")" -eq 4 ] \
-    || fail "pool-conflict-solo: comment reads must go to the 4 candidates only"
+  [ "$(grep -c 'gh issue view' "$ARGV_LOG")" -eq 5 ] \
+    || fail "pool-conflict-solo: comment reads must go to the 5 candidates only"
   grep -q 'gh issue view 42 ' "$ARGV_LOG" || fail "pool-conflict-solo: no comment read for #42"
   info "ok: pool-conflict-solo (live, queued, escalated, triage label ignored)"
 
@@ -366,6 +373,8 @@ EOF
     || fail "pool-conflict-duo: expected '#15 queued 2/3' in pool-status output"
   grep -q '#9 escalated 3/3' "$WORK_ROOT/out.txt" \
     || fail "pool-conflict-duo: expected '#9 escalated 3/3' in pool-status output"
+  grep -q '#30 queued 0/3' "$WORK_ROOT/out.txt" \
+    || fail "pool-conflict-duo: expected '#30 queued 0/3' in pool-status output"
   if grep -q 'Conflict attempt' "$WORK_ROOT/out.txt"; then
     fail "pool-conflict-duo: no Worker block may carry a Conflict mark"
   fi
@@ -387,7 +396,24 @@ EOF
     || fail "pool-conflict-off: past escalation must still be listed"
   info "ok: pool-conflict-off (requeue off still lists leftovers)"
 
+  # No candidates: the section prints (none) and no comment is read.
+  cat >"$WORK_ROOT/gh-plain-list.txt" <<'EOF'
+42 issue
+42 assignee some-login
+EOF
+  export STUB_GH_REPLY="$WORK_ROOT/gh-plain-list.txt"
+  run_helper pool-status.sh --github solo
+  [ "$CODE" -eq 0 ] || fail "pool-conflict-none: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  grep -q '  (none)' "$WORK_ROOT/out.txt" \
+    || fail "pool-conflict-none: expected '(none)' with no candidates"
+  if grep -q 'gh issue view' "$ARGV_LOG"; then
+    fail "pool-conflict-none: no comment read without candidates"
+  fi
+  info "ok: pool-conflict-none (no candidates prints (none), no comment reads)"
+
   # A failed comment read exits 1.
+  export STUB_GH_REPLY="$WORK_ROOT/gh-conflict-list.txt"
+  export STUB_GH_VIEW_FAIL="15"
   export STUB_GH_VIEW_FAIL="15"
   run_helper pool-status.sh --github duo
   [ "$CODE" -eq 1 ] || fail "pool-conflict-view-fail: exit $CODE, want 1"
