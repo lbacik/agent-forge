@@ -1,12 +1,38 @@
 #!/bin/sh
 # Fake `gh`: the legacy-helpers test makes no GitHub calls, so any invocation
-# is a test bug. It logs argv like the fake docker, then fails.
+# without a recorded reply is a test bug. It logs argv like the fake docker.
+#
+# `gh issue list ...` is served from STUB_GH_REPLY (the post-jq lines the real
+# `--jq` would print). Per-issue comment reads (`gh issue view <n> --json
+# comments ...`, used by pool-status.sh for Conflict requeue candidates) are
+# served from $STUB_GH_VIEW_DIR/view-<n>.txt. STUB_GH_VIEW_FAIL names issues
+# (space separated) whose comment read fails like a real GitHub failure
+# (exit 1 with no fixture-gap record, so the helper's own failure path runs).
 
 set -eu
 
 # shellcheck disable=SC1091 # resolved at runtime from STUB_LIB, not statically
 . "${STUB_LIB:?STUB_LIB is not set}/log-argv.sh"
 log_argv gh "$@"
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+  _gh_n=""
+  shift 2
+  for _gh_a in "$@"; do
+    case "$_gh_a" in -*) ;; *) _gh_n=$_gh_a; break ;; esac
+  done
+  case " ${STUB_GH_VIEW_FAIL:-} " in
+    *" $_gh_n "*)
+      echo "stub gh: forced comment-read failure for issue $_gh_n" >&2
+      exit 1
+      ;;
+  esac
+  _gh_f="${STUB_GH_VIEW_DIR:-}/view-$_gh_n.txt"
+  if [ -n "$_gh_n" ] && [ -f "$_gh_f" ]; then
+    cat "$_gh_f"
+    exit 0
+  fi
+  stub_fail "stub gh: no recorded reply: add view-$_gh_n.txt under STUB_GH_VIEW_DIR for issue view"
+fi
 # A test that passes --github serves one recorded reply: the post-jq lines
 # `gh issue list --jq ...` would print. Tests without it fail, as before.
 if [ -n "${STUB_GH_REPLY:-}" ] && [ -f "$STUB_GH_REPLY" ]; then

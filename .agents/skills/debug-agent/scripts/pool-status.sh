@@ -27,9 +27,9 @@
 # `agentctl status` block described above, so mixed-Worker Instances are read
 # per Worker. Unlabelled Instances take the legacy path exactly as before.
 #
-# With --github, TARGET_REPO is read from the Instance .env (that one line
-# only; tokens are never read or printed) and open issues are compared with
-# the live attempts:
+# With --github, TARGET_REPO and MAX_CONFLICT_ATTEMPTS are read from the
+# Instance .env (those two lines only; tokens are never read or printed) and
+# open issues are compared with the live attempts:
 #   - "orphaned claim": a claimed-by:<id> label whose Worker has no active
 #     attempt on that issue, or names no Worker of this Instance (stale
 #     labels are removed by hand; there is no automatic cleanup);
@@ -39,6 +39,20 @@
 # On the contract path the comparison runs only for Workers whose backend is
 # simple-coding-agent: Claim markers are its native protocol. Any other
 # backend is listed with a skip note and takes no part in the comparison.
+#
+# With --github a Conflict requeue section follows the Claim comparison.
+# Its rows are the open issues carrying merge-conflict (live when a Worker
+# of this Instance holds an active attempt on them, naming the Worker, else
+# queued) or escalated (ready-for-human plus the escalation comment marker;
+# a bare ready-for-human triage label never lists an issue; an issue
+# satisfying both is shown as escalated only, never as live), each with its
+# standing k/N from the most recent `**Conflict attempts**: k/N` comment
+# line (0/N with the configured N when there is none). Marker and standing
+# comments are accepted from any author and only displayed, never acted on.
+# A Worker's block marks a live Conflict attempt with its standing. On the
+# contract path the section and the marking apply only to simple-coding-agent
+# Workers; other backends get a skip note. Comment reads are limited to the
+# candidate issues (those carrying merge-conflict or ready-for-human).
 #
 # Exit codes: 0 even with stopped workers; 1 on usage, missing docker/gh,
 # unreadable TARGET_REPO or a failed GitHub query; 2/3/4 from lib/resolve.sh.
@@ -125,6 +139,97 @@ skipped=""
 contract_path=0
 failcode=0
 
+# --- GitHub inputs for --github (read-only) ---
+# All GitHub input is read here, before the Worker blocks are printed, so a
+# block can mark a live Conflict attempt with its standing. Without --github
+# this block is skipped entirely: no gh call and no .env read beyond resolve.
+# Candidate issues are those carrying merge-conflict or ready-for-human;
+# comment reads are limited to them. A failed read exits 1, like any other
+# failed GitHub query under --github.
+gh_out=""
+max_conflict=0
+mc_nums=""
+rfh_nums=""
+standings=""
+escalated_nums=""
+seen_candidates=""
+if [ -n "$github" ]; then
+  command -v gh >/dev/null 2>&1 || { echo "error: --github needs gh (not found on PATH)" >&2; exit 1; }
+  env_file="$root/$dir/.env"
+  # Only the TARGET_REPO and MAX_CONFLICT_ATTEMPTS lines are ever read;
+  # tokens stay out of scope and output.
+  repo=$(grep -h '^TARGET_REPO=' "$env_file" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)
+  repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//;s/^'"'"'//;s/'"'"'$//')
+  case "$repo" in
+    */*) ;;
+    *) echo "error: cannot read TARGET_REPO=owner/repo from $env_file" >&2; exit 1 ;;
+  esac
+  max_conflict=$(grep -h '^MAX_CONFLICT_ATTEMPTS=' "$env_file" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)
+  max_conflict=$(printf '%s' "$max_conflict" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//;s/^'"'"'//;s/'"'"'$//')
+  case "$max_conflict" in ''|*[!0-9]*) max_conflict=0 ;; esac
+
+  # shellcheck disable=SC2016 # $n is a jq variable for gh's --jq, not shell
+  gh_out=$(gh issue list --repo "$repo" --state open --limit 200 \
+    --json number,labels,assignees \
+    --jq '.[] | .number as $n | "\($n) issue", ((.labels // [])[].name | select(startswith("claimed-by:")) | "\($n) label \(.)"), ((.labels // [])[].name | select(. == "merge-conflict" or . == "ready-for-human") | "\($n) conflict \(.)"), ((.assignees // [])[].login | "\($n) assignee \(.)")' 2>&1) \
+    || { printf '%s\n' "$gh_out" >&2; exit 1; }
+  mc_nums=$(printf '%s\n' "$gh_out" | sed -n 's/^\([0-9][0-9]*\) conflict merge-conflict$/\1/p' | sort -n | tr '\n' ' ' || true)
+  rfh_nums=$(printf '%s\n' "$gh_out" | sed -n 's/^\([0-9][0-9]*\) conflict ready-for-human$/\1/p' | sort -n | tr '\n' ' ' || true)
+
+  # shellcheck disable=SC2086 # word-splitting the candidate lists is intended
+  for _crc in $mc_nums $rfh_nums; do
+    case " $seen_candidates " in *" $_crc "*) continue ;; esac
+    seen_candidates="$seen_candidates $_crc"
+    _crb=$(gh issue view "$_crc" --repo "$repo" --json comments --jq '.comments[]?.body' 2>&1) \
+      || { printf '%s\n' "$_crb" >&2; echo "error: failed to read comments of issue #$_crc in $repo" >&2; exit 1; }
+    _crs=$(printf '%s\n' "$_crb" | grep -o '\*\*Conflict attempts\*\*: *[0-9][0-9]*/[0-9][0-9]*' | tail -n 1 || true)
+    if [ -n "$_crs" ]; then
+      _crk=$(printf '%s' "$_crs" | sed -n 's/.*\*\*Conflict attempts\*\*: *\([0-9][0-9]*\)\/\([0-9][0-9]*\).*/\1\/\2/p' || true)
+      if [ -n "$_crk" ]; then
+        standings="$standings $_crc=$_crk"
+      fi
+    fi
+    case " $rfh_nums " in
+      *" $_crc "*)
+        if printf '%s\n' "$_crb" | grep -Fq '<!-- conflict-escalation -->'; then
+          escalated_nums="$escalated_nums $_crc"
+        fi
+        ;;
+    esac
+  done
+  # Candidate lists stay numerically sorted for the ordered rows below. The
+  # escalation list is collected in visit order (a both-label issue is met
+  # at its merge-conflict position), so it is sorted explicitly.
+  # shellcheck disable=SC2086 # word-splitting the candidate lists is intended
+  escalated_nums=$(printf '%s\n' $escalated_nums | grep -v '^$' | sort -n | tr '\n' ' ' || true)
+fi
+
+# issue_has_mc_label NUM -- true when the issue carries merge-conflict.
+issue_has_mc_label() {
+  case " $mc_nums " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# issue_is_escalated NUM -- true when the issue is a Conflict escalation
+# (ready-for-human plus the escalation marker). An escalated issue is never
+# live: escalation is the terminal state, so rows and Worker-block marks
+# treat it as escalated only.
+issue_is_escalated() {
+  case " $escalated_nums " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# conflict_standing NUM -- "k/N" from the most recent standing comment line,
+# else "0/N" with the configured N.
+conflict_standing() {
+  case " $standings " in
+    *" $1="*)
+      printf '%s' "$standings" | tr ' ' '\n' | sed -n "s/^$1=//p" | tail -n 1
+      ;;
+    *)
+      printf '0/%s' "$max_conflict"
+      ;;
+  esac
+}
+
 # compose_value SERVICE KEY -- one indented KEY value for a compose SERVICE
 # (a WORKER_ID or a discovery label). Reads the Instance compose file only.
 compose_value() {
@@ -198,6 +303,21 @@ legacy_worker_block() {
   fi
   lw_active_issue=$(echo "$lw_active" | sed -n 's/^issue #\([0-9][0-9]*\).*/\1/p' || true)
 
+  # A live Conflict attempt mark (legacy path, or an unlabelled container on
+  # the contract path whose service names the simple-coding-agent backend).
+  lw_conflict=""
+  if [ -n "$github" ] && [ -n "$lw_active_issue" ] && [ "$lw_active_issue" != "-" ]; then
+    lw_sca=1
+    if [ "$contract_path" -eq 1 ]; then
+      lw_bl=$(compose_value "$lw_svc" "$BACKEND_LABEL" || true)
+      case "$lw_bl" in ""|simple-coding-agent) ;; *) lw_sca=0 ;; esac
+    fi
+    if [ "$lw_sca" -eq 1 ] && issue_has_mc_label "$lw_active_issue" \
+      && ! issue_is_escalated "$lw_active_issue"; then
+      lw_conflict=$(conflict_standing "$lw_active_issue")
+    fi
+  fi
+
   if [ -n "$lw_wid" ]; then
     lw_disp="worker $lw_n ($lw_wid)"
   elif [ "$lw_n" -eq 1 ]; then
@@ -212,7 +332,11 @@ legacy_worker_block() {
     echo "$lw_status_err" | sed 's/^/    /'
   elif [ "$lw_running" -eq 1 ]; then
     echo "  intake:              $lw_intake"
-    echo "  active_attempt:      $lw_active"
+    if [ -n "$lw_conflict" ]; then
+      echo "  active_attempt:      $lw_active — Conflict attempt ($lw_conflict)"
+    else
+      echo "  active_attempt:      $lw_active"
+    fi
     echo "  pending_next_issue:  $lw_pending"
   else
     echo "  status:              $lw_active"
@@ -263,9 +387,20 @@ contract_worker_block() {
       cw_active=$(echo "$cw_meta" | cut -d'|' -f2)
       [ -n "$cw_backend" ] || cw_backend="$cw_backend_label"
       [ -n "$cw_backend" ] || cw_backend="unknown"
+      # A live Conflict attempt mark, for simple-coding-agent Workers only.
+      cw_conflict=""
+      case "$cw_backend" in
+        simple-coding-agent)
+          if [ -n "$github" ] && [ -n "$cw_active" ] && [ "$cw_active" != "-" ] \
+            && issue_has_mc_label "$cw_active" && ! issue_is_escalated "$cw_active"; then
+            cw_conflict=$(conflict_standing "$cw_active")
+          fi
+          ;;
+      esac
       if ! python3 "$(dirname "$0")/lib/render_pool.py" --block \
         --worker-label "$cw_disp" --service "$cw_svc" \
-        --container "$cw_cont" --cstate "$cw_cstate" --offline "$cw_offline" <"$cw_tmp"; then
+        --container "$cw_cont" --cstate "$cw_cstate" --offline "$cw_offline" \
+        --conflict "$cw_conflict" <"$cw_tmp"; then
         echo "$cw_disp service=$cw_svc backend=$cw_backend:"
         echo "  container:           $cw_cont [$cw_cstate]"
         echo "  error:               cannot render Status Snapshot for managed instance '$cw_managed'"
@@ -396,21 +531,9 @@ if [ -z "$github" ]; then
 fi
 
 # --- GitHub comparison (read-only: one issue list, no state changes) ---
-command -v gh >/dev/null 2>&1 || { echo "error: --github needs gh (not found on PATH)" >&2; exit 1; }
-env_file="$root/$dir/.env"
-# Only the TARGET_REPO line is ever read; tokens stay out of scope and output.
-repo=$(grep -h '^TARGET_REPO=' "$env_file" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)
-repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//;s/^'"'"'//;s/'"'"'$//')
-case "$repo" in
-  */*) ;;
-  *) echo "error: cannot read TARGET_REPO=owner/repo from $env_file" >&2; exit 1 ;;
-esac
-
-# shellcheck disable=SC2016 # $n is a jq variable for gh's --jq, not shell
-gh_out=$(gh issue list --repo "$repo" --state open --limit 200 \
-  --json number,labels,assignees \
-  --jq '.[] | .number as $n | "\($n) issue", ((.labels // [])[].name | select(startswith("claimed-by:")) | "\($n) label \(.)"), ((.assignees // [])[].login | "\($n) assignee \(.)")' 2>&1) \
-  || { printf '%s\n' "$gh_out" >&2; exit 1; }
+# The issue list was already read above (before the Worker blocks, so they
+# can mark live Conflict attempts); TARGET_REPO and MAX_CONFLICT_ATTEMPTS
+# are the only .env lines ever read.
 open_count=$(printf '%s\n' "$gh_out" | grep -c ' issue$' || true)
 
 echo "github: $repo ($open_count open issues read)"
@@ -556,6 +679,89 @@ if [ "$orphans" -eq 0 ] && [ "$problems" -eq 0 ]; then
     echo "  claims consistent: no orphaned claims, every labeled claim matches its Worker"
   fi
 fi
+
+# --- Conflict requeue (read-only, display only) ---
+# Rows are the open issues carrying merge-conflict (live when a compared
+# Worker holds an active attempt on them, else queued) or escalated
+# (ready-for-human plus the escalation marker; a bare ready-for-human triage
+# label never lists an issue). An escalated issue is listed once, as
+# escalated. Marker and standing comments are accepted from any author and
+# only displayed, never acted on. Rows are ordered live, then queued, then
+# escalated, each group by issue number.
+conflict_live=""
+conflict_queued=""
+conflict_escl=""
+# shellcheck disable=SC2086 # word-splitting the candidate lists is intended
+for _cn in $mc_nums; do
+  if issue_is_escalated "$_cn"; then continue; fi
+  _cs=$(conflict_standing "$_cn")
+  _cowners=""
+  # shellcheck disable=SC2086
+  for _cr in $records; do
+    _crn=${_cr%%|*}; _crr=${_cr#*|}; _cra=${_crr#*|}
+    if [ "$_cra" = "$_cn" ]; then
+      _cowners="$_cowners $_crn"
+    fi
+  done
+  _cowners=$(printf '%s' "$_cowners" | sed 's/^ //')
+  case "$_cowners" in
+    "")
+      conflict_queued="$conflict_queued  #$_cn queued $_cs
+"
+      ;;
+    *" "*)
+      _cwl=$(printf '%s' "$_cowners" | sed 's/ /, /g')
+      conflict_live="$conflict_live  #$_cn live (workers $_cwl) $_cs
+"
+      ;;
+    *)
+      conflict_live="$conflict_live  #$_cn live (worker $_cowners) $_cs
+"
+      ;;
+  esac
+done
+# shellcheck disable=SC2086
+for _cn in $escalated_nums; do
+  _cs=$(conflict_standing "$_cn")
+  conflict_escl="$conflict_escl  #$_cn escalated $_cs
+"
+done
+
+if [ "$max_conflict" = "0" ]; then
+  echo "Conflict requeue: MAX_CONFLICT_ATTEMPTS=0 (requeue off; markers read from any author)"
+else
+  echo "Conflict requeue: MAX_CONFLICT_ATTEMPTS=$max_conflict (markers read from any author)"
+fi
+if [ -n "$conflict_live$conflict_queued$conflict_escl" ]; then
+  if [ "$max_conflict" = "0" ]; then
+    echo "  note: requeue is off; leftover merge-conflict labels are stale and past escalations are historical"
+  fi
+  printf '%s' "$conflict_live$conflict_queued$conflict_escl"
+else
+  echo "  (none)"
+fi
+
+# Workers skipped from the comparison (another backend on the contract path)
+# take no part in the live/queued split either; their active attempts above
+# cannot mark an issue live.
+# shellcheck disable=SC2086
+for _cs2 in $skipped; do
+  _csn=${_cs2%%|*}; _csr=${_cs2#*|}
+  _csw=${_csr%%|*}; _csr2=${_csr#*|}
+  _csa=${_csr2%%|*}; _csb=${_csr2#*|}
+  if [ -n "$_csw" ]; then
+    _cswn="$_csw"
+  elif [ "$_csn" -eq 1 ]; then
+    _cswn="worker 1"
+  else
+    _cswn="$short-$_csn"
+  fi
+  if [ "$_csa" != "-" ]; then
+    echo "  note: $_cswn (worker $_csn, backend $_csb) is active on #$_csa; Conflict requeue comparison skipped (Conflict requeue is the simple-coding-agent native protocol)"
+  else
+    echo "  note: $_cswn (worker $_csn, backend $_csb); Conflict requeue comparison skipped (Conflict requeue is the simple-coding-agent native protocol)"
+  fi
+done
 
 if [ "$contract_path" -eq 1 ]; then
   exit "$failcode"
