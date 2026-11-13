@@ -358,6 +358,12 @@ EOF
   if grep -q '  #21 ' "$WORK_ROOT/out.txt"; then
     fail "pool-conflict-solo: bare ready-for-human issue #21 must not be listed"
   fi
+  _o42=$(grep -n '#42 live (worker 1) 1/3' "$WORK_ROOT/out.txt" | cut -d: -f1 | head -n 1)
+  _o15=$(grep -n '#15 queued 2/3' "$WORK_ROOT/out.txt" | cut -d: -f1 | head -n 1)
+  _o30=$(grep -n '#30 queued 0/3' "$WORK_ROOT/out.txt" | cut -d: -f1 | head -n 1)
+  _o9=$(grep -n '#9 escalated 3/3' "$WORK_ROOT/out.txt" | cut -d: -f1 | head -n 1)
+  { [ "$_o42" -lt "$_o15" ] && [ "$_o15" -lt "$_o30" ] && [ "$_o30" -lt "$_o9" ]; } \
+    || fail "pool-conflict-solo: rows must be ordered live, queued by number, escalated"
   [ "$(grep -c 'gh issue view' "$ARGV_LOG")" -eq 5 ] \
     || fail "pool-conflict-solo: comment reads must go to the 5 candidates only"
   grep -q 'gh issue view 42 ' "$ARGV_LOG" || fail "pool-conflict-solo: no comment read for #42"
@@ -413,7 +419,6 @@ EOF
 
   # A failed comment read exits 1.
   export STUB_GH_REPLY="$WORK_ROOT/gh-conflict-list.txt"
-  export STUB_GH_VIEW_FAIL="15"
   export STUB_GH_VIEW_FAIL="15"
   run_helper pool-status.sh --github duo
   [ "$CODE" -eq 1 ] || fail "pool-conflict-view-fail: exit $CODE, want 1"

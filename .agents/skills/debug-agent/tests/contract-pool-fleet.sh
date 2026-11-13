@@ -361,6 +361,8 @@ main() {
   run_helper pool-status.sh --context rpi5 --github sca
   [ "$CODE" -eq 0 ] || fail "pool-sca-github-clean: exit $CODE"
   assert_contains "$WORK_ROOT/out.txt" "claims consistent" "pool-sca-github-clean"
+  assert_contains "$WORK_ROOT/out.txt" "Conflict requeue: MAX_CONFLICT_ATTEMPTS=0 (requeue off; markers read from any author)" "pool-sca-github-clean"
+  assert_contains "$WORK_ROOT/out.txt" "  (none)" "pool-sca-github-clean (no candidates)"
 
   # --github flags a claim without a label for simple-coding-agent.
   export STUB_GH_REPLY="$WORK_ROOT/scene/gh-sca-nolabel.txt"
@@ -446,8 +448,8 @@ EOF
   assert_contains "$WORK_ROOT/out.txt" "#42 live (worker 1) 1/3" "pool-mix-conflict"
   assert_contains "$WORK_ROOT/out.txt" "mix-2.*backend coding-agent" "pool-mix-conflict"
   assert_contains "$WORK_ROOT/out.txt" "Conflict requeue comparison skipped" "pool-mix-conflict"
-  [ "$(grep -c 'gh issue view' "$ARGV_LOG")" -eq 4 ] \
-    || fail "pool-mix-conflict: comment reads must go to the 4 candidates only"
+  [ "$(grep -c 'gh issue view' "$ARGV_LOG")" -eq 5 ] \
+    || fail "pool-mix-conflict: comment reads must go to the 5 candidates only"
   assert_no_file_reads "pool-mix-conflict"
 
   # Requeue off with leftover labels and a coding-agent Worker: the header
