@@ -193,8 +193,10 @@ which remain unverified:
    ```bash
    docker compose run --rm agent startup-check --repo <owner>/<repo> --token-env GITHUB_TOKEN
    ```
-4. The existing token-scope check (step 6 of the skill): the fine-grained PAT
-   must reach contents, pull requests and issues of the Target Repository.
+4. The existing token write-scope check (step 6 of the skill): the
+   fine-grained PAT must hold write access to contents, pull requests and
+   issues of the Target Repository (empty-body write probes, `422` on all
+   three).
    `startup-check` passing does not replace it: it checks the identity and
    push permission, not the issue scope the Queue needs.
 
