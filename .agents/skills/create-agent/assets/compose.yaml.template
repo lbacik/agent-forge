@@ -83,9 +83,10 @@ services:
     # Contract discovery labels (operator contract major 1): keep this block
     # only when AGENT_SRC_REF speaks the contract — its agentctl answers
     # `agentctl --contract 1` (see the create-agent skill, "Contract discovery
-    # labels"); otherwise delete it. Until simple-coding-agent ships the
-    # contract (simple-coding-agent#334), no ref qualifies and every instance
-    # renders without it. Set through Compose `labels:`, never as an image
+    # labels"): `main` and release tags v0.9.0 or newer qualify; older tags do
+    # not and render without it; any other branch or SHA qualifies when that
+    # checkout contains simple_coding_agent/contract_adapter.py. Set through
+    # Compose `labels:`, never as an image
     # LABEL, so one-off containers (`docker compose run`) stay unlabelled;
     # consumers ignore one-offs anyway. The legacy role image LABEL in the
     # Dockerfile is unrelated and stays untouched. The labels apply to every
@@ -116,7 +117,9 @@ services:
     image: simple-coding-agent:{{SHORT_NAME}}
     pull_policy: never
     # Contract discovery labels, as for `agent` above: keep this block only
-    # when AGENT_SRC_REF speaks the contract; otherwise delete it. This
+    # when AGENT_SRC_REF speaks the contract (`main`, tags v0.9.0+, or other
+    # refs whose checkout contains simple_coding_agent/contract_adapter.py);
+    # otherwise delete it. This
     # Worker is a Managed Instance of its own, so it carries all four labels
     # with its own instance name — its Worker id.
     labels:

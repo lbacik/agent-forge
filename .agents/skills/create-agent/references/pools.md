@@ -25,13 +25,18 @@ apply to it; see `references/coding-agent.md` instead.
 
 ## Contract discovery labels
 
-When `AGENT_SRC_REF` speaks the operator contract (no release does yet — see
+When `AGENT_SRC_REF` speaks the operator contract (minimum release `v0.9.0`,
+the first release whose `agentctl` answers `agentctl --contract 1` — see
 `SKILL.md`, "Pools", "Contract discovery labels" and "Minimum upstream"),
 every Worker service this Pool renders carries all four discovery labels:
 `agent` with the instance name `<short-name>`, each `agent-<n>` with its
 Worker id `<short-name>-<n>`, and the backend label naming the engine backend
-from step 0 (`simple-coding-agent`). The labels are set through Compose `labels:`
-only, never as an image `LABEL`, so one-off containers stay unlabelled.
+from step 0 (`simple-coding-agent`). `main` always qualifies, a release tag
+`v0.9.0` or newer qualifies, a release tag older than `v0.9.0` stays on the
+legacy path, and any other branch or commit SHA qualifies when that checkout
+contains `simple_coding_agent/contract_adapter.py`. The labels are set
+through Compose `labels:` only, never as an image `LABEL`, so one-off
+containers stay unlabelled.
 A Pool of N ≥ 2 Workers on the contract path requires `pool` in the
 `identity.capabilities` the running instance reports; without it the backend
 cannot run a Pool here. No backend advertises `pool` yet.
