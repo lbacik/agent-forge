@@ -492,6 +492,51 @@ legacy_agentctl() {
   docker exec -u agent "$container" sh -c "/usr/local/bin/agentctl $1" 2>&1
 }
 
+# --expect-repo was added to agentctl in simple-coding-agent 0.8.0. The status
+# line prints the version without a leading v (e.g. "0.9.1"); accept one
+# optional leading v and compare numerically so 0.10.0 counts as newer than
+# 0.9.x. A pre-release or local suffix (e.g. 0.9.2.dev1, 0.9.1+local) is
+# compared on its numeric core only.
+legacy_supports_expect_repo() {
+  _lv=${1:-}
+  case "$_lv" in
+    v*) _lv=${_lv#v} ;;
+  esac
+  _lcore=$(printf '%s' "$_lv" | sed -n 's/^\([0-9][0-9]*\(\.[0-9][0-9]*\)\{0,2\}\).*/\1/p')
+  [ -n "${_lcore:-}" ] || return 1
+  case "$_lcore" in
+    *[!0-9.]* ) return 1 ;;
+  esac
+  _lmaj=${_lcore%%.*}
+  _lrest=${_lcore#"$_lmaj"}
+  _lmin=0
+  _lpatch=0
+  if [ -n "$_lrest" ]; then
+    case "$_lrest" in
+      .*) _lrest=${_lrest#.} ;;
+      *) return 1 ;;
+    esac
+    _lmin=${_lrest%%.*}
+    _ltmp=${_lrest#"$_lmin"}
+    if [ -n "$_ltmp" ]; then
+      case "$_ltmp" in
+        .*) _lpatch=${_ltmp#.} ;;
+        *) return 1 ;;
+      esac
+    fi
+  fi
+  case "$_lmaj$_lmin$_lpatch" in
+    *[!0-9]* ) return 1 ;;
+  esac
+  _lmaj=$(printf '%s' "$_lmaj" | sed 's/^0*//;s/^$/0/')
+  _lmin=$(printf '%s' "$_lmin" | sed 's/^0*//;s/^$/0/')
+  _lpatch=$(printf '%s' "$_lpatch" | sed 's/^0*//;s/^$/0/')
+  if [ "$_lmaj" -gt 0 ]; then return 0; fi
+  if [ "$_lmaj" -eq 0 ] && [ "$_lmin" -gt 8 ]; then return 0; fi
+  if [ "$_lmaj" -eq 0 ] && [ "$_lmin" -eq 8 ]; then return 0; fi
+  return 1
+}
+
 if [ "$op" = "command" ]; then
   out=$(legacy_agentctl "command $request_id") || _lcode=$?
   _lcode=${_lcode:-0}
@@ -506,15 +551,12 @@ _status=$(legacy_agentctl "status") || {
 }
 _version=$(printf '%s' "$_status" | grep -E '^agent version:' | head -n 1 | sed 's/^agent version:[[:space:]]*//' || true)
 _expect_flag=""
-case "$_version" in
-  v[1-9]*|v0.[89]*|v0.[89].*)
-    _expect_flag=" --expect-repo=$expect_repo"
-    ;;
-  *)
-    _repo_line=$(printf '%s' "$_status" | grep -E '^repository:' | head -n 1 || true)
-    echo "note:            legacy agentctl $_version predates --expect-repo; ${_repo_line:-no repository line in status}"
-    ;;
-esac
+if legacy_supports_expect_repo "$_version"; then
+  _expect_flag=" --expect-repo=$expect_repo"
+else
+  _repo_line=$(printf '%s' "$_status" | grep -E '^repository:' | head -n 1 || true)
+  echo "note:            legacy agentctl $_version predates --expect-repo; ${_repo_line:-no repository line in status}"
+fi
 
 case "$op" in
   stop)
