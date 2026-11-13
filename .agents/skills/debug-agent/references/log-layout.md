@@ -175,7 +175,7 @@ any other outcome (which also updates `last_success_at`). When it reaches
 `MAX_CONSECUTIVE_ERRORS` (default 3), the agent logs
 `consecutive_error_limit_reached` to stdout and stops taking issues. If the
 agent is idle and the user can't see why, check this file and
-`agentctl status` first.
+`/usr/local/bin/agentctl status` first.
 
 `control.sqlite3` is the operator control store behind `agentctl`
 (upstream `control.py`). Tables: `commands` (every `agentctl` request with its
@@ -183,9 +183,9 @@ agent is idle and the user can't see why, check this file and
 `intake` `running`/`stopped`, pending command, stop-after plan, requested next
 issue, handoff), and `counted_attempts`. Don't open it with `sqlite3`: it's a
 live WAL database, the images don't ship the CLI, and a copy without its
-`-wal` file is stale. Ask the live process with `agentctl status` through
+`-wal` file is stale. Ask the live process with `/usr/local/bin/agentctl status` through
 `docker exec -u agent` (read-only). For reading back a command
-(`agentctl command <request-id>`), use
+(`/usr/local/bin/agentctl command <request-id>`), use
 [operate-agent](../operate-agent/SKILL.md) instead of raw `agentctl`. If the
 agent is idle, `intake: stopped` there, or a pending stop plan, explains why
 as often as `consecutive_errors.json` does.

@@ -1,5 +1,5 @@
 CTX=rpi5 docker ps -a --filter label=com.docker.compose.project=agent-duo --filter label=com.docker.compose.service=agent --format {{.Names}}
 CTX=rpi5 docker inspect -f '{{.State.Status}}|{{.State.ExitCode}}|{{.State.StartedAt}}|{{.Config.Image}}' agent-duo-agent-1
 CTX=rpi5 docker ps -a --filter label=com.docker.compose.project=agent-duo --format '{{.Label "com.docker.compose.service"}}|{{.Names}}|{{.State}}|{{.Status}}'
-CTX=rpi5 docker exec -u agent agent-duo-agent-1 sh -c 'echo "WORKER_ID=$WORKER_ID"; agentctl status'
-CTX=rpi5 docker exec -u agent agent-duo-agent-2-1 sh -c 'echo "WORKER_ID=$WORKER_ID"; agentctl status'
+CTX=rpi5 docker exec -u agent agent-duo-agent-1 sh -c 'echo "WORKER_ID=$WORKER_ID"; /usr/local/bin/agentctl status'
+CTX=rpi5 docker exec -u agent agent-duo-agent-2-1 sh -c 'echo "WORKER_ID=$WORKER_ID"; /usr/local/bin/agentctl status'

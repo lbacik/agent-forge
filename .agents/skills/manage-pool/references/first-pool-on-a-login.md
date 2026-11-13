@@ -28,7 +28,7 @@ stopped and no Claim held.
 
 Ask the user which ref to move to: a tag `v0.9.0` or newer, or `main`
 (whose current upstream is newer). Verify the result on the running Workers,
-never from the ref alone: the `agent version:` line of `agentctl status`.
+never from the ref alone: the `agent version:` line of `/usr/local/bin/agentctl status`.
 
 ## Procedure
 
@@ -65,7 +65,7 @@ Each step finishes on every Worker before the next one starts.
    `docker compose up -d`. The recreated Workers keep intake stopped (it
    lives on `/data`). Check on each: `agent version:` at the chosen release
    or newer, and `git var GIT_AUTHOR_IDENT` naming its Worker id.
-4. **Resume.** `agentctl resume` on every upgraded Worker.
+4. **Resume.** `/usr/local/bin/agentctl resume` on every upgraded Worker.
 5. **Only then add Workers**, from step 2 of "Add a Worker" in `SKILL.md`.
 
 An Instance of step 1 that lives on another context is changed there with

@@ -201,11 +201,11 @@ v0.8.0 or newer; on older ones check the `repository:` line of `status`
 first. The legacy `recovery` and `errors` grammar takes no `--expect-repo`
 flag; `errors reset` also answers to its `consecutive-errors reset` alias.
 A mutating command prints a `request_id`;
-`agentctl command <request-id>` reads its outcome later (`accepted`,
+`/usr/local/bin/agentctl command <request-id>` reads its outcome later (`accepted`,
 `completed`, `superseded` or `not fulfilled`). The helper (`operate.sh`)
 runs these for unlabelled instances: it picks the flag from the status
 version, surfaces the printed request ID, and follows it with
-`agentctl command <same-id>` on `--follow`. `stop` here drains exactly as
+`/usr/local/bin/agentctl command <same-id>` on `--follow`. `stop` here drains exactly as
 on the contract path; it is never `docker stop`.
 
 ## 5. Report
