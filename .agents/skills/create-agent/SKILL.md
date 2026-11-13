@@ -607,29 +607,48 @@ block and say so in the report.
 
 ### 6. Verify the token
 
-A fine-grained PAT only works for repositories it was granted. Check, without
+A fine-grained PAT only works for repositories it was granted. Plain `GET`s
+cannot prove that: a public repository answers `200` to every valid token,
+even one with no grant on it. Probe the write grant instead, without
 printing the token:
 
 ```bash
-for p in "" /issues /pulls /contents/; do
-  curl -s -o /dev/null -w "$p %{http_code}\n" -H "Authorization: Bearer $GITHUB_TOKEN" \
-    "https://api.github.com/repos/<owner>/<repo>$p"
+for e in issues pulls git/blobs; do
+  curl -s -o /dev/null -w "$e %{http_code}\n" -X POST \
+    -H "Authorization: Bearer $GITHUB_TOKEN" \
+    -H "Content-Type: application/json" -d '{}' \
+    "https://api.github.com/repos/<owner>/<repo>/$e"
 done
 ```
 
-All 200 → access OK (a fine-grained PAT's permission set applies to every repo
-it covers, so write access matches the other agents that use it). Note that the `permissions`
-field of `GET /repos` reflects the *user's* rights, not the token's, so it
-proves nothing. Any 404 → tell the user to add the repo to the token
-(Settings → Developer settings → Fine-grained tokens → Repository access);
-contents, pull requests and issues need read & write.
+The empty bodies are safe: GitHub checks the permission before it validates
+the body, so a token without the grant gets `403`, while a token with it
+fails body validation (`422`) — nothing is created either way. Never use
+`POST .../git/refs` as a probe: it validates the body first, so it answers
+`422` with or without the grant.
+
+- All three `422` → write access OK (a fine-grained PAT's permission set
+  applies to every repo it covers, so write access here matches the other
+  agents that use it). Note that the `permissions` field of `GET /repos`
+  reflects the *user's* rights, not the token's, so it proves nothing.
+- Any `403` → the token lacks that permission or the repository was never
+  granted to it: add the repo to the token (Settings → Developer settings →
+  Fine-grained tokens → Repository access); contents, pull requests and
+  issues need read & write.
+- Any `401` → the token itself is invalid, expired or revoked: fix the
+  token, not the grant.
+- Any `404` → the repository name is wrong, or the token cannot see the
+  repository at all (a private repository it was not granted, or any
+  repository hidden from a token with no access to it): fix the name or
+  grant the token access to it.
+- Anything else → report the code and stop; do not treat it as success.
 
 ### 7. Validate
 
 For `coding-agent`, validate as `references/coding-agent.md` ("Validation")
 says — `docker compose config -q`, `config validate` through the `agent`
 seat with the named variables set, `startup-check --repo` with the
-instance's token, the token-scope check of step 6, and the optional
+instance's token, the token write-scope check of step 6, and the optional
 `validate` run against a target checkout — and report which passed and which
 remain unverified. The rest of this step is simple-coding-agent only.
 
