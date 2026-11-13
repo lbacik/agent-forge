@@ -408,7 +408,10 @@ Status Snapshot (instance state, Intake with pending stop or stop plan,
 priority, current issue and native phase, each with its `observed_at`; a
 stopped Worker is read through Offline Read, never reported as a gap), and
 `--github` compares Claim markers only for Workers whose backend is
-`simple-coding-agent`, skipping any other backend with a note. An unlabelled
+`simple-coding-agent`, skipping any other backend with a note, and prints a
+Conflict requeue section after the Claim comparison (live and queued Conflict
+attempts with their standing, Conflict escalations; a Worker's block marks a
+live Conflict attempt). An unlabelled
 Instance keeps today's `pool-status.sh` output, unchanged. `fleet.sh` answers
 "what agents run on this host" for one Docker context (default `orbstack`,
 `--context` for a remote host): one line per Managed Instance from

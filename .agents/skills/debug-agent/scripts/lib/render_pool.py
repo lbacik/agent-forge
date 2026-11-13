@@ -106,6 +106,7 @@ def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--block", action="store_true")
     parser.add_argument("--meta", action="store_true")
+    parser.add_argument("--conflict", default="")
     parser.add_argument("--worker-label", default="")
     parser.add_argument("--service", default="")
     parser.add_argument("--managed", default="")
@@ -117,6 +118,11 @@ def main(argv):
     if snap is None:
         return 1
     backend, active, phase, mode, lines = _snapshot_texts(snap)
+    # A live Conflict attempt mark (standing like "1/3") is appended only to
+    # the current_attempt line, and only when there is an active attempt.
+    # Empty --conflict leaves every line byte-for-byte unchanged.
+    if args.conflict and active != "-":
+        lines[-1] = "%s — Conflict attempt (%s)" % (lines[-1], args.conflict)
     if args.meta:
         sys.stdout.write("%s|%s|%s|%s\n" % (backend or "-", active, phase, mode or "-"))
         return 0

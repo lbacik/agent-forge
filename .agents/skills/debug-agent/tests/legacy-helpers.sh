@@ -297,6 +297,106 @@ main() {
   STUB_SCENARIO_DIR="$SCENARIO_BASE/unlabelled"
   export STUB_SCENARIO_DIR
 
+  # --github Conflict requeue on the legacy path: a live Conflict attempt
+  # (marked in the Worker's block with its standing), a queued attempt, a
+  # Conflict escalation, and the bare ready-for-human triage label (never
+  # listed). Comment reads go only to the candidate issues.
+  printf 'MAX_CONFLICT_ATTEMPTS=3\n' >>"$T_INSTANCES/agent-solo/.env"
+  printf 'MAX_CONFLICT_ATTEMPTS=3\n' >>"$T_INSTANCES/agent-duo/.env"
+  mkdir -p "$WORK_ROOT/gh-views"
+  cat >"$WORK_ROOT/gh-conflict-list.txt" <<'EOF'
+42 issue
+42 conflict merge-conflict
+42 assignee some-login
+15 issue
+15 conflict merge-conflict
+9 issue
+9 conflict ready-for-human
+21 issue
+21 conflict ready-for-human
+EOF
+  cat >"$WORK_ROOT/gh-views/view-42.txt" <<'EOF'
+Rebased onto main, checks green.
+
+**Conflict attempts**: 1/3
+EOF
+  cat >"$WORK_ROOT/gh-views/view-15.txt" <<'EOF'
+First Conflict attempt failed, retrying.
+
+**Conflict attempts**: 2/3
+EOF
+  cat >"$WORK_ROOT/gh-views/view-9.txt" <<'EOF'
+Gave up after the last attempt.
+
+**Conflict attempts**: 3/3
+
+<!-- conflict-escalation -->
+EOF
+  cat >"$WORK_ROOT/gh-views/view-21.txt" <<'EOF'
+Human triage note, not an escalation.
+EOF
+  export STUB_GH_REPLY="$WORK_ROOT/gh-conflict-list.txt"
+  export STUB_GH_VIEW_DIR="$WORK_ROOT/gh-views"
+
+  run_helper pool-status.sh --github solo
+  [ "$CODE" -eq 0 ] || fail "pool-conflict-solo: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  conflict_assert() {
+    grep -q "$1" "$WORK_ROOT/out.txt" || fail "pool-conflict-solo: expected '$1' in pool-status output"
+  }
+  conflict_assert 'Conflict requeue: MAX_CONFLICT_ATTEMPTS=3 (markers read from any author)'
+  conflict_assert 'active_attempt: *issue #42 .* — Conflict attempt (1/3)'
+  conflict_assert '#42 live (worker 1) 1/3'
+  conflict_assert '#15 queued 2/3'
+  conflict_assert '#9 escalated 3/3'
+  if grep -q '  #21 ' "$WORK_ROOT/out.txt"; then
+    fail "pool-conflict-solo: bare ready-for-human issue #21 must not be listed"
+  fi
+  [ "$(grep -c 'gh issue view' "$ARGV_LOG")" -eq 4 ] \
+    || fail "pool-conflict-solo: comment reads must go to the 4 candidates only"
+  grep -q 'gh issue view 42 ' "$ARGV_LOG" || fail "pool-conflict-solo: no comment read for #42"
+  info "ok: pool-conflict-solo (live, queued, escalated, triage label ignored)"
+
+  # The same issues from an Instance with no Worker on them: #42 is queued
+  # here (no duo Worker is active on it) and no block carries a Conflict mark.
+  run_helper pool-status.sh --github duo
+  [ "$CODE" -eq 0 ] || fail "pool-conflict-duo: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  grep -q '#42 queued 1/3' "$WORK_ROOT/out.txt" \
+    || fail "pool-conflict-duo: expected '#42 queued 1/3' in pool-status output"
+  grep -q '#15 queued 2/3' "$WORK_ROOT/out.txt" \
+    || fail "pool-conflict-duo: expected '#15 queued 2/3' in pool-status output"
+  grep -q '#9 escalated 3/3' "$WORK_ROOT/out.txt" \
+    || fail "pool-conflict-duo: expected '#9 escalated 3/3' in pool-status output"
+  if grep -q 'Conflict attempt' "$WORK_ROOT/out.txt"; then
+    fail "pool-conflict-duo: no Worker block may carry a Conflict mark"
+  fi
+  info "ok: pool-conflict-duo (queued and escalated, no live attempt)"
+
+  # Requeue off: the header says so, leftover labels are still listed with
+  # the stale/historical note.
+  grep -v '^MAX_CONFLICT_ATTEMPTS=' "$T_INSTANCES/agent-solo/.env" >"$WORK_ROOT/env-tmp" \
+    && cat "$WORK_ROOT/env-tmp" >"$T_INSTANCES/agent-solo/.env"
+  run_helper pool-status.sh --github solo
+  [ "$CODE" -eq 0 ] || fail "pool-conflict-off: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  grep -q 'Conflict requeue: MAX_CONFLICT_ATTEMPTS=0 (requeue off; markers read from any author)' "$WORK_ROOT/out.txt" \
+    || fail "pool-conflict-off: expected the requeue-off header"
+  grep -q 'stale' "$WORK_ROOT/out.txt" || fail "pool-conflict-off: expected the stale/historical note"
+  grep -q 'historical' "$WORK_ROOT/out.txt" || fail "pool-conflict-off: expected the stale/historical note"
+  grep -q '#42 live (worker 1)' "$WORK_ROOT/out.txt" \
+    || fail "pool-conflict-off: leftover live row must still be listed"
+  grep -q '#9 escalated' "$WORK_ROOT/out.txt" \
+    || fail "pool-conflict-off: past escalation must still be listed"
+  info "ok: pool-conflict-off (requeue off still lists leftovers)"
+
+  # A failed comment read exits 1.
+  export STUB_GH_VIEW_FAIL="15"
+  run_helper pool-status.sh --github duo
+  [ "$CODE" -eq 1 ] || fail "pool-conflict-view-fail: exit $CODE, want 1"
+  grep -q 'failed to read comments of issue #15' "$WORK_ROOT/err.txt" \
+    || fail "pool-conflict-view-fail: expected the #15 read failure on stderr"
+  unset STUB_GH_VIEW_FAIL
+  unset STUB_GH_REPLY STUB_GH_VIEW_DIR
+  info "ok: pool-conflict-view-fail (failed comment read exits 1)"
+
   # Resolution error paths keep their exit codes and make no docker calls.
   expect_fail error-no-match 3 locate-agent.sh zzz-no-such
   argv_empty error-no-match

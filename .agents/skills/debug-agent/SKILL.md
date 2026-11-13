@@ -124,7 +124,17 @@ label stays on the legacy block below, so mixed-Worker Instances are read
 per Worker. With `--github` (needs `gh`) the `claimed-by:<worker-id>`
 comparison runs only for Workers whose backend is `simple-coding-agent` —
 Claim markers are its native protocol; any other backend is listed with a
-skip note and takes no part in the comparison. Nothing is changed on Docker
+skip note and takes no part in the comparison. With `--github` the helper
+also prints a Conflict requeue section after the Claim comparison: the open
+issues carrying `merge-conflict` (live when a Worker of this Instance holds
+an active attempt on them, naming the Worker, else queued) or escalated
+(`ready-for-human` plus the escalation comment marker; a bare
+`ready-for-human` triage label never lists an issue), each with its standing
+`k/N` from the most recent `**Conflict attempts**: k/N` comment line (`0/N`
+with the configured `MAX_CONFLICT_ATTEMPTS` when there is none). A Worker's
+block marks a live Conflict attempt with its standing. On the contract path
+the section and the marking apply only to `simple-coding-agent` Workers;
+other backends get a skip note. Nothing is changed on Docker
 or GitHub.
 
 The rest of this subsection is legacy: it applies only to unlabelled
@@ -135,7 +145,8 @@ per running Worker (one SSH round trip each on a remote context; a stopped
 container is reported, not an error). It works for a single-Worker Instance
 too. With `--github` it also compares the live attempts with the
 `claimed-by:<worker-id>` labels and assignees in the repository
-(`TARGET_REPO` from the Instance `.env`; no GitHub call is made without the
+(`TARGET_REPO` and `MAX_CONFLICT_ATTEMPTS` from the Instance `.env` — those
+two lines only, never tokens; no GitHub call is made without the
 flag), flagging orphaned claims (a label whose Worker has no active attempt
 on that issue, or names no Worker of the Instance — remove stale labels by
 hand) and claims without labels (a Worker active on an issue that lacks its

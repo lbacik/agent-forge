@@ -379,6 +379,99 @@ main() {
   assert_contains "$WORK_ROOT/out.txt" "claims consistent for compared Workers" "pool-code-github (skipped Workers named)"
   unset STUB_GH_REPLY
 
+  # --github Conflict requeue on the contract path: a live Conflict attempt
+  # (marked in the simple-coding-agent Worker's block with its standing), a
+  # queued attempt, a Conflict escalation, and the bare ready-for-human
+  # triage label (never listed). Comment reads go only to the candidates.
+  printf 'MAX_CONFLICT_ATTEMPTS=3\n' >>"$T_INSTANCES/agent-sca/.env"
+  printf 'MAX_CONFLICT_ATTEMPTS=3\n' >>"$T_INSTANCES/agent-mix/.env"
+  mkdir -p "$WORK_ROOT/gh-views"
+  cat >"$WORK_ROOT/gh-views/view-42.txt" <<'EOF'
+Rebased onto main, checks green.
+
+**Conflict attempts**: 1/3
+EOF
+  cat >"$WORK_ROOT/gh-views/view-15.txt" <<'EOF'
+First Conflict attempt failed, retrying.
+
+**Conflict attempts**: 2/3
+EOF
+  cat >"$WORK_ROOT/gh-views/view-9.txt" <<'EOF'
+Gave up after the last attempt.
+
+**Conflict attempts**: 3/3
+
+<!-- conflict-escalation -->
+EOF
+  cat >"$WORK_ROOT/gh-views/view-21.txt" <<'EOF'
+Human triage note, not an escalation.
+EOF
+  cat >"$WORK_ROOT/scene/gh-conflict.txt" <<'EOF'
+42 issue
+42 conflict merge-conflict
+42 assignee some-login
+15 issue
+15 conflict merge-conflict
+9 issue
+9 conflict ready-for-human
+21 issue
+21 conflict ready-for-human
+EOF
+  export STUB_GH_REPLY="$WORK_ROOT/scene/gh-conflict.txt"
+  export STUB_GH_VIEW_DIR="$WORK_ROOT/gh-views"
+
+  run_helper pool-status.sh --context rpi5 --github sca
+  [ "$CODE" -eq 0 ] || fail "pool-sca-conflict: exit $CODE"
+  assert_contains "$WORK_ROOT/out.txt" "Conflict requeue: MAX_CONFLICT_ATTEMPTS=3 (markers read from any author)" "pool-sca-conflict"
+  assert_contains "$WORK_ROOT/out.txt" "Conflict attempt (1/3)" "pool-sca-conflict (Worker block mark)"
+  assert_contains "$WORK_ROOT/out.txt" "#42 live (worker 1) 1/3" "pool-sca-conflict"
+  assert_contains "$WORK_ROOT/out.txt" "#15 queued 2/3" "pool-sca-conflict"
+  assert_contains "$WORK_ROOT/out.txt" "#9 escalated 3/3" "pool-sca-conflict"
+  assert_not_contains "$WORK_ROOT/out.txt" "  #21 " "pool-sca-conflict (bare ready-for-human triage label never listed)"
+  assert_not_contains "$WORK_ROOT/out.txt" "Conflict requeue comparison skipped" "pool-sca-conflict (nothing skipped)"
+  assert_no_file_reads "pool-sca-conflict"
+
+  # Mixed backends: the live row names the simple-coding-agent Worker only,
+  # the coding-agent Worker gets the same kind of skip note as the Claim
+  # comparison. Comment reads stay limited to the candidates.
+  run_helper pool-status.sh --context rpi5 --github mix
+  [ "$CODE" -eq 0 ] || fail "pool-mix-conflict: exit $CODE"
+  assert_contains "$WORK_ROOT/out.txt" "#42 live (worker 1) 1/3" "pool-mix-conflict"
+  assert_contains "$WORK_ROOT/out.txt" "mix-2.*backend coding-agent" "pool-mix-conflict"
+  assert_contains "$WORK_ROOT/out.txt" "Conflict requeue comparison skipped" "pool-mix-conflict"
+  [ "$(grep -c 'gh issue view' "$ARGV_LOG")" -eq 4 ] \
+    || fail "pool-mix-conflict: comment reads must go to the 4 candidates only"
+  assert_no_file_reads "pool-mix-conflict"
+
+  # Requeue off with leftover labels and a coding-agent Worker: the header
+  # says so, the rows are still listed with the stale/historical note, and
+  # the other backend is skipped, never compared.
+  cat >"$WORK_ROOT/scene/gh-off.txt" <<'EOF'
+15 issue
+15 conflict merge-conflict
+9 issue
+9 conflict ready-for-human
+EOF
+  export STUB_GH_REPLY="$WORK_ROOT/scene/gh-off.txt"
+  run_helper pool-status.sh --context rpi5 --github code
+  [ "$CODE" -eq 0 ] || fail "pool-code-conflict-off: exit $CODE"
+  assert_contains "$WORK_ROOT/out.txt" "Conflict requeue: MAX_CONFLICT_ATTEMPTS=0 (requeue off; markers read from any author)" "pool-code-conflict-off"
+  assert_contains "$WORK_ROOT/out.txt" "stale" "pool-code-conflict-off"
+  assert_contains "$WORK_ROOT/out.txt" "historical" "pool-code-conflict-off"
+  assert_contains "$WORK_ROOT/out.txt" "#15 queued 2/3" "pool-code-conflict-off"
+  assert_contains "$WORK_ROOT/out.txt" "#9 escalated 3/3" "pool-code-conflict-off"
+  assert_contains "$WORK_ROOT/out.txt" "Conflict requeue comparison skipped" "pool-code-conflict-off"
+
+  # A failed comment read exits 1.
+  export STUB_GH_REPLY="$WORK_ROOT/scene/gh-conflict.txt"
+  export STUB_GH_VIEW_FAIL="15"
+  run_helper pool-status.sh --context rpi5 --github sca
+  [ "$CODE" -eq 1 ] || fail "pool-conflict-view-fail: exit $CODE, want 1"
+  assert_contains "$WORK_ROOT/err.txt" "failed to read comments of issue #15" "pool-conflict-view-fail"
+  unset STUB_GH_VIEW_FAIL
+  unset STUB_GH_REPLY STUB_GH_VIEW_DIR
+  info "ok: Conflict requeue cases (live, queued, escalated, triage label, requeue off, failed read)"
+
   # Stopped Worker: Offline Read, never a gap.
   run_helper pool-status.sh --context rpi5 halt
   [ "$CODE" -eq 0 ] || fail "pool-halt: exit $CODE"
