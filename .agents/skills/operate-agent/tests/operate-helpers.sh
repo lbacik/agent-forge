@@ -105,18 +105,34 @@ EOF
   printf 'agent-plain-agent-1\n' >"$SCENE/agent-plain/ps-PROJECT.txt"
   printf 'running|0|2026-11-10T10:00:00Z|plain-image:latest\n' >"$SCENE/agent-plain/inspect-agent-plain-agent-1.txt"
   # Legacy agentctl text replies for the unlabelled instance.
+  # The status shape matches what the agent really prints (no leading v).
   cat >"$SCENE/agent-plain/exec-agentctl-agent-plain-agent-1.txt" <<'EOF'
 WORKER_ID=
 intake: running
 active_attempt: none
 pending_next_issue: none
-agent version: v0.9.0
+agent version: 0.9.1
 repository: example-owner/example-repo
 EOF
   cat >"$SCENE/agent-plain/exec-agentctl-stop-agent-plain-agent-1.txt" <<'EOF'
 request_id: req-legacy0000000001
 acknowledgement: accepted
 detail: finish the active attempt, then close intake
+EOF
+  cat >"$SCENE/agent-plain/exec-agentctl-resume-agent-plain-agent-1.txt" <<'EOF'
+request_id: req-legacy0000000001
+acknowledgement: accepted
+detail: intake reopened
+EOF
+  cat >"$SCENE/agent-plain/exec-agentctl-next-issue-agent-plain-agent-1.txt" <<'EOF'
+request_id: req-legacy0000000001
+acknowledgement: accepted
+detail: issue 122 preferred for the next claim
+EOF
+  cat >"$SCENE/agent-plain/exec-agentctl-handoff-agent-plain-agent-1.txt" <<'EOF'
+request_id: req-legacy0000000001
+acknowledgement: accepted
+detail: operator handoff completed
 EOF
   cat >"$SCENE/agent-plain/exec-agentctl-command-agent-plain-agent-1.txt" <<'EOF'
 request_id: req-legacy0000000001
@@ -726,6 +742,80 @@ PYEOF
   grep -q 'agentctl stop --after 2 --expect-repo=example-owner/example-repo' "$ARGV_LOG" || fail "legacy-stop-after: no 'agentctl stop --after 2 --expect-repo=' in agentctl argv"
   info "ok: legacy stop --after"
 
+  # Legacy path: the other guarded mutations carry --expect-repo on 0.9.1.
+  run_operate --context rpi5 plain resume
+  [ "$CODE" -eq 0 ] || fail "legacy-resume: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "legacy agentctl" "legacy-resume"
+  grep -q 'agentctl resume --expect-repo=example-owner/example-repo' "$ARGV_LOG" || fail "legacy-resume: no --expect-repo in agentctl argv"
+  info "ok: legacy resume (legacy agentctl with --expect-repo)"
+
+  run_operate --context rpi5 plain next-issue 122
+  [ "$CODE" -eq 0 ] || fail "legacy-next-issue: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "legacy agentctl" "legacy-next-issue"
+  grep -q 'agentctl next issue 122 --expect-repo=example-owner/example-repo' "$ARGV_LOG" || fail "legacy-next-issue: no --expect-repo in agentctl argv"
+  info "ok: legacy next-issue (legacy agentctl with --expect-repo)"
+
+  run_operate --context rpi5 plain handoff
+  [ "$CODE" -eq 0 ] || fail "legacy-handoff: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "legacy agentctl" "legacy-handoff"
+  grep -q 'agentctl handoff now --expect-repo=example-owner/example-repo' "$ARGV_LOG" || fail "legacy-handoff: no --expect-repo in agentctl argv"
+  info "ok: legacy handoff (legacy agentctl with --expect-repo)"
+
+  # Legacy version gate: rewrite the status reply, run stop, check the guard.
+  set_legacy_version() {
+    if [ "$1" = "__MISSING__" ]; then
+      cat >"$SCENE/agent-plain/exec-agentctl-agent-plain-agent-1.txt" <<'EOF'
+WORKER_ID=
+intake: running
+active_attempt: none
+pending_next_issue: none
+repository: example-owner/example-repo
+EOF
+    else
+      cat >"$SCENE/agent-plain/exec-agentctl-agent-plain-agent-1.txt" <<EOF
+WORKER_ID=
+intake: running
+active_attempt: none
+pending_next_issue: none
+agent version: $1
+repository: example-owner/example-repo
+EOF
+    fi
+  }
+
+  for _v in "0.8.0" "v0.9.0" "0.10.0" "1.0.0" "0.9.2.dev1" "0.9.1+local"; do
+    set_legacy_version "$_v"
+    run_operate --context rpi5 plain stop
+    [ "$CODE" -eq 0 ] || fail "legacy-version-guard-$_v: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+    grep -q 'agentctl stop --expect-repo=example-owner/example-repo' "$ARGV_LOG" || fail "legacy-version-guard-$_v: no --expect-repo in agentctl argv for version $_v"
+    assert_not_contains "$WORK_ROOT/out.txt" "predates --expect-repo" "legacy-version-guard-$_v (no fallback note)"
+    info "ok: legacy version $_v carries --expect-repo"
+  done
+
+  for _v in "0.7.3" "unknown"; do
+    set_legacy_version "$_v"
+    run_operate --context rpi5 plain stop
+    [ "$CODE" -eq 0 ] || fail "legacy-version-noguard-$_v: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+    grep -q 'agentctl stop' "$ARGV_LOG" || fail "legacy-version-noguard-$_v: no agentctl stop in argv"
+    assert_not_contains "$ARGV_LOG" "expect-repo" "legacy-version-noguard-$_v (no guard flag)"
+    assert_contains "$WORK_ROOT/out.txt" "predates --expect-repo" "legacy-version-noguard-$_v (fallback note)"
+    assert_contains "$WORK_ROOT/out.txt" "$_v" "legacy-version-noguard-$_v (note shows the version)"
+    assert_contains "$WORK_ROOT/out.txt" "repository: example-owner/example-repo" "legacy-version-noguard-$_v (note shows the repository line)"
+    info "ok: legacy version $_v omits --expect-repo with a note"
+  done
+
+  set_legacy_version "__MISSING__"
+  run_operate --context rpi5 plain stop
+  [ "$CODE" -eq 0 ] || fail "legacy-version-missing: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  grep -q 'agentctl stop' "$ARGV_LOG" || fail "legacy-version-missing: no agentctl stop in argv"
+  assert_not_contains "$ARGV_LOG" "expect-repo" "legacy-version-missing (no guard flag)"
+  assert_contains "$WORK_ROOT/out.txt" "predates --expect-repo" "legacy-version-missing (fallback note)"
+  assert_contains "$WORK_ROOT/out.txt" "repository: example-owner/example-repo" "legacy-version-missing (note shows the repository line)"
+  info "ok: legacy missing agent version omits --expect-repo with a note"
+
+  # Restore the real-world status shape for the remaining legacy checks.
+  set_legacy_version "0.9.1"
+
   # Legacy path: recovery retry (the legacy grammar takes no --expect-repo).
   run_operate --context rpi5 plain recovery-retry att-7
   [ "$CODE" -eq 0 ] || fail "legacy-recovery-retry: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
@@ -755,6 +845,7 @@ PYEOF
   [ "$CODE" -eq 0 ] || fail "legacy-errors-reset: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
   assert_contains "$WORK_ROOT/out.txt" "request_id:      req-legacy0000000004" "legacy-errors-reset"
   grep -q 'agentctl errors reset' "$ARGV_LOG" || fail "legacy-errors-reset: no 'agentctl errors reset' in argv"
+  assert_not_contains "$ARGV_LOG" "expect-repo" "legacy-errors-reset (legacy errors takes no guard flag)"
   info "ok: legacy errors reset"
 
   # Legacy path: command lookup reads the stored command.

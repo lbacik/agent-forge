@@ -197,8 +197,8 @@ docker exec -u agent -w /data <container> /usr/local/bin/agentctl command <reque
 ```
 
 Pass `--expect-repo=<TARGET_REPO>` when the Worker's `agent version:` is
-v0.8.0 or newer; on older ones check the `repository:` line of `status`
-first. The legacy `recovery` and `errors` grammar takes no `--expect-repo`
+0.8.0 or newer (with or without a leading `v`); on older ones check the
+`repository:` line of `status` first. The legacy `recovery` and `errors` grammar takes no `--expect-repo`
 flag; `errors reset` also answers to its `consecutive-errors reset` alias.
 A mutating command prints a `request_id`;
 `/usr/local/bin/agentctl command <request-id>` reads its outcome later (`accepted`,
