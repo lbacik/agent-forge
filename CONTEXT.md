@@ -44,6 +44,10 @@ _Avoid_: Retry, re-label, continuation (a continuation resumes unfinished work);
 The attempt a Worker makes after a Conflict requeue: it brings the already published pull request up to date with the base branch, publishes only when the result passes the repository's check, and does no new work on the issue.
 _Avoid_: Conflict-only attempt, resolver run
 
+**Conflict escalation**:
+A Worker ending the Conflict requeue of an issue after its Conflict attempts have failed a configured number of times in a row, and handing the pull request to a human; the issue is not requeued again until a human hands it back.
+_Avoid_: Exhausted budget, conflict handoff (a handoff is an ordinary attempt outcome)
+
 ### Operator contract
 
 These terms are used as defined in the glossary of operator contract major 1, at the tag pinned in the README's [Operator contract](README.md#operator-contract) section, and are not redefined here: Managed Instance, Fleet, Pool, Backend, Target Repository, Operator Capability, Intake, Operator Command, Acknowledgement, Status Snapshot, Figure, Figure Basis, Attempt, Attempt Archive, Sealed, Offline Read, Halt. Where both glossaries use a word, this file's meaning applies unless the contract's is named, as in "contract Pool".
