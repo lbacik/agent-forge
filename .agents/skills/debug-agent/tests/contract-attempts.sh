@@ -363,6 +363,63 @@ main() {
   assert_contains "$WORK_ROOT/out.txt" "moving snapshot" "fetch torn"
   info "ok: a sha256 mismatch is fetched again"
 
+  # Failure: an `attempts export` failure exits with agentfleet's code
+  # before any `tar` step: no misleading `tar:` line and no partial cache
+  # directory for the Attempt.
+  export AGENT_CONTRACT_CACHE="$WORK_ROOT/cache-export-fail"
+  touch "$WORK_ROOT/scene/fail-attexport-_42_1"
+  run_helper fetch-run.sh --context rpi5 foo 42 '#42/1'
+  rm -f "$WORK_ROOT/scene/fail-attexport-_42_1"
+  [ "$CODE" -ne 0 ] || fail "fetch export-fail: exit 0 despite the export failure"
+  [ "$CODE" -eq 7 ] || fail "fetch export-fail: exit $CODE, want agentfleet's 7"
+  assert_contains "$WORK_ROOT/err.txt" "error: agentfleet attempts export failed" "fetch export-fail"
+  assert_not_contains "$WORK_ROOT/err.txt" "tar:" "fetch export-fail stops before tar"
+  if [ -e "$WORK_ROOT/cache-export-fail/rpi5/foo/coding-agent/example-owner%2Fexample-repo/%2342%2F1" ]; then
+    fail "fetch export-fail: a partial cache directory was left behind"
+  fi
+  info "ok: a failed export exits with agentfleet's code before tar"
+
+  # Failure: an `attempts show` failure (not a not_found reply) exits
+  # with agentfleet's code instead of continuing with an empty envelope.
+  export AGENT_CONTRACT_CACHE="$WORK_ROOT/cache-show-fail"
+  touch "$WORK_ROOT/scene/fail-attshow-_42_1"
+  run_helper fetch-run.sh --context rpi5 foo 42 '#42/1'
+  rm -f "$WORK_ROOT/scene/fail-attshow-_42_1"
+  [ "$CODE" -ne 0 ] || fail "fetch show-fail: exit 0 despite the show failure"
+  [ "$CODE" -eq 7 ] || fail "fetch show-fail: exit $CODE, want agentfleet's 7"
+  assert_contains "$WORK_ROOT/err.txt" "error: agentfleet attempts show failed" "fetch show-fail"
+  info "ok: a failed show exits with agentfleet's code"
+
+  # Failure: an `identity` failure exits non-zero on both helpers instead
+  # of continuing with an empty envelope.
+  export AGENT_CONTRACT_CACHE="$WORK_ROOT/cache-identity-fail"
+  touch "$WORK_ROOT/scene/fail-identity"
+  run_helper fetch-run.sh --context rpi5 foo 42 latest
+  [ "$CODE" -ne 0 ] || fail "fetch identity-fail: exit 0 despite the identity failure"
+  [ "$CODE" -eq 7 ] || fail "fetch identity-fail: exit $CODE, want agentfleet's 7"
+  assert_contains "$WORK_ROOT/err.txt" "error: agentfleet identity failed" "fetch identity-fail"
+  run_helper locate-agent.sh --context rpi5 foo 42
+  [ "$CODE" -ne 0 ] || fail "locate identity-fail: exit 0 despite the identity failure"
+  [ "$CODE" -eq 7 ] || fail "locate identity-fail: exit $CODE, want agentfleet's 7"
+  assert_contains "$WORK_ROOT/err.txt" "error: agentfleet identity failed" "locate identity-fail"
+  rm -f "$WORK_ROOT/scene/fail-identity"
+  info "ok: a failed identity exits non-zero on both helpers"
+
+  # Failure: a later `attempts ls` page exits non-zero instead of using
+  # the partial ID list from the earlier pages.
+  export AGENT_CONTRACT_CACHE="$WORK_ROOT/cache-ls-fail"
+  touch "$WORK_ROOT/scene/fail-attlist-paged"
+  run_helper locate-agent.sh --context rpi5 foo 42
+  [ "$CODE" -ne 0 ] || fail "locate ls-fail: exit 0 despite the second-page failure"
+  [ "$CODE" -eq 7 ] || fail "locate ls-fail: exit $CODE, want agentfleet's 7"
+  assert_contains "$WORK_ROOT/err.txt" "error: agentfleet attempts ls failed" "locate ls-fail"
+  run_helper fetch-run.sh --context rpi5 foo 42 latest
+  [ "$CODE" -ne 0 ] || fail "fetch ls-fail: exit 0 despite the second-page failure"
+  [ "$CODE" -eq 7 ] || fail "fetch ls-fail: exit $CODE, want agentfleet's 7"
+  assert_contains "$WORK_ROOT/err.txt" "error: agentfleet attempts ls failed" "fetch ls-fail"
+  rm -f "$WORK_ROOT/scene/fail-attlist-paged"
+  info "ok: a failed later ls page exits with agentfleet's code"
+
   # Export: a stopped container is read through Offline Read, with no
   # `docker cp` and no legacy throwaway container.
   export STUB_SCENARIO_DIR="$WORK_ROOT/stopped"

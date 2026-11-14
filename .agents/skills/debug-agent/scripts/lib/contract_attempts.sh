@@ -53,11 +53,12 @@ contract_identity_envelope() {
   _managed=$1
   _out=$2
   _err=$(mktemp) || return 1
-  if agentfleet identity "$_managed" --json >"$_out" 2>"$_err"; then
+  _code=0
+  agentfleet identity "$_managed" --json >"$_out" 2>"$_err" || _code=$?
+  if [ "$_code" -eq 0 ]; then
     rm -f "$_err"
     return 0
   fi
-  _code=$?
   cat "$_err" >&2 || true
   rm -f "$_err"
   echo "error: agentfleet identity failed for managed instance '$_managed' (no legacy fallback)" >&2
@@ -103,9 +104,10 @@ contract_list_issue_pages() {
   _n=0
   while :; do
     _n=$((_n + 1))
-    if ! contract_attempts_ls_page "$_managed" "$_tmpdir/page-$_n.json" "$_cursor"; then
-      return $?
-    fi
+    contract_attempts_ls_page "$_managed" "$_tmpdir/page-$_n.json" "$_cursor" || {
+      _code=$?
+      return "$_code"
+    }
     python3 "$(dirname "$0")/lib/render_attempts.py" --ids-only "$_issue" "$_tmpdir/page-$_n.json" || return 1
     _cursor=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get("result",{}) if isinstance(d.get("result"),dict) else {}; c=r.get("next_cursor"); sys.stdout.write(c if isinstance(c,str) else "")' "$_tmpdir/page-$_n.json") || return 1
     [ -n "$_cursor" ] || break
@@ -121,11 +123,12 @@ contract_attempt_show() {
   _attempt=$2
   _out=$3
   _err=$(mktemp) || return 1
-  if agentfleet attempts show "$_managed" "$_attempt" --json >"$_out" 2>"$_err"; then
+  _code=0
+  agentfleet attempts show "$_managed" "$_attempt" --json >"$_out" 2>"$_err" || _code=$?
+  if [ "$_code" -eq 0 ]; then
     rm -f "$_err"
     return 0
   fi
-  _code=$?
   if grep -q '"code"[ ]*:[ ]*"not_found"' "$_out" 2>/dev/null; then
     rm -f "$_err"
     return 0
@@ -146,11 +149,12 @@ contract_attempt_export() {
   _attempt=$2
   _tar=$3
   _err=$(mktemp) || return 1
-  if agentfleet attempts export "$_managed" "$_attempt" --output "$_tar" 2>"$_err"; then
+  _code=0
+  agentfleet attempts export "$_managed" "$_attempt" --output "$_tar" 2>"$_err" || _code=$?
+  if [ "$_code" -eq 0 ]; then
     rm -f "$_err"
     return 0
   fi
-  _code=$?
   cat "$_err" >&2 || true
   rm -f "$_err" "$_tar"
   echo "error: agentfleet attempts export failed for attempt '$_attempt' (no legacy fallback)" >&2
