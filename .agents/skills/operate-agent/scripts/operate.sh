@@ -33,8 +33,11 @@
 # Every mutation runs only on the operator's explicit request: invoking this
 # helper IS the request. The skill restates the target before it is run.
 #
-# Contract path (labelled container): every mutation is submitted through
-# `agentfleet` with an explicit --expect-repo and --request-id, once
+# Contract path (labelled Instance: its compose.yaml carries the contract
+# discovery label, so the Compose service is resolved from the discovery
+# labels — `worker` for a coding-agent Managed Instance): every mutation is
+# submitted through `agentfleet` with an explicit --expect-repo and
+# --request-id, once
 # (--max-attempts 1); an ambiguous outcome is followed up with
 # `agentfleet command <instance> <same-id>`, never with a new submission.
 # An `accepted` acknowledgement is reported distinctly from the final states.
@@ -89,9 +92,9 @@ if [ -n "$_given_worker" ]; then _follow_opts="$_follow_opts --worker $_given_wo
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd) || exit 1
 # shellcheck disable=SC1091 # resolved at runtime, not statically
-. "$SCRIPT_DIR/../../debug-agent/scripts/lib/resolve.sh"
-# shellcheck disable=SC1091 # resolved at runtime, not statically
 . "$SCRIPT_DIR/../../debug-agent/scripts/lib/contract.sh"
+# shellcheck disable=SC1091 # resolved at runtime, not statically
+. "$SCRIPT_DIR/../../debug-agent/scripts/lib/resolve.sh"
 
 ENVELOPE="$SCRIPT_DIR/lib/envelope.py"
 
@@ -250,13 +253,17 @@ case "$request_id" in
 esac
 
 # --- Path selection (same hint as locate-agent.sh) ---------------------------
-_use_contract=0
-if [ -n "${container:-}" ] && [ -f "$root/$dir/compose.yaml" ] \
-  && grep -q "$CONTRACT_LABEL" "$root/$dir/compose.yaml" 2>/dev/null; then
+# The compose label decides the path (see lib/contract.sh): a labelled
+# Instance stays on the contract path even when no container exists yet. A
+# running container without the label, under a labelled compose file, is only
+# a mismatch note: never a silent return to the legacy path.
+_use_contract=${contract_compose:-0}
+if [ "$_use_contract" -eq 1 ] && [ -n "${container:-}" ]; then
   _label=$(docker inspect -f '{{index .Config.Labels "io.github.lbacik.agent-operator.contract"}}' "$container" 2>/dev/null || true)
   case "$_label" in
-    ""|"<no value>") _use_contract=0 ;;
-    *) _use_contract=1 ;;
+    ""|"<no value>")
+      echo "note: container $container carries no $CONTRACT_LABEL label (mismatch; staying on the contract path)" >&2
+      ;;
   esac
 fi
 _managed=$(managed_instance_name "$short" "$worker_num" "${worker_id:-}")

@@ -60,7 +60,7 @@ setup_fixture() {
   : >"$ERROR_LOG"
 
   mkdir -p "$T_HOME/OrbStack/docker/volumes/agent-foo_agent_data" "$T_HOME/OrbStack/docker/volumes/agent-plain_agent_data"
-  mkdir -p "$T_INSTANCES/agent-foo" "$T_INSTANCES/agent-plain"
+  mkdir -p "$T_INSTANCES/agent-foo" "$T_INSTANCES/agent-plain" "$T_INSTANCES/agent-cw"
   cat >"$T_INSTANCES/agent-foo/compose.yaml" <<'EOF'
 services:
   agent:
@@ -76,11 +76,26 @@ services:
   agent:
     image: plain-image:latest
 EOF
+  cat >"$T_INSTANCES/agent-cw/compose.yaml" <<'EOF'
+services:
+  agent:
+    image: coding-agent-seat:latest
+  validate:
+    image: coding-agent-validate:latest
+  worker:
+    image: cw-image:latest
+    labels:
+      io.github.lbacik.agent-operator.contract: "1"
+      io.github.lbacik.agent-operator.instance: "cw"
+      io.github.lbacik.agent-operator.exec-user: "agent"
+      io.github.lbacik.agent-operator.backend: "coding-agent"
+EOF
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-foo/.env"
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-plain/.env"
+  printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-cw/.env"
 
   SCENE="$WORK_ROOT/scene"
-  mkdir -p "$SCENE/agent-foo" "$SCENE/agent-plain"
+  mkdir -p "$SCENE/agent-foo" "$SCENE/agent-plain" "$SCENE/agent-cw"
   printf 'agent-foo-agent-1\n' >"$SCENE/agent-foo/ps-agent.txt"
   printf 'agent-foo-agent-1\n' >"$SCENE/agent-foo/ps-PROJECT.txt"
   printf 'running|0|2026-11-06T10:00:00Z|foo-image:latest\n' >"$SCENE/agent-foo/inspect-agent-foo-agent-1.txt"
@@ -88,9 +103,17 @@ EOF
   printf 'agent-plain-agent-1\n' >"$SCENE/agent-plain/ps-agent.txt"
   printf 'agent-plain-agent-1\n' >"$SCENE/agent-plain/ps-PROJECT.txt"
   printf 'running|0|2026-11-06T10:00:00Z|plain-image:latest\n' >"$SCENE/agent-plain/inspect-agent-plain-agent-1.txt"
+  # Worker-layout instance: only `worker` carries the discovery labels; the
+  # unlabelled `agent`/`validate` seats have no container and are never
+  # addressed (no ps-agent.txt here, so a seat lookup fails loudly).
+  printf 'agent-cw-worker-1\n' >"$SCENE/agent-cw/ps-worker.txt"
+  printf 'agent-cw-worker-1\n' >"$SCENE/agent-cw/ps-PROJECT.txt"
+  printf 'running|0|2026-11-06T10:00:00Z|cw-image:latest\n' >"$SCENE/agent-cw/inspect-agent-cw-worker-1.txt"
+  printf '1\n' >"$SCENE/agent-cw/contract-label-agent-cw-worker-1.txt"
   cat >"$SCENE/fleet.json" <<'EOF'
 {"containers": [
-  {"id": "cid-foo-1", "name": "foo", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "running", "image": "foo-image:latest", "volumes": [{"name": "agent-foo_agent_data", "path": "/data"}]}
+  {"id": "cid-foo-1", "name": "foo", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "running", "image": "foo-image:latest", "volumes": [{"name": "agent-foo_agent_data", "path": "/data"}]},
+  {"id": "cid-cw-1", "name": "cw", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "running", "image": "cw-image:latest"}
 ]}
 EOF
 
@@ -242,7 +265,7 @@ main() {
   export STUB_ERROR_LOG="$ERROR_LOG"
   export STUB_SCENARIO_DIR="$WORK_ROOT/scene"
   export STUB_VOLUMES_ROOT="$T_HOME/OrbStack/docker/volumes"
-  export STUB_PROJECTS="agent-foo agent-plain"
+  export STUB_PROJECTS="agent-foo agent-plain agent-cw"
   export STUB_LIB
   export PATH="$STUB_BIN:$PATH"
 
@@ -366,6 +389,24 @@ main() {
   assert_contains "$WORK_ROOT/out.txt" ".cache/simple-coding-agent-env/contract-attempts/rpi5/foo/" "fetch default root"
   assert_not_contains "$WORK_ROOT/out.txt" "/logs/" "fetch default root stays out of the legacy cache"
   info "ok: the contract cache root is separate from the legacy cache"
+
+  # Worker-layout instance: fetch goes through the contract path under the
+  # Managed Instance name, never through a legacy host path.
+  export AGENT_CONTRACT_CACHE="$WORK_ROOT/cache-cw"
+  run_helper fetch-run.sh --context rpi5 cw 42 latest
+  [ "$CODE" -eq 0 ] || fail "fetch cw: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "rpi5/cw/coding-agent/example-owner%2Fexample-repo/%2342%2F1" "fetch cw cache path"
+  assert_contains "$WORK_ROOT/out.txt" "managed instance cw" "fetch cw report"
+  assert_contains "$WORK_ROOT/out.txt" "backend coding-agent" "fetch cw report"
+  assert_not_contains "$WORK_ROOT/out.txt" "agent_data" "fetch cw (no legacy host path)"
+  assert_not_contains "$WORK_ROOT/out.txt" "host_data" "fetch cw (no legacy host path)"
+  assert_not_contains "$WORK_ROOT/out.txt" "legacy" "fetch cw (contract path only)"
+  if ! grep -q 'service=worker' "$ARGV_LOG"; then
+    fail "fetch cw: no service=worker lookup in $(cat "$ARGV_LOG")"
+  fi
+  assert_not_contains "$ARGV_LOG" "service=agent" "fetch cw (the seat is never addressed)"
+  assert_no_file_reads "fetch cw"
+  info "ok: worker-layout fetch takes the contract path"
 
   # Unlabelled containers stay on the legacy path with today's output.
   unset CONTRACT_STATUS_FIXTURE

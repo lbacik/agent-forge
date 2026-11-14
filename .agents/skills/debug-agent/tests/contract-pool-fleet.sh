@@ -62,7 +62,8 @@ setup_fixture() {
 
   mkdir -p "$T_INSTANCES/agent-mix" "$T_INSTANCES/agent-sca" \
     "$T_INSTANCES/agent-code" "$T_INSTANCES/agent-halt" \
-    "$T_INSTANCES/agent-drain" "$T_INSTANCES/agent-plain"
+    "$T_INSTANCES/agent-drain" "$T_INSTANCES/agent-plain" \
+    "$T_INSTANCES/agent-w"
   cat >"$T_INSTANCES/agent-mix/compose.yaml" <<'EOF'
 services:
   agent:
@@ -132,11 +133,24 @@ services:
     environment:
       WORKER_ID: drain-1
 EOF
+  cat >"$T_INSTANCES/agent-w/compose.yaml" <<'EOF'
+services:
+  worker:
+    image: w-image:latest
+    labels:
+      io.github.lbacik.agent-operator.contract: "1"
+      io.github.lbacik.agent-operator.instance: "w"
+      io.github.lbacik.agent-operator.exec-user: "agent"
+      io.github.lbacik.agent-operator.backend: "coding-agent"
+    environment:
+      WORKER_ID: w-1
+EOF
   cat >"$T_INSTANCES/agent-plain/compose.yaml" <<'EOF'
 services:
   agent:
     image: plain-image:latest
 EOF
+  printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-w/.env"
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-drain/.env"
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-mix/.env"
   printf 'TARGET_REPO=testowner/testrepo\n' >"$T_INSTANCES/agent-sca/.env"
@@ -146,7 +160,8 @@ EOF
 
   SCENE="$WORK_ROOT/scene"
   mkdir -p "$SCENE/agent-mix" "$SCENE/agent-sca" "$SCENE/agent-code" \
-    "$SCENE/agent-halt" "$SCENE/agent-drain" "$SCENE/agent-plain"
+    "$SCENE/agent-halt" "$SCENE/agent-drain" "$SCENE/agent-plain" \
+    "$SCENE/agent-w"
   for p in agent-mix agent-sca agent-code agent-halt agent-drain agent-plain; do
     printf '%s-agent-1\n' "$p" >"$SCENE/$p/ps-agent.txt"
   done
@@ -164,6 +179,10 @@ EOF
   printf 'agent|agent-halt-agent-1|exited|Exited (2) 1 hour ago|1\n' >"$SCENE/agent-halt/ps-PROJECT.txt"
   printf 'agent|agent-drain-agent-1|running|Up 2 hours|1\n' >"$SCENE/agent-drain/ps-PROJECT.txt"
   printf 'agent|agent-plain-agent-1|running|Up 2 hours\n' >"$SCENE/agent-plain/ps-PROJECT.txt"
+  # Worker-layout instance: the Managed Instance is service `worker`.
+  printf 'agent-w-worker-1\n' >"$SCENE/agent-w/ps-worker.txt"
+  printf 'worker|agent-w-worker-1|running|Up 2 hours|1\n' >"$SCENE/agent-w/ps-PROJECT.txt"
+  printf 'running|0|2026-11-10T10:00:00Z|w-image:latest\n' >"$SCENE/agent-w/inspect-agent-w-worker-1.txt"
   # Fleet overview legacy list: one ps for every project; a one-off of the
   # legacy instance is filtered client-side.
   cat >"$SCENE/ps-ALL.txt" <<'EOF'
@@ -173,6 +192,7 @@ agent-sca|agent-sca-agent-1|Up 2 hours|<no value>
 agent-code|agent-code-agent-1|Up 2 hours|<no value>
 agent-drain|agent-drain-agent-1|Up 2 hours|<no value>
 agent-halt|agent-halt-agent-1|Exited (2) 1 hour ago|<no value>
+agent-w|agent-w-worker-1|Up 2 hours|<no value>
 agent-plain|agent-plain-agent-1|Up 2 hours|<no value>
 agent-plain|agent-plain-run-abc|Up 1 minute|True
 EOF
@@ -183,7 +203,8 @@ EOF
   {"id": "cid-sca-1", "name": "sca", "backend": "simple-coding-agent", "contract": "1", "exec_user": "agent", "state": "running", "image": "sca-image"},
   {"id": "cid-code-1", "name": "code", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "running", "image": "code-image"},
   {"id": "cid-drain-1", "name": "drain", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "running", "image": "drain-image"},
-  {"id": "cid-halt-1", "name": "halt", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "exited", "image": "halt-image"}
+  {"id": "cid-halt-1", "name": "halt", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "exited", "image": "halt-image"},
+  {"id": "cid-w-1", "name": "w", "backend": "coding-agent", "contract": "1", "exec_user": "agent", "state": "running", "image": "w-image"}
 ]}
 EOF
   printf 'status-simple-coding-agent.json\n' >"$SCENE/contract-status-mix.txt"
@@ -192,6 +213,7 @@ EOF
   printf 'status-simple-coding-agent.json\n' >"$SCENE/contract-status-sca.txt"
   printf 'status-active.json\n' >"$SCENE/contract-status-code.txt"
   printf 'offline-status-halted.json\n' >"$SCENE/contract-status-halt.txt"
+  printf 'status-active.json\n' >"$SCENE/contract-status-w.txt"
 
   # --github replies: post-jq lines `gh issue list --jq ...` would print.
   cat >"$SCENE/gh-mix.txt" <<'EOF'
@@ -215,6 +237,11 @@ EOF
   cat >"$SCENE/gh-code.txt" <<'EOF'
 42 issue
 42 label claimed-by:code-1
+EOF
+  # Label-free issue list for the worker-layout instance.
+  cat >"$SCENE/gh-w.txt" <<'EOF'
+42 issue
+42 assignee some-login
 EOF
 }
 
@@ -306,7 +333,7 @@ main() {
   export STUB_ERROR_LOG="$ERROR_LOG"
   export STUB_SCENARIO_DIR="$WORK_ROOT/scene"
   export STUB_VOLUMES_ROOT="$T_HOME/OrbStack/docker/volumes"
-  export STUB_PROJECTS="agent-mix agent-sca agent-code agent-halt agent-drain agent-plain"
+  export STUB_PROJECTS="agent-mix agent-sca agent-code agent-halt agent-drain agent-plain agent-w"
   export STUB_LIB
   export PATH="$STUB_BIN:$PATH"
 
@@ -380,6 +407,26 @@ main() {
   assert_not_contains "$WORK_ROOT/out.txt" "orphaned claim" "pool-code-github (nothing compared, nothing orphaned)"
   assert_contains "$WORK_ROOT/out.txt" "claims consistent for compared Workers" "pool-code-github (skipped Workers named)"
   unset STUB_GH_REPLY
+
+  # Worker-layout instance: the Managed Instance is service `worker`, with
+  # its agentfleet status result.
+  run_helper pool-status.sh --context rpi5 w
+  check_pool_block "pool-w"
+  assert_contains "$WORK_ROOT/out.txt" "managed w," "pool-w"
+  assert_contains "$WORK_ROOT/out.txt" "service=worker backend=coding-agent" "pool-w"
+  assert_no_file_reads "pool-w"
+  info "ok: worker-layout instance reports service=worker backend=coding-agent"
+
+  # --github on a worker-layout instance skips the comparison and says so.
+  export STUB_GH_REPLY="$WORK_ROOT/scene/gh-w.txt"
+  run_helper pool-status.sh --context rpi5 --github w
+  [ "$CODE" -eq 0 ] || fail "pool-w-github: exit $CODE"
+  assert_contains "$WORK_ROOT/out.txt" "service=worker backend=coding-agent" "pool-w-github"
+  assert_contains "$WORK_ROOT/out.txt" "Claim-marker comparison skipped" "pool-w-github"
+  assert_contains "$WORK_ROOT/out.txt" "backend coding-agent" "pool-w-github (skipped Worker named with its backend)"
+  assert_not_contains "$WORK_ROOT/out.txt" "orphaned claim" "pool-w-github (nothing compared, nothing orphaned)"
+  unset STUB_GH_REPLY
+  info "ok: --github skips the comparison for a worker-layout instance"
 
   # --github Conflict requeue on the contract path: a live Conflict attempt
   # (marked in the simple-coding-agent Worker's block with its standing), a
@@ -558,6 +605,42 @@ PYEOF
   assert_contains "$WORK_ROOT/out.txt" "sca backend=simple-coding-agent contract=1.*status unavailable (client.malformed_stdout)" "fleet-malformed"
   assert_contains "$WORK_ROOT/out.txt" "mix backend=" "fleet-malformed (other members still listed)"
   printf 'status-simple-coding-agent.json\n' >"$WORK_ROOT/scene/contract-status-sca.txt"
+
+  # Fleet fallback: a Status Snapshot without identity falls back to
+  # `agentfleet identity` for the Target Repository before printing
+  # `(unknown)`.
+  FIXFARM="$WORK_ROOT/fixfarm"
+  mkdir -p "$FIXFARM"
+  for _f in "$FIXDIR"/*.json; do ln -s "$_f" "$FIXFARM/$(basename "$_f")"; done
+  python3 - "$FIXDIR/status-active.json" "$FIXFARM/status-no-identity.json" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+env = json.loads(doc["stdout"])
+env["result"].pop("identity", None)
+doc["stdout"] = json.dumps(env) + "\n"
+json.dump(doc, open(sys.argv[2], "w"))
+PYEOF
+  printf 'status-no-identity.json\n' >"$WORK_ROOT/scene/contract-status-code.txt"
+  export CONTRACT_FIXTURES_DIR="$FIXFARM"
+  export CONTRACT_IDENTITY_FIXTURE=identity.json
+  run_helper fleet.sh --context rpi5
+  [ "$CODE" -eq 0 ] || fail "fleet-fallback: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "code backend=coding-agent repository=example-owner/example-repo" "fleet-fallback (repository from agentfleet identity)"
+  assert_not_contains "$WORK_ROOT/out.txt" "(unknown)" "fleet-fallback (no unknown repository)"
+  if ! grep -q -- '--contract 1 identity' "$ARGV_LOG"; then
+    fail "fleet-fallback: no identity fallback call in $(cat "$ARGV_LOG")"
+  fi
+  info "ok: fleet falls back to agentfleet identity for a missing repository"
+
+  # A failed fallback keeps (unknown) without failing the overview.
+  export CONTRACT_IDENTITY_FIXTURE=agent-unreachable.json
+  run_helper fleet.sh --context rpi5
+  [ "$CODE" -eq 0 ] || fail "fleet-fallback-fail: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  assert_contains "$WORK_ROOT/out.txt" "code backend=coding-agent repository=(unknown)" "fleet-fallback-fail"
+  info "ok: failed identity fallback keeps (unknown) without failing the overview"
+  printf 'status-active.json\n' >"$WORK_ROOT/scene/contract-status-code.txt"
+  export CONTRACT_FIXTURES_DIR="$FIXDIR"
+  unset CONTRACT_IDENTITY_FIXTURE
 
   # The renderers report a non-envelope stdin instead of parsing it.
   if printf 'not json' | python3 "$SCRIPTS_DIR/lib/render_pool.py" --meta \
