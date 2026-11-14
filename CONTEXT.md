@@ -9,7 +9,7 @@ The deployment directory `agent-instances/agent-<name>/` for one target reposito
 _Avoid_: Agent (ambiguous between the deployment and a running process), Managed Instance (that is one Worker)
 
 **Worker**:
-One running simple-coding-agent container of an Instance, with its own data volume and, when it shares its Worker identity with other Workers, its own Worker id.
+One running simple-coding-agent container of an Instance, with its own data volume and, when it shares its Worker identity with other Workers or belongs to a contract Pool, its own Worker id.
 _Avoid_: Replica, agent, node
 
 **Pool**:
@@ -21,7 +21,7 @@ The GitHub account (and its token) that a Worker acts as. The Workers of a Pool 
 _Avoid_: Agent name, bot
 
 **Worker id**:
-The name that tells apart Workers acting as the same Worker identity; unique among all of them, across Instances.
+The name that tells apart Workers: every Worker that shares its Worker identity with another Worker has one, and so does every Worker of a contract Pool, whatever its Worker identity. Unique among all Workers, across Instances.
 _Avoid_: Worker name, replica index
 
 **Claim**:
@@ -53,4 +53,4 @@ _Avoid_: Exhausted budget, conflict handoff (a handoff is an ordinary attempt ou
 These terms are used as defined in the glossary of operator contract major 1, at the tag pinned in the README's [Operator contract](README.md#operator-contract) section, and are not redefined here: Managed Instance, Fleet, Pool, Backend, Target Repository, Operator Capability, Intake, Operator Command, Acknowledgement, Status Snapshot, Figure, Figure Basis, Attempt, Attempt Archive, Sealed, Offline Read, Halt. Where both glossaries use a word, this file's meaning applies unless the contract's is named, as in "contract Pool".
 
 - **Worker ↔ Managed Instance**: each Worker managed through the contract is exactly one Managed Instance, so an Instance holds one or more Managed Instances, one per Worker.
-- **Pool ↔ contract Pool**: a Pool managed through the contract is a contract Pool, and its Managed Instances need the `pool` Operator Capability.
+- **Pool ↔ contract Pool**: the contract Pool on a Target Repository is every Managed Instance working it on one Docker context. It holds the Workers of one Pool, or of several Instances' Pools when they share that repository and context, and each of its Managed Instances needs the `pool` Operator Capability. A single Worker with no other Managed Instance on its Target Repository on that context is in no contract Pool.
