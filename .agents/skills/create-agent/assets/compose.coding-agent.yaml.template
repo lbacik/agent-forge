@@ -157,9 +157,16 @@ services:
     # listener and no published port. If the chosen CODING_AGENT_REF's
     # `agentctl` documents no such socket directory, drop this second entry
     # (see the create-agent skill, references/coding-agent.md).
+    # The mount options make Docker create the directory owned by the
+    # engine image's `agent` user (uid/gid 1000, the same user the
+    # `io.github.lbacik.agent-operator.exec-user` label names): a plain
+    # tmpfs arrives root:root 1777 and the Worker (running as `agent`)
+    # cannot chmod it to 0700, so startup refuses the socket bind. The
+    # numbers are hard-coded; change them if the upstream image changes
+    # that user's ids.
     tmpfs:
       - /tmp
-      - /var/lib/coding-agent/operator
+      - /var/lib/coding-agent/operator:uid=1000,gid=1000,mode=0700
     command:
       - run
       - --config

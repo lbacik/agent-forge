@@ -50,8 +50,11 @@ or added, update every reference that names it (`grep -rn` the old name).
   `restart: "no"` and `stop_grace_period: 60s` on the worker (above the
   Workflow Configuration's `worker.shutdown-grace-seconds`, default 30 s),
   plus the exec-user-only operator-socket tmpfs
-  (`/var/lib/coding-agent/operator`) that coding-agent's contract `agentctl`
-  documents for private IPC. The listener enforces 0700 on the directory and
+  (`/var/lib/coding-agent/operator:uid=1000,gid=1000,mode=0700`) that
+  coding-agent's contract `agentctl` documents for private IPC. The tmpfs
+  must be owned by the exec user (`agent`, uid/gid 1000) with mode 0700: a
+  plain tmpfs arrives root-owned and the Worker cannot chmod it, so startup
+  refuses the socket bind. The listener enforces 0700 on the directory and
   0600 on the socket; there is no network listener and no published port. If
   the chosen ref's `agentctl` documents no such socket directory, drop that
   second tmpfs entry.
