@@ -227,7 +227,15 @@ PY
         # (the attempt summary), with exact sizes and sha256 so the client's
         # torn-read verification passes; a sentinel
         # $scene/export-torn-once-<id> makes the first export of that attempt
-        # torn to exercise the refetch.
+        # torn to exercise the refetch. Deliberate agentctl failures are
+        # opt-in per case via sentinel files (never stub_fail, so the
+        # suite's stub-error check stays clean): $scene/fail-identity fails
+        # `identity`, $scene/fail-attshow[-<id>] fails `attempts show` (per
+        # attempt, or every attempt), $scene/fail-attexport[-<id>] fails
+        # `attempts export`, and $scene/fail-attlist[-paged] fails
+        # `attempts list` (every page, or only cursor continuations). Each
+        # answers the producer `internal` envelope with exit 7, like a
+        # failed engine read.
         _fixdir=${CONTRACT_FIXTURES_DIR:-}
         _op=status
         case " $* " in
@@ -250,6 +258,17 @@ PY
             else
               _san=$(printf '%s' "$_cursor" | tr -c 'A-Za-z0-9' '_')
               _f="$scene/attempts-list-before-$_san.json"
+            fi
+            _fail=""
+            if [ -f "$scene/fail-attlist" ]; then
+              _fail=1
+            elif [ -n "$_cursor" ] && [ -f "$scene/fail-attlist-paged" ]; then
+              _fail=1
+            fi
+            if [ -n "$_fail" ]; then
+              printf '%s\n' '{"contract":"1.0","ok":false,"error":{"code":"internal","message":"injected failure for tests","retryable":true}}'
+              printf '%s\n' "agentctl: internal: injected failure for tests" >&2
+              exit 7
             fi
             [ -f "$_f" ] || stub_fail "stub docker: no recorded reply: add $(basename "$_f") for attempts list (cursor '${_cursor:-<first page>}')"
             # Scene pages hold either a raw producer envelope or a pinned
@@ -282,6 +301,11 @@ PYEOF
             done
             [ -n "$_aid" ] || stub_fail "stub docker: attempts show without an attempt id"
             _san=$(printf '%s' "$_aid" | tr -c 'A-Za-z0-9' '_')
+            if [ -f "$scene/fail-attshow-$_san" ] || [ -f "$scene/fail-attshow" ]; then
+              printf '%s\n' '{"contract":"1.0","ok":false,"error":{"code":"internal","message":"injected failure for tests","retryable":true}}'
+              printf '%s\n' "agentctl: internal: injected failure for tests" >&2
+              exit 7
+            fi
             _f="$scene/attempts-show-$_san.json"
             [ -f "$_f" ] || stub_fail "stub docker: no recorded reply: add attempts-show-$_san.json for attempt '$_aid'"
             set +e
@@ -311,6 +335,11 @@ PYEOF
             done
             [ -n "$_aid" ] || stub_fail "stub docker: attempts export without an attempt id"
             _san=$(printf '%s' "$_aid" | tr -c 'A-Za-z0-9' '_')
+            if [ -f "$scene/fail-attexport-$_san" ] || [ -f "$scene/fail-attexport" ]; then
+              printf '%s\n' '{"contract":"1.0","ok":false,"error":{"code":"internal","message":"injected failure for tests","retryable":true}}'
+              printf '%s\n' "agentctl: internal: injected failure for tests" >&2
+              exit 7
+            fi
             { [ -f "$scene/archive-$_san.json" ] && [ -d "$scene/archive-$_san" ]; } || \
               stub_fail "stub docker: no recorded reply: add archive-$_san.json and archive-$_san/ for attempt '$_aid'"
             set +e
@@ -372,6 +401,11 @@ PYEOF
             exit "$_gen_code"
             ;;
         esac
+        if [ "$_op" = identity ] && [ -f "$scene/fail-identity" ]; then
+          printf '%s\n' '{"contract":"1.0","ok":false,"error":{"code":"internal","message":"injected failure for tests","retryable":true}}'
+          printf '%s\n' "agentctl: internal: injected failure for tests" >&2
+          exit 7
+        fi
         if [ "$_op" = identity ]; then
           _fix=${CONTRACT_IDENTITY_FIXTURE:-identity.json}
         elif [ "$_op" = command ]; then
