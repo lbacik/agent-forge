@@ -49,6 +49,13 @@ x-agent: &agent
   read_only: true
   tmpfs:
     - /tmp
+  # Per-Worker resource limits, overridable in .env. A Worker mostly waits on
+  # the model, with bursts during setup and checks (agent-forge#22). The 3g
+  # memory default is unverified: a Worker's peak memory has not been
+  # measured. Raise it for a target whose setup or tests need more.
+  cpus: ${WORKER_CPUS:-1.5}
+  mem_limit: ${WORKER_MEM_LIMIT:-3g}
+  pids_limit: ${WORKER_PIDS_LIMIT:-1024}
   environment:
     GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     SANDBOX_TOKEN: ${SANDBOX_TOKEN:-}

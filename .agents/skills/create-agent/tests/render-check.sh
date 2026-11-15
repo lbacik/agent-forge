@@ -413,6 +413,40 @@ check_coding_agent_instance() {
   if [ "$read_only_count" != 3 ]; then
     fail "$label: want read_only: true on all three services, found $read_only_count"
   fi
+  # Resource limits (Forge addition, not upstream's compose): the x-agent
+  # anchor carries cpus / mem_limit / pids_limit, so all three services
+  # inherit them. Compose normalises mem_limit to bytes (3g -> 3221225472),
+  # so assert the normalised form, not the literal `3g`.
+  # Count service-level keys only (four-space indent): the model also keeps
+  # the top-level `x-agent` extension, unnormalised, with its own copies.
+  for limit_key in 'cpus:' 'mem_limit:' 'pids_limit:'; do
+    limit_count=$(printf '%s\n' "$config_output" | grep -c -- "^    $limit_key" || true)
+    if [ "$limit_count" != 3 ]; then
+      fail "$label: want $limit_key on all three services, found $limit_count"
+    fi
+  done
+  assert_line_matches "$config_output" \
+    "cpus: ['\"]?1\\.5['\"]?\$" \
+    "$label: cpus default 1.5 missing from the Compose model"
+  assert_contains "$config_output" '3221225472' \
+    "$label: mem_limit default of 3 GiB missing from the Compose model"
+  assert_line_matches "$config_output" \
+    "pids_limit: ['\"]?1024['\"]?\$" \
+    "$label: pids_limit default 1024 missing from the Compose model"
+  # Overrides in the environment change the rendered values.
+  if ! override_output=$(cd "$dir" && env -i PATH="$PATH" HOME="$HOME" WORKER_CPUS=2 WORKER_MEM_LIMIT=4g WORKER_PIDS_LIMIT=2048 docker compose config); then
+    fail "$label: 'docker compose config' with WORKER_* overrides failed"
+  fi
+  assert_line_matches "$override_output" \
+    "cpus: ['\"]?2(\\.0)?['\"]?\$" \
+    "$label: WORKER_CPUS override did not change the Compose model"
+  assert_contains "$override_output" '4294967296' \
+    "$label: WORKER_MEM_LIMIT override did not change the Compose model"
+  assert_line_matches "$override_output" \
+    "pids_limit: ['\"]?2048['\"]?\$" \
+    "$label: WORKER_PIDS_LIMIT override did not change the Compose model"
+  assert_not_contains "$override_output" '3221225472' \
+    "$label: WORKER_MEM_LIMIT override left the default in the Compose model"
   # The rendered file (not the model: durations may normalise) keeps the
   # grace above the Workflow Configuration's shutdown grace.
   if ! grep -qF -- 'stop_grace_period: 60s' "$dir/compose.yaml"; then
@@ -488,6 +522,11 @@ check_coding_agent_instance() {
     "$label: .env TARGET_REPO is not $PH_OWNER/$PH_REPO"
   assert_contains "$env_content" "CODING_AGENT_REF=$PH_CODING_AGENT_REF" \
     "$label: .env CODING_AGENT_REF is not $PH_CODING_AGENT_REF"
+  example_content=$(cat "$dir/.env.example")
+  for worker_var in 'WORKER_CPUS=1.5' 'WORKER_MEM_LIMIT=3g' 'WORKER_PIDS_LIMIT=1024'; do
+    assert_contains "$example_content" "# $worker_var" \
+      "$label: .env.example misses commented-out $worker_var"
+  done
   for prompt in implement-policy.md handoff.md; do
     if [ ! -f "$dir/workflow/prompts/$prompt" ]; then
       fail "$label: workflow/prompts/$prompt missing"
@@ -712,6 +751,16 @@ main() {
   if grep -qF 'AGENT_SRC_REF' "$ASSETS_DIR/env.coding-agent.example.template"; then
     fail 'env.coding-agent.example.template sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)'
   fi
+  for worker_var in 'WORKER_CPUS:-1.5' 'WORKER_MEM_LIMIT:-3g' 'WORKER_PIDS_LIMIT:-1024'; do
+    if ! grep -qF -- "$worker_var" "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
+      fail "compose.coding-agent.yaml.template misses resource limit default \${$worker_var}"
+    fi
+  done
+  for worker_default in 'WORKER_CPUS=1.5' 'WORKER_MEM_LIMIT=3g' 'WORKER_PIDS_LIMIT=1024'; do
+    if ! grep -qF -- "# $worker_default" "$ASSETS_DIR/env.coding-agent.example.template"; then
+      fail "env.coding-agent.example.template misses commented-out $worker_default"
+    fi
+  done
 
   # The workflow template carries no hard-coded Work Pool numbers: the old
   # comment quoted the pool for the example ceiling only.
