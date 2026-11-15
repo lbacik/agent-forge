@@ -44,6 +44,7 @@ backend chosen in step 0:
 | `.env` | same as `.env.example` + real secrets (ignored with all of `agent-instances/`) |
 | `agent-entrypoint.sh` | only for the bundled-services shape (simple-coding-agent only) |
 | `compose.litellm.yaml` | only for the LiteLLM backend (simple-coding-agent only): `assets/compose.litellm.yaml.template`, every Worker listed |
+| `compose.coding-agent.litellm.yaml` | only for a coding-agent gateway pin (a LiteLLM gateway `url` naming a Docker service): `assets/compose.coding-agent.litellm.yaml.template`, the `worker` only |
 | `.env.worker-<n>` | only for a Worker with its own Worker identity (its own `GITHUB_TOKEN`; simple-coding-agent only) |
 
 The whole point of the profile is that the agent's `check:` must be red exactly
@@ -136,9 +137,9 @@ can determine by reading the repository.
 - Ask first which engine backend to deploy (use AskUserQuestion, with the
   recommended option first): `simple-coding-agent` (default) or
   `coding-agent`. This is the deployment adapter (engine image, discovery
-  labels, contract capabilities) — not the model route in
-  `references/model-backend.md` (simple-coding-agent only), which is chosen
-  in step 1.
+  labels, contract capabilities) — not the model route, which is chosen in
+  step 1: `references/model-backend.md` for `simple-coding-agent`,
+  `references/coding-agent.md` ("Model") for `coding-agent`.
 - The backend selects the deployment adapter; target identification, token
   verification and the report stay shared.
 - `coding-agent`: continue with the coding-agent adapter in
@@ -270,10 +271,12 @@ can determine by reading the repository.
   read it now. Offer the model an existing instance uses as an option. The
   choice decides the `.env` model settings, `MAX_BUDGET_USD` and whether
   `compose.litellm.yaml` is generated (step 5). For coding-agent, choose the
-  model within the providers its Workflow Configuration supports at the ref
-  (Anthropic, OpenAI) and confirm its prices with the operator, as
-  `references/coding-agent.md` ("Model") says; there is no LiteLLM or Meta
-  route on this backend.
+  model pin as `references/coding-agent.md` ("Model") says: a direct
+  `provider:` pin (Anthropic, OpenAI at the documented ref) or a LiteLLM
+  `gateway:` pin (the Meta `muse-*` route through the gateway), and confirm
+  its prices with the operator. The choice decides the Workflow Configuration
+  variant, which model key stays active in `compose.yaml`/`.env`, and whether
+  `compose.coding-agent.litellm.yaml` is generated (step 5).
 
 ### 2. Get the target's source
 
@@ -350,9 +353,11 @@ Don't ask for one unprompted.
 
 Shallow-clone that same ref into the scratchpad and read, at that commit:
 
-- `compose.yaml` — the deployment this adapter mirrors (services, hardening,
-  state path `/var/lib/coding-agent`, the worker's `run` flags). If the
-  ref's hardening or flag layout diverged from
+- `compose.yaml` and `compose.gateway-example.yaml` — the deployment this
+  adapter mirrors (services, hardening, state path `/var/lib/coding-agent`,
+  the worker's `run` flags, workflow mount) and the worker env wiring for a
+  gateway pin (`LITELLM_PROXY_API_KEY`, never a `LITELLM_PROXY_URL`
+  variable). If the ref's hardening, flag or mount layout diverged from
   `assets/compose.coding-agent.yaml.template` in a way that matters, follow
   the ref and tell the user.
 - `Dockerfile` — the `deployment` stage this adapter derives FROM (its
@@ -360,14 +365,21 @@ Shallow-clone that same ref into the scratchpad and read, at that commit:
   Dockerfile replays that sequence against the instance's `workflow/`
   starting from empty bundle and store directories; if the ref's sequence
   diverged in a way that matters, follow the ref and tell the user.
-- `src/coding_agent/provider/config.py` — the code-owned
+- `src/coding_agent/provider/config.py` — the code-owned direct
   (`provider`, `model`, `endpoint`) pins and their prices. Only a pair from
-  that table (Anthropic and OpenAI at the documented ref) may go into the
-  Workflow Configuration; anything else refuses startup.
+  that table (Anthropic and OpenAI at the documented ref) may go into a
+  direct pin; anything else refuses startup. A gateway pin instead carries
+  its own `output-cap-tokens` and `context-threshold-tokens` (see
+  `src/coding_agent/provider/pinned_model.py` and the "Gateway pins"
+  section below); a direct pin naming either key is refused.
 - `docs/ops/workflow-configuration.md` and `docker/deployment/workflow.yml`
   (or their equivalents at the ref) — the `version: 3` file shape the
   template mirrors: `version: 3`, the `skills:` Skill Bundle declaration,
-  and the reviewed `skill-policy.json` beside the YAML. The template keeps
+  and the reviewed `skill-policy.json` beside the YAML. Re-check the
+  "Gateway pins" and "Recommended gateway configuration" sections (gateway
+  shape, the pin-violation guarantee, the Provider Capability Assertion) and
+  the contract's pin-violation rows (§12, §16.3: the Attempt ends
+  `interrupted` and the Worker halts). The template keeps
   the Forge step graph (`preflight → process → validate → self-review →
   push → open-pr`, plus `explain-blocked`, the reserved `ai-handoff` and
   `hard-handoff`); do not adopt the reference's smaller `implement` graph
@@ -450,7 +462,11 @@ from `assets/workflow.coding-agent.yml.template` with the prompt files copied
 from the ref checkout (step 3b) and `workflow/skill-policy.json` copied
 verbatim from the ref checkout's `docker/deployment/`, and
 `.env`/`.env.example` from
-`assets/env.coding-agent.example.template` with the real secrets. Leave
+`assets/env.coding-agent.example.template` with the real secrets —
+plus `compose.coding-agent.litellm.yaml` from
+`assets/compose.coding-agent.litellm.yaml.template` on a gateway pin whose
+`url` names a Docker service (copied verbatim; it carries no placeholders).
+Leave
 `WORKER_CPUS`, `WORKER_MEM_LIMIT` and `WORKER_PIDS_LIMIT` commented out (the
 `x-agent` defaults). No
 `{{...}}` or prompt-file gap may remain: every prompt the YAML names must
@@ -462,13 +478,25 @@ operator's choices: the Target Repository, its default branch, the Selection
 Label, the model pin with its confirmed prices, the Attempt Ceiling (all four
 meters), and the two non-reserved Step Allowances (`{{PROCESS_LIMIT_COST_USD}}`
 default 12, `{{SELF_REVIEW_LIMIT_COST_USD}}` default 3; each is shared by all
-executions of its step). The mapping of every simple-coding-agent `.env`
-budget, turn, timeout and retry key to its coding-agent counterpart lives in
-`references/coding-agent.md` ("Limits: where simple-coding-agent's settings
-went"): point the operator there when they look for a missing `.env` key, and
-keep budgets out of `.env` — the Effective Configuration digest stays the only
-budget authority. When asking the operator for the Attempt Ceiling, first show
-the resulting Work Pool per meter — the ceiling minus the reserved
+executions of its step). Render exactly one model-pin variant (see the
+markers in the templates): on a direct pin, substitute the direct
+placeholders and delete the gateway-pin block (and the gateway model-key
+lines in `compose.yaml`); on a gateway pin, delete the direct-pin block and
+uncomment the gateway-pin block, substituting its `{{GATEWAY_*}}`
+placeholders (gateway `url`, L1 model name, `effort`, both caps and prices —
+all asked from the operator, never defaulted), and keep only
+`LITELLM_PROXY_API_KEY` in the worker's explicit environment. In
+`.env` (and `.env.example`), leave exactly the chosen model key active and
+the others commented out; on a gateway pin with a service-name `url`,
+additionally uncomment `COMPOSE_FILE` and set `GATEWAY_NETWORK` to the
+gateway's network (a host-URL gateway needs no overlay). The mapping of every
+simple-coding-agent `.env` budget, turn, timeout and retry key to its
+coding-agent counterpart lives in `references/coding-agent.md` ("Limits:
+where simple-coding-agent's settings went"): point the operator there when
+they look for a missing `.env` key, and keep budgets out of `.env` — the
+Effective Configuration digest stays the only budget authority. When asking
+the operator for the Attempt Ceiling, first show the resulting Work Pool per
+meter — the ceiling minus the reserved
 `ai-handoff` allowance (`cost-usd: 1`, `tokens: 150000`, `tool-calls: 30`,
 `wall-clock-minutes: 5`), computed separately for each of the four meters —
 and list the non-reserved Step Allowances that must fit inside it (`process`,
@@ -804,16 +832,18 @@ for them (runtime version, included/excluded checks, bundled services), the
 model and its route (and, for LiteLLM, the gateway network), and the Workers
 (N, their Worker ids or why none was rendered, the resource limits);
 for coding-agent — the Workflow Configuration (Target Repository, Selection
-Label, limits, model pin and confirmed prices), the derived deployment image
-(`Dockerfile` copied verbatim from the asset, built FROM the `deployment`
-target at the ref, baking and verifying the instance's `workflow/` package),
-that there is exactly one Worker and no Pool, that no Forge-owned profile
-was generated (the repository-owned `docs/agents/project-profile.yml` stays
-the only profile), the rule that any edit under `workflow/` needs
-`docker compose build` before the container is recreated, and the target
-checkout check result (Project Profile found at its searched location and
-revision, toolchain matrix match at the chosen ref, or the reported miss /
-Unsupported Environment with the operator's decision). In
+Label, limits, the model pin variant — direct `provider:` pin or LiteLLM
+`gateway:` pin — and confirmed prices, plus the gateway network overlay and
+`GATEWAY_NETWORK` when a service-name `url` was pinned), the derived
+deployment image (`Dockerfile` copied verbatim from the asset, built FROM the
+`deployment` target at the ref, baking and verifying the instance's
+`workflow/` package), that there is exactly one Worker and no Pool, that no
+Forge-owned profile was generated (the repository-owned
+`docs/agents/project-profile.yml` stays the only profile), the rule that any
+edit under `workflow/` needs `docker compose build` before the container is
+recreated, and the target checkout check result (Project Profile found at its
+searched location and revision, toolchain matrix match at the chosen ref, or
+the reported miss / Unsupported Environment with the operator's decision). In
 both cases:
 the target Docker context and the Fleet check result — which Fleet was listed
 and that no other instance holds the repository, or which one does; which

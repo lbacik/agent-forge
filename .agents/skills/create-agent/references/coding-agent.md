@@ -262,16 +262,116 @@ when `CODING_AGENT_REF` moves — not a setting to copy anywhere.
 
 ## Model
 
-Model and provider are chosen within the providers coding-agent's Workflow
-Configuration supports at the ref — Anthropic and OpenAI at the documented
-ref (`anthropic / claude-sonnet-5 / messages`,
+The Attempt's one Pinned Model is either a direct `provider:` pin or a
+`gateway:` pin through a Model Gateway (coding-agent
+`docs/ops/workflow-configuration.md`, "Gateway pins", at the ref): exactly
+one of `provider` or `gateway` is present. `MODEL_*` / `MODEL_BASE_URL` do
+not apply on this backend — for the simple-coding-agent routes see
+`references/model-backend.md` instead.
+
+A direct pin's (`provider`, `model`, `endpoint`) triple must come from the
+code-owned table in coding-agent's `src/coding_agent/provider/config.py` at
+the ref — Anthropic and OpenAI at the documented ref
+(`anthropic / claude-sonnet-5 / messages`,
 `openai / gpt-5.6-luna / responses`); any other pair refuses startup. The
-model-backend reference (Meta, LiteLLM) is simple-coding-agent only and does
-not apply here: there is no gateway pin and no Meta route for this backend.
-Prices (`prices-usd-per-mtok`: `input`, `output`, `cache-read`,
-`cache-write`) come from the operator — confirm them (defaults are the
-code-owned table's public list pricing) — because the pin's configured prices
-are the Worker's only cost authority.
+context window and the per-request output cap stay in code; `effort` is low,
+medium or high.
+
+A gateway pin carries its own output cap and context-window threshold:
+
+```yaml
+models:
+  main:
+    gateway: {kind: litellm, url: http://litellm:4000}
+    model: muse-spark-1.3-contributor   # the gateway's L1 alias
+    endpoint: responses
+    effort: medium
+    api-key-env: LITELLM_PROXY_API_KEY
+    output-cap-tokens: 32000
+    context-threshold-tokens: 300000
+    prices-usd-per-mtok: {input: 0.10, output: 0.20, cache-read: 0.002, cache-write: 0.10}
+```
+
+- `gateway.kind` is the gateway kind, from a closed code-owned list: today
+  only `litellm`. `gateway.url` is the gateway's literal `http` or `https`
+  URL — prefer the service name on the shared gateway network
+  (`http://litellm:4000`), which stays the same across Docker contexts; a
+  host URL is also accepted. There is no `url-env` at the documented ref
+  (proposed upstream in `lbacik/coding-agent#428`, not available yet), so the
+  address is baked into the image; never render a `LITELLM_PROXY_URL`
+  variable.
+- `model` is the gateway's own L1 alias: pin the name the gateway reports in
+  `x-litellm-model-group`. The pin key is the label
+  `litellm:<model>@responses`. `endpoint` is `responses` (the endpoint the
+  code-owned table admits for the gateway kind) and `effort` is low, medium
+  or high.
+- `output-cap-tokens` and `context-threshold-tokens` are the pin's own
+  output cap and context-window threshold. A direct pin naming either key is
+  refused. The threshold triggers Context-Window Handoffs (coding-agent ADR
+  0013): the Handoff continues the same Step Execution against its Step
+  Allowance and Attempt Ceiling, and Handoffs per step are bounded by the
+  code-owned `MAX_HANDOFFS_PER_STEP` (`5` at the documented ref). The
+  threshold must exceed the code-owned safety margin plus request overhead
+  (`1000 + 1000` at the documented ref). Ask the operator for both values;
+  never default them.
+- Prices (`prices-usd-per-mtok`: `input`, `output`, `cache-read`,
+  `cache-write`) come from the operator — confirm them, never default them
+  — because the pin's configured prices are the Worker's only cost
+  authority (a gateway response header such as `x-litellm-response-cost` is
+  never read, not even as evidence). For a Meta model, which has no
+  cache-write premium, set `cache-write` equal to `input`: a gateway
+  response that reports no `cache_write_tokens` is priced at max(`input`,
+  `cache-write`).
+
+The template renders exactly one variant: the skill substitutes the direct
+placeholders and deletes the gateway block, or deletes the direct block and
+uncomments the gateway block (see the markers in
+`assets/workflow.coding-agent.yml.template`). A direct-pin render carries no
+`gateway:`, `output-cap-tokens` or `context-threshold-tokens` key. No
+`{{...}}` may remain in either variant.
+
+The model's key variable reaches only the `worker` service: on a direct pin
+`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, on a gateway pin
+`LITELLM_PROXY_API_KEY` — whichever the Workflow Configuration names in
+`models.<id>.api-key-env` (see the conditional lines in
+`assets/compose.coding-agent.yaml.template`). It is never added to the
+`agent` or `validate` seats' explicit environment. (The shared
+`env_file: .env` already exposes `.env` to every service, and secret-free
+`config validate` through the `agent` seat depends on that: "worker only"
+means the explicit `environment:` mappings.) The key is set, commented and
+documented next to the other model keys in
+`assets/env.coding-agent.example.template`.
+
+A gateway `url` naming a Docker service needs the gateway network overlay:
+`assets/compose.coding-agent.litellm.yaml.template` attaches `worker` — and
+only `worker` — to the external network named by `GATEWAY_NETWORK`, enabled
+from the env file (`COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml`,
+`GATEWAY_NETWORK` from `.env`, never hard-coded). Do not reuse
+`compose.litellm.yaml` here: it attaches services named `agent` and
+`agent-<n>`, and on this backend `agent` is the unlabelled one-off seat, not
+the Worker. A host-URL `gateway.url` needs no overlay. The skill never starts
+or configures the gateway itself; it only joins its network.
+
+Recommend the operator configure the gateway so the pinned name has no
+fallbacks or retries (`num_retries: 0`), and set no key's
+`metadata.disable_fallbacks: false` (coding-agent
+`docs/ops/workflow-configuration.md`, "Recommended gateway configuration";
+`compose.gateway-example.yaml` at the ref shows the worker wiring). That is
+a recommendation; the per-response assertion is the guarantee: a response
+whose `x-litellm-model-group` differs from the pin, or whose attempted
+fallbacks or retries read above `0`, is a pin violation — the Attempt ends
+`interrupted` with reason `pin-violation` and the Worker halts at once with
+a non-zero exit (contract §12, §16.3), as on a Credential Failure. Every
+request also carries the per-request suppression (`disable_fallbacks: true`,
+`num_retries: 0`); the Worker's own provider retry is then the only retry.
+The Worker never reads the gateway's configuration.
+
+A model that refuses a forced tool, or that accepts an invalid effort,
+cannot be pinned: the startup Provider Capability Assertion (coding-agent
+ADR 0009) refuses the pin with no Attempt opened. The probe binds its tool
+with a forced `tool_choice` naming it and then proves the effort reaches the
+wire by sending the same request with a deliberately invalid effort, which a
+gateway must refuse naming the effort.
 
 ## Target checkout checks (no Forge profile)
 
