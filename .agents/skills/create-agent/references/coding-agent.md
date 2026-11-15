@@ -59,6 +59,16 @@ or added, update every reference that names it (`grep -rn` the old name).
   0600 on the socket; there is no network listener and no published port. If
   the chosen ref's `agentctl` documents no such socket directory, drop that
   second tmpfs entry.
+- **Resource limits** (`cpus: ${WORKER_CPUS:-1.5}`,
+  `mem_limit: ${WORKER_MEM_LIMIT:-3g}`, `pids_limit: ${WORKER_PIDS_LIMIT:-1024}`)
+  live on the shared `x-agent` anchor, so `worker`, `agent` and `validate`
+  all inherit the same values, overridable in `.env` (leave the `WORKER_*`
+  variables commented out to keep the defaults). This is a Forge addition,
+  not part of the hardening mirrored from coding-agent's own deployment:
+  upstream's `compose.yaml` sets no resource limits. It is a deployment
+  concern and stays out of the Workflow Configuration: the workflow
+  `limits` (cost, tokens, tool calls, wall clock) budget an Attempt and do
+  not bound host resources.
 - **Exactly one Worker** per Target Repository and state volume. There is no
   `agent-2..N` stanza, Pool rendering never applies, and `manage-pool` does
   not apply to this backend. A second instance for the same repository is

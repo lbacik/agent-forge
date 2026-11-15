@@ -410,7 +410,9 @@ from `assets/workflow.coding-agent.yml.template` with the prompt files copied
 from the ref checkout (step 3b) and `workflow/skill-policy.json` copied
 verbatim from the ref checkout's `docker/deployment/`, and
 `.env`/`.env.example` from
-`assets/env.coding-agent.example.template` with the real secrets. No
+`assets/env.coding-agent.example.template` with the real secrets. Leave
+`WORKER_CPUS`, `WORKER_MEM_LIMIT` and `WORKER_PIDS_LIMIT` commented out (the
+`x-agent` defaults). No
 `{{...}}` or prompt-file gap may remain: every prompt the YAML names must
 exist next to it, and the policy file must be byte-identical to the one at
 the ref. The rest of this step is simple-coding-agent only.
