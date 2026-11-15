@@ -17,7 +17,7 @@
 # --rm ...`) sharing the worker's state volume: everything the CLI can do,
 # and one checkout validation, against the same ledger. Exactly one Worker
 # per Target Repository and state volume: Pool rendering never applies to
-# this backend (no backend advertises the `pool` Operator Capability yet), so
+# this backend never advertises the `pool` Operator Capability, so
 # there is no `agent-2..N` stanza here and `manage-pool` does not apply.
 #
 # Hardening mirrors coding-agent's own deployment (its compose.yaml at the
