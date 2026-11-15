@@ -18,7 +18,22 @@
 # byte-identical in the Compose model to today's layout.
 # The coding-agent variant always carries its four discovery labels on the
 # worker only and carries no Forge-owned profile (see
-# references/coding-agent.md).
+# references/coding-agent.md). Its rendered `workflow/workflow.yml` is a
+# `version: 3` file with a `skills:` block whose static `skill:` references
+# name declared members only.
+#
+# The coding-agent variant additionally runs secret-free `agent config
+# validate` against the rendered `workflow/workflow.yml` (with the prompt
+# files the YAML names, before the policy stub is written — validation passes
+# with the policy missing) when the `agent` CLI is on PATH, with no
+# environment set. It invokes the bare `agent` CLI directly (no Docker
+# needed); the operator path in references/coding-agent.md runs the same
+# `config validate` arguments through the compose `agent` seat instead. CI
+# has no coding-agent installed — neither an `agent` CLI at a pinned ref
+# nor a built image — so there the script records the skip and passes;
+# install the CLI at the pinned ref (for example `uv tool
+# install git+https://github.com/lbacik/coding-agent@v0.4.0`) or build the
+# image and re-run this script locally to cover validation too.
 #
 # Usage (from anywhere in this repository):
 #
@@ -69,6 +84,8 @@ PH_LIMIT_COST_USD=20
 PH_LIMIT_TOKENS=4000000
 PH_LIMIT_TOOL_CALLS=600
 PH_LIMIT_WALL_CLOCK_MINUTES=60
+PH_PROCESS_LIMIT_COST_USD=12
+PH_SELF_REVIEW_LIMIT_COST_USD=3
 
 WORK_ROOT=""
 
@@ -401,9 +418,41 @@ check_coding_agent_instance() {
   if ! grep -qF -- 'stop_grace_period: 60s' "$dir/compose.yaml"; then
     fail "$label: compose.yaml lost stop_grace_period: 60s"
   fi
-  # The rendered Workflow Configuration: repository, branch, credentials by
-  # environment-variable name only, a lawful Selection Label, limits.
+  # The rendered Workflow Configuration: a version: 3 file with a Skill
+  # Bundle, repository, branch, credentials by environment-variable name
+  # only, a lawful Selection Label, the full Attempt Ceiling and Step
+  # Allowances that fit the Work Pool. Every static `skill:` reference must
+  # name a declared bundle member.
   workflow_content=$(cat "$dir/workflow/workflow.yml")
+  assert_contains "$workflow_content" 'version: 3' \
+    "$label: workflow.yml is not a version: 3 file"
+  assert_line_matches "$workflow_content" '^version: 3$' \
+    "$label: workflow.yml version line is not exactly 'version: 3'"
+  assert_contains "$workflow_content" 'workflow-v3.schema.json' \
+    "$label: workflow.yml editor schema is not workflow-v3"
+  assert_contains "$workflow_content" 'skills:' \
+    "$label: workflow.yml declares no Skill Bundle"
+  assert_contains "$workflow_content" 'git+https://github.com/mattpocock/skills.git' \
+    "$label: workflow.yml Skill Bundle is not the reference selection"
+  assert_contains "$workflow_content" '3cca18b368ae95cdbdebbff572ccafa662551015' \
+    "$label: workflow.yml Skill Bundle ref is not the reference pin"
+  assert_contains "$workflow_content" 'include: [implement, tdd, code-review, codebase-design]' \
+    "$label: workflow.yml Skill Bundle membership is not the reference selection"
+  assert_contains "$workflow_content" 'skill: implement' \
+    "$label: workflow.yml process step names no skill"
+  assert_contains "$workflow_content" 'skill: code-review' \
+    "$label: workflow.yml self-review step names no skill"
+  skill_names=$(printf '%s\n' "$workflow_content" |
+    sed -n 's/^[[:space:]]*-[[:space:]]*skill:[[:space:]]*\([a-z-]*\).*/\1/p' |
+    sort -u)
+  include_list=$(printf '%s\n' "$workflow_content" |
+    sed -n 's/^[[:space:]]*include: \[\(.*\)\].*/\1/p' | tr ',[]' '   ')
+  for skill_name in $skill_names; do
+    case " $include_list " in
+      *" $skill_name "*) ;;
+      *) fail "$label: skill '$skill_name' is not declared in the skills include list" ;;
+    esac
+  done
   assert_contains "$workflow_content" "repository: $PH_OWNER/$PH_REPO" \
     "$label: workflow.yml target repository is not $PH_OWNER/$PH_REPO"
   assert_contains "$workflow_content" "base-branch: $PH_BASE_BRANCH" \
@@ -421,7 +470,17 @@ check_coding_agent_instance() {
   assert_not_contains "$workflow_content" 'wayfinder' \
     "$label: workflow.yml Selection Label breaks coding-agent's rules"
   assert_contains "$workflow_content" "cost-usd: $PH_LIMIT_COST_USD" \
-    "$label: workflow.yml Attempt Ceiling is incomplete"
+    "$label: workflow.yml Attempt Ceiling cost is incomplete"
+  assert_contains "$workflow_content" "tokens: $PH_LIMIT_TOKENS" \
+    "$label: workflow.yml Attempt Ceiling tokens are incomplete"
+  assert_contains "$workflow_content" "tool-calls: $PH_LIMIT_TOOL_CALLS" \
+    "$label: workflow.yml Attempt Ceiling tool-calls are incomplete"
+  assert_contains "$workflow_content" "wall-clock-minutes: $PH_LIMIT_WALL_CLOCK_MINUTES" \
+    "$label: workflow.yml Attempt Ceiling wall-clock is incomplete"
+  assert_contains "$workflow_content" "cost-usd: $PH_PROCESS_LIMIT_COST_USD" \
+    "$label: workflow.yml process Step Allowance missing"
+  assert_contains "$workflow_content" "cost-usd: $PH_SELF_REVIEW_LIMIT_COST_USD" \
+    "$label: workflow.yml self-review Step Allowance missing"
   assert_not_contains "$workflow_content" 'sk-' \
     "$label: workflow.yml names a secret value, not an environment variable"
   env_content=$(cat "$dir/.env")
@@ -434,6 +493,9 @@ check_coding_agent_instance() {
       fail "$label: workflow/prompts/$prompt missing"
     fi
   done
+  if [ ! -f "$dir/workflow/skill-policy.json" ]; then
+    fail "$label: workflow/skill-policy.json missing (the skill copies it verbatim from the CODING_AGENT_REF checkout)"
+  fi
   assert_no_forge_profile "$dir" "$label"
 }
 
@@ -535,6 +597,8 @@ render_coding_agent_workflow() {
     -e "s|{{LIMIT_TOKENS}}|$PH_LIMIT_TOKENS|g" \
     -e "s|{{LIMIT_TOOL_CALLS}}|$PH_LIMIT_TOOL_CALLS|g" \
     -e "s|{{LIMIT_WALL_CLOCK_MINUTES}}|$PH_LIMIT_WALL_CLOCK_MINUTES|g" \
+    -e "s|{{PROCESS_LIMIT_COST_USD}}|$PH_PROCESS_LIMIT_COST_USD|g" \
+    -e "s|{{SELF_REVIEW_LIMIT_COST_USD}}|$PH_SELF_REVIEW_LIMIT_COST_USD|g" \
     "$1" >"$2"
 }
 
@@ -551,8 +615,36 @@ render_coding_agent_prompts() {
   done
 }
 
+# render_coding_agent_policy DIR -- stub skill-policy.json. The skill copies
+# the real reviewed policy verbatim from the CODING_AGENT_REF checkout's
+# docker/deployment/ (step 3b of the skill); Forge keeps no copy of its own,
+# so the check only proves the layout the Worker expects exists. The stub is
+# written after the config-validate run below: validation passes with the
+# policy missing, and a stub must never stand in for the reviewed copy.
+render_coding_agent_policy() {
+  printf '{}\n' >"$1/workflow/skill-policy.json" ||
+    fail 'coding-agent: cannot write workflow/skill-policy.json stub'
+}
+
+# check_coding_agent_validate DIR LABEL -- secret-free `agent config validate`
+# against the rendered coding-agent workflow, with no environment set. Runs
+# only when the `agent` CLI is on PATH: CI has no coding-agent installed, so
+# there the check records the skip and passes (see the header). Install the
+# CLI at the pinned ref or build the image and re-run locally to cover it.
+check_coding_agent_validate() {
+  if ! agent_bin=$(command -v agent); then
+    info "$2: SKIP secret-free config validate (no agent CLI on PATH; CI has no coding-agent installed)"
+    return 0
+  fi
+  info "checking $2 secret-free config validate"
+  (cd "$1" && env -i "$agent_bin" config validate \
+    --config ./workflow/workflow.yml --workflow implement) ||
+    fail "$2: secret-free 'agent config validate' failed"
+}
+
 # render_coding_agent DIR -- one scratch coding-agent instance: compose.yaml,
-# .env/.env.example, workflow/workflow.yml and stub prompt files.
+# .env/.env.example, workflow/workflow.yml, stub prompt files and the policy
+# stub (written after the secret-free validate run, which needs no policy).
 render_coding_agent() {
   render_coding_agent_compose \
     "$ASSETS_DIR/compose.coding-agent.yaml.template" "$1/compose.yaml"
@@ -564,6 +656,8 @@ render_coding_agent() {
   render_coding_agent_workflow \
     "$ASSETS_DIR/workflow.coding-agent.yml.template" "$1/workflow/workflow.yml"
   render_coding_agent_prompts "$1"
+  check_coding_agent_validate "$1" 'coding-agent'
+  render_coding_agent_policy "$1"
 }
 
 main() {
@@ -618,6 +712,14 @@ main() {
   if grep -qF 'AGENT_SRC_REF' "$ASSETS_DIR/env.coding-agent.example.template"; then
     fail 'env.coding-agent.example.template sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)'
   fi
+
+  # The workflow template carries no hard-coded Work Pool numbers: the old
+  # comment quoted the pool for the example ceiling only.
+  for stale in '19 USD' '3,850,000' '570 tool calls' '55 minutes'; do
+    if grep -qF -- "$stale" "$ASSETS_DIR/workflow.coding-agent.yml.template"; then
+      fail "workflow.coding-agent.yml.template hard-codes a Work Pool number ($stale)"
+    fi
+  done
 
   assert_no_placeholders "$plain_dir" 'plain'
   assert_no_placeholders "$litellm_dir" 'litellm'
