@@ -1,0 +1,76 @@
+# syntax=docker/dockerfile:1
+#
+# Derived deployment image for one coding-agent instance. It implements the
+# "External builders: the Agent Forge sequence" from coding-agent's
+# docs/ops/workflow-configuration.md (read at v0.4.0): it builds FROM the
+# engine image the `engine` service in compose.yaml produces from the
+# coding-agent git repository at CODING_AGENT_REF (`target: deployment`, so
+# the base already carries the Target Project toolchains and the generated
+# Supported Toolchain Matrix at /opt/coding-agent/toolchain-matrix.json),
+# bakes this instance's `workflow/` package (workflow.yml, prompts/ and the
+# reviewed skill-policy.json) over the reference package at /etc/coding-agent,
+# prepares the Skill Bundle from it, and verifies the final roots — so the
+# build fails on any mismatch, the same refusal `agent run` would raise at
+# startup. This file is copied verbatim into the instance (no placeholders):
+# every path and flag below is fixed by the adapter.
+#
+# Re-preparing over the inherited bundle is deliberately done from empty
+# directories: upstream's own `deployment` stage only ever prepares onto a
+# fresh bundle dir and a fresh runtime home (`install -d` then prepare as
+# `agent`), so the derived build first removes the inherited generated
+# records (/opt/coding-agent/skill-bundle) and the inherited managed store
+# (/home/agent/.agents: `<home>/.agents/skills/` plus
+# `<home>/.agents/agent-installer/state.json` at the documented ref) and
+# re-creates the empty bundle dir owned by `agent`. The toolchains and the
+# matrix are untouched. No Worker GitHub or model secret is set anywhere in
+# this build: `config validate` is static and offline, and `prepare
+# --mode install` resolves the declared skills over the network only.
+#
+# Any edit under the instance's `workflow/` needs `docker compose build`
+# before the container is recreated (the same rule as a profile change for
+# simple-coding-agent): the package is baked into the image, never mounted.
+
+# The `engine` build context is wired in compose.yaml (`additional_contexts:
+# engine: service:engine`): the base image the `engine` service builds from
+# the coding-agent git context with `target: deployment`.
+FROM engine
+
+# Replace the reference instruction package with the instance's. The prompts
+# directory is removed wholesale first (not merged over): the reference
+# package ships `review-policy.md` beside `implement-policy.md`, while the
+# instance ships `implement-policy.md` and `handoff.md` — a merging COPY
+# would leave the reference-only file behind in the image.
+USER root
+RUN rm -rf /etc/coding-agent/workflow.yml \
+    /etc/coding-agent/prompts \
+    /etc/coding-agent/skill-policy.json \
+    /opt/coding-agent/skill-bundle \
+    /home/agent/.agents
+COPY workflow/workflow.yml /etc/coding-agent/workflow.yml
+COPY workflow/prompts /etc/coding-agent/prompts
+COPY workflow/skill-policy.json /etc/coding-agent/skill-policy.json
+RUN install -d -o agent -g agent /opt/coding-agent/skill-bundle
+
+# Build-time preparation, never at startup: the image tag is the Skill
+# Bundle's version. Runs as the runtime `agent` user with no Worker
+# GitHub/model secrets set, exactly like upstream's `deployment` stage.
+# `config validate` is static and offline; `mode install` resolves and
+# installs the declared subset and publishes requirements.json,
+# manifest.json and validation.json as one completed generation; the final
+# `verify-skill-bundle` re-checks the final roots after the last relevant
+# COPY above, so it — not any builder-stage log — is the acceptance proof.
+# No COPY of the baked roots or the bundle directory may follow this step.
+# A byte-edited copy, or a declared member the install cannot provide,
+# fails the build here.
+USER agent
+RUN agent config validate --config /etc/coding-agent/workflow.yml \
+    && agent prepare-skill-bundle --mode install \
+      --config /etc/coding-agent/workflow.yml \
+      --policy /etc/coding-agent/skill-policy.json \
+      --bundle-dir /opt/coding-agent/skill-bundle \
+      --home /home/agent \
+    && agent verify-skill-bundle \
+      --config /etc/coding-agent/workflow.yml \
+      --policy /etc/coding-agent/skill-policy.json \
+      --bundle-dir /opt/coding-agent/skill-bundle \
+      --home /home/agent

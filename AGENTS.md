@@ -46,8 +46,8 @@ docker compose up -d
 ```
 
 Run the build and start steps when requested or already authorized by the user.
-After Dockerfile or baked-in profile changes, rebuild before recreating the
-container. Validate changes using the skill's applicable checks and report which
+After Dockerfile, baked-in profile, or (coding-agent) `workflow/` changes,
+rebuild before recreating the container. Validate changes using the skill's applicable checks and report which
 checks were run, which passed, and which remain unverified. The repository root
 has no shared application test suite or Compose deployment.
 

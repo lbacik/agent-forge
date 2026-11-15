@@ -3,8 +3,12 @@
 # dedicated to {{OWNER}}/{{REPO}}: one `implement` Workflow (issue in, pull
 # request out). Rendered by the create-agent skill from this template; the
 # operator guide is coding-agent's docs/ops/workflow-configuration.md, and
-# the step-workflow runtime contract is the authority. Validate edits with
-#   docker compose run --rm -v ./workflow:/etc/coding-agent:ro agent config validate \
+# the step-workflow runtime contract is the authority. This file is baked
+# into the derived image (see the instance Dockerfile), never mounted: any
+# edit needs `docker compose build` before the container is recreated, and
+# the build itself re-validates, re-prepares and re-verifies the package.
+# Validate edits with
+#   docker compose run --rm agent config validate \
 #     --config /etc/coding-agent/workflow.yml --workflow implement
 # with no secrets set: `config validate` is static, it checks the whole file
 # without opening an Attempt or writing to GitHub.

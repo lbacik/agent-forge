@@ -3,7 +3,7 @@
 #
 # Renders the simple-coding-agent templates (compose.yaml and
 # compose.litellm.yaml, .env/.env.example from the env example template, and
-# the Dockerfile) and the coding-agent templates (compose.yaml,
+# the Dockerfile) and the coding-agent templates (compose.yaml, Dockerfile,
 # .env/.env.example and workflow/workflow.yml) with placeholder values and no
 # secrets into scratch directories, then runs `docker compose config` on the
 # plain, the LiteLLM, the contract-labels, the contract-labels Pool and the
@@ -18,7 +18,14 @@
 # byte-identical in the Compose model to today's layout.
 # The coding-agent variant always carries its four discovery labels on the
 # worker only and carries no Forge-owned profile (see
-# references/coding-agent.md). Its rendered `workflow/workflow.yml` is a
+# references/coding-agent.md), and its rendered `Dockerfile` derives the
+# deployment image FROM the `engine` base (the `deployment` target at
+# CODING_AGENT_REF) and runs `config validate`, `prepare-skill-bundle
+# --mode install` and `verify-skill-bundle` in that order, with the
+# verification after the last relevant COPY. The worker runs the full v3
+# `agent run` invocation and bind-mounts nothing at /etc/coding-agent (the
+# package is baked into the image, so any edit under `workflow/` needs
+# `docker compose build`). Its rendered `workflow/workflow.yml` is a
 # `version: 3` file with a `skills:` block whose static `skill:` references
 # name declared members only.
 #
@@ -45,8 +52,9 @@
 # check_contract_instance or check_coding_agent_instance below; the workflow
 # file needs no changes.
 #
-# Requires Docker with Compose v2.17 or newer (the simple-coding-agent
-# template uses additional_contexts).
+# Requires Docker with Compose v2.17 or newer (both templates use
+# additional_contexts: the simple-coding-agent template a remote git URL,
+# the coding-agent template a `service:` source for the engine base).
 
 set -eu
 
@@ -328,14 +336,18 @@ check_contract_instance() {
 
 # check_coding_agent_instance DIR LABEL -- `docker compose config` must accept
 # the rendered coding-agent directory, and the resulting model must carry the
-# adapter's shape: three services sharing one state volume, all four
-# discovery labels on the worker and on no one-off service, the worker's
-# hardening (never restarted, init, read-only root filesystem, the Workflow
-# Configuration mounted read-only), the exact stop grace on the rendered
-# file, and the Compose project name equal to the instance directory name.
-# The rendered Workflow Configuration must name credentials by environment
-# variable only and carry a Selection Label that satisfies coding-agent's
-# rules.
+# adapter's shape: the build-only `engine` base plus three derived services
+# sharing one state volume and one derived image, all four discovery labels
+# on the worker and on no one-off service, the worker's hardening (never
+# restarted, init, read-only root filesystem, the full v3 `run` invocation
+# with no bind mount at /etc/coding-agent), the exact stop grace on the
+# rendered file, and the Compose project name equal to the instance
+# directory name. The rendered Workflow Configuration must name credentials
+# by environment variable only and carry a Selection Label that satisfies
+# coding-agent's rules. The rendered Dockerfile must derive FROM the engine
+# base and run `config validate`, `prepare-skill-bundle` and
+# `verify-skill-bundle` in that order, with the verification after the last
+# relevant COPY.
 #
 # Add new model assertions here; the CI workflow needs no changes.
 check_coding_agent_instance() {
@@ -349,24 +361,49 @@ check_coding_agent_instance() {
   # The Compose project is the directory name: the template sets no `name:`.
   assert_contains "$config_output" "name: $instance_dir_name" \
     "$label: Compose project name is not the instance directory name"
-  for service in worker agent validate; do
+  for service in worker agent validate engine; do
     assert_contains "$config_output" "  $service:" \
       "$label: $service service missing from the Compose model"
   done
-  assert_contains "$config_output" "coding-agent:$PH_SHORT_NAME" \
-    "$label: image tag missing from the Compose model"
+  # All three runtime seats share the derived image; the engine base carries
+  # its own tag and is never run.
+  derived_image_count=$(printf '%s\n' "$config_output" | grep -cF -- "image: coding-agent:$PH_SHORT_NAME" || true)
+  if [ "$derived_image_count" != 3 ]; then
+    fail "$label: want the derived image on all three runtime seats (agent, validate, worker), found $derived_image_count"
+  fi
+  assert_contains "$config_output" "image: coding-agent-engine:$PH_SHORT_NAME" \
+    "$label: engine base image tag missing from the Compose model"
   assert_contains "$config_output" '/var/lib/coding-agent' \
     "$label: state path missing from the Compose model"
-  # `docker compose config` rewrites the short `./workflow:/etc/coding-agent:ro`
-  # into the long syntax, so look for `read_only: true` inside the volume
-  # entry whose target is /etc/coding-agent rather than for the `:ro` suffix.
-  if ! printf '%s\n' "$config_output" | awk '
-      /^ *- / { in_entry = 0 }
-      /^ *target: \/etc\/coding-agent$/ { in_entry = 1; next }
-      in_entry && /^ *read_only: true$/ { found = 1 }
-      END { exit !found }'; then
-    fail "$label: Workflow Configuration is not mounted read-only"
-  fi
+  # The Workflow Configuration is baked into the derived image, never
+  # bind-mounted: no volume entry may target /etc/coding-agent on any
+  # service, and the rendered file must not reference ./workflow or
+  # WORKFLOW_CONFIG_DIR at all.
+  assert_not_contains "$config_output" 'target: /etc/coding-agent' \
+    "$label: /etc/coding-agent is bind-mounted (the package is baked into the image)"
+  assert_not_contains "$(cat "$dir/compose.yaml")" './workflow' \
+    "$label: compose.yaml still references the ./workflow bind mount"
+  assert_not_contains "$(cat "$dir/compose.yaml")" 'WORKFLOW_CONFIG_DIR' \
+    "$label: compose.yaml still references WORKFLOW_CONFIG_DIR (the package is baked into the image)"
+  # The worker's full v3 `run` invocation: every flag and value upstream
+  # renders, and none of the removed legacy options (v3 exits 2 on them).
+  for token in '--config' '/etc/coding-agent/workflow.yml' '--workflow' \
+    '--policy' '/etc/coding-agent/skill-policy.json' \
+    '--bundle-dir' '/opt/coding-agent/skill-bundle' \
+    '--skill-home' '/home/agent' \
+    '--state-dir' '/var/lib/coding-agent' \
+    '--toolchain-matrix' '/opt/coding-agent/toolchain-matrix.json'; do
+    assert_contains "$config_output" "$token" \
+      "$label: worker command misses '$token'"
+  done
+  assert_not_contains "$config_output" '--skills-home' \
+    "$label: worker command carries the removed --skills-home option (v3 exits 2)"
+  assert_not_contains "$config_output" '--skill-bundle-dir' \
+    "$label: worker command carries the removed --skill-bundle-dir option (v3 exits 2)"
+  # WORKFLOW still selects the Workflow id through interpolation, so the
+  # rendered file keeps the defaulted reference.
+  assert_contains "$(cat "$dir/compose.yaml")" '${WORKFLOW:-implement}' \
+    "$label: compose.yaml lost the WORKFLOW interpolation"
   assert_contains "$config_output" '/var/lib/coding-agent/operator:uid=1000,gid=1000,mode=0700' \
     "$label: private-IPC tmpfs missing its ownership and mode options in the Compose model"
   operator_tmpfs_count=$(printf '%s\n' "$config_output" | grep -cF -- '/var/lib/coding-agent/operator' || true)
@@ -395,7 +432,8 @@ check_coding_agent_instance() {
   assert_contains "$config_output" 'io.github.lbacik.agent-operator.backend: coding-agent' \
     "$label: backend label is not coding-agent"
   # Hardening: exactly one restart line (the worker, never restarted), one
-  # init (the worker), and a read-only root filesystem on every service.
+  # init (the worker), and a read-only root filesystem on every runtime
+  # seat. The build-only `engine` service sets none of these.
   restart_count=$(printf '%s\n' "$config_output" | grep -c -- 'restart:' || true)
   if [ "$restart_count" != 1 ]; then
     fail "$label: want exactly one restart: line (worker), found $restart_count"
@@ -407,11 +445,9 @@ check_coding_agent_instance() {
   if [ "$init_count" != 1 ]; then
     fail "$label: want exactly one init: true line (worker), found $init_count"
   fi
-  # Service-level keys only (four-space indent): the read-only bind mount of
-  # the Workflow Configuration carries its own, deeper `read_only: true`.
   read_only_count=$(printf '%s\n' "$config_output" | grep -c -- '^    read_only: true$' || true)
   if [ "$read_only_count" != 3 ]; then
-    fail "$label: want read_only: true on all three services, found $read_only_count"
+    fail "$label: want read_only: true on all three runtime seats, found $read_only_count"
   fi
   # Resource limits (Forge addition, not upstream's compose): the x-agent
   # anchor carries cpus / mem_limit / pids_limit, so all three services
@@ -535,6 +571,33 @@ check_coding_agent_instance() {
   if [ ! -f "$dir/workflow/skill-policy.json" ]; then
     fail "$label: workflow/skill-policy.json missing (the skill copies it verbatim from the CODING_AGENT_REF checkout)"
   fi
+  # The derived deployment image: the Dockerfile is copied verbatim from
+  # the asset (no placeholders), derives FROM the engine base, and runs the
+  # Agent Forge sequence — `config validate`, then `prepare-skill-bundle
+  # --mode install`, then `verify-skill-bundle` against the final roots —
+  # as the runtime user with no secrets. The verification must come after
+  # the last relevant COPY so the build fails on any mismatch.
+  if [ ! -f "$dir/Dockerfile" ]; then
+    fail "$label: Dockerfile missing (the derived deployment image)"
+  fi
+  dockerfile_content=$(cat "$dir/Dockerfile")
+  assert_contains "$dockerfile_content" 'FROM engine' \
+    "$label: Dockerfile does not derive from the engine base"
+  validate_line=$(printf '%s\n' "$dockerfile_content" | grep -nF 'agent config validate' | cut -d: -f1 | head -n 1)
+  prepare_line=$(printf '%s\n' "$dockerfile_content" | grep -nF 'agent prepare-skill-bundle' | cut -d: -f1 | head -n 1)
+  verify_line=$(printf '%s\n' "$dockerfile_content" | grep -nF 'agent verify-skill-bundle' | cut -d: -f1 | head -n 1)
+  last_copy_line=$(printf '%s\n' "$dockerfile_content" | grep -n '^COPY ' | cut -d: -f1 | tail -n 1)
+  if [ -z "$validate_line" ] || [ -z "$prepare_line" ] || [ -z "$verify_line" ]; then
+    fail "$label: Dockerfile misses a step of the prepare sequence (config validate, prepare-skill-bundle, verify-skill-bundle)"
+  fi
+  if [ "$validate_line" -ge "$prepare_line" ] || [ "$prepare_line" -ge "$verify_line" ]; then
+    fail "$label: Dockerfile runs the prepare sequence out of order (want config validate, then prepare-skill-bundle, then verify-skill-bundle)"
+  fi
+  if [ -z "$last_copy_line" ] || [ "$verify_line" -le "$last_copy_line" ]; then
+    fail "$label: Dockerfile verifies before the last COPY (verification must run against the final roots)"
+  fi
+  assert_contains "$dockerfile_content" '--mode install' \
+    "$label: Dockerfile does not prepare with --mode install"
   assert_no_forge_profile "$dir" "$label"
 }
 
@@ -550,13 +613,12 @@ assert_no_agent_operator() {
 }
 
 # assert_no_forge_profile DIR LABEL -- a coding-agent instance carries no
-# Forge-owned profile: no Dockerfile, no simple-coding-agent-profile.yml,
-# and no PROFILE_PATH / AGENT_SRC_REF / WORKER_ID in the rendered .env or
+# Forge-owned profile: no simple-coding-agent-profile.yml, and no
+# PROFILE_PATH / AGENT_SRC_REF / WORKER_ID in the rendered .env or
 # compose.yaml (the repository-owned Project Profile is the only profile).
+# It does carry a Dockerfile: the derived deployment image (checked in
+# check_coding_agent_instance), not a Forge-owned profile.
 assert_no_forge_profile() {
-  if [ -e "$1/Dockerfile" ]; then
-    fail "$2: coding-agent instance must not contain a Dockerfile"
-  fi
   if [ -e "$1/simple-coding-agent-profile.yml" ]; then
     fail "$2: coding-agent instance must not contain a Forge-owned profile"
   fi
@@ -641,6 +703,14 @@ render_coding_agent_workflow() {
     "$1" >"$2"
 }
 
+# render_coding_agent_dockerfile SRC DST -- the coding-agent instance
+# Dockerfile: copied verbatim from the asset (it carries no placeholders;
+# every path and flag is fixed by the adapter).
+render_coding_agent_dockerfile() {
+  cp "$1" "$2" ||
+    fail 'coding-agent: cannot copy the instance Dockerfile'
+}
+
 # render_coding_agent_prompts DIR -- stub prompt files with the names the
 # rendered workflow.yml references. The skill copies the real contents from
 # the CODING_AGENT_REF checkout (step 3b); the check only proves the layout
@@ -682,11 +752,14 @@ check_coding_agent_validate() {
 }
 
 # render_coding_agent DIR -- one scratch coding-agent instance: compose.yaml,
-# .env/.env.example, workflow/workflow.yml, stub prompt files and the policy
-# stub (written after the secret-free validate run, which needs no policy).
+# Dockerfile, .env/.env.example, workflow/workflow.yml, stub prompt files
+# and the policy stub (written after the secret-free validate run, which
+# needs no policy).
 render_coding_agent() {
   render_coding_agent_compose \
     "$ASSETS_DIR/compose.coding-agent.yaml.template" "$1/compose.yaml"
+  render_coding_agent_dockerfile \
+    "$ASSETS_DIR/Dockerfile.coding-agent.template" "$1/Dockerfile"
   render_coding_agent_env "$ASSETS_DIR/env.coding-agent.example.template" \
     "$1/.env.example"
   cp "$1/.env.example" "$1/.env"
@@ -761,6 +834,40 @@ main() {
       fail "env.coding-agent.example.template misses commented-out $worker_default"
     fi
   done
+  # The Workflow Configuration is baked into the derived image, never
+  # mounted: no template may reference the old bind mount or its variable.
+  for template in "$ASSETS_DIR/compose.coding-agent.yaml.template" \
+    "$ASSETS_DIR/env.coding-agent.example.template"; do
+    if grep -qF 'WORKFLOW_CONFIG_DIR' "$template"; then
+      fail "$(basename "$template") references WORKFLOW_CONFIG_DIR (the package is baked into the image)"
+    fi
+  done
+  if grep -qF './workflow' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
+    fail 'compose.coding-agent.yaml.template bind-mounts ./workflow (the package is baked into the image)'
+  fi
+  # v3 removed the legacy fixed-bundle options: the worker command must
+  # carry neither (the CLI exits 2 on them).
+  for legacy in '--skills-home' '--skill-bundle-dir'; do
+    if grep -qF -- "$legacy" "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
+      fail "compose.coding-agent.yaml.template carries the removed $legacy option (v3 exits 2)"
+    fi
+  done
+  # Build arrangement: the engine base builds the deployment target from
+  # the git context, and the derived services build FROM it through a
+  # `service:` additional context.
+  if ! grep -qF 'target: deployment' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
+    fail 'compose.coding-agent.yaml.template builds no deployment target (the engine base is missing)'
+  fi
+  if ! grep -qF 'service:engine' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
+    fail 'compose.coding-agent.yaml.template wires no service:engine build context (the derived image has no base)'
+  fi
+  if ! grep -qF 'dockerfile: Dockerfile' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
+    fail 'compose.coding-agent.yaml.template does not build the instance Dockerfile'
+  fi
+  # Forge never bakes discovery labels into the image; the derived
+  # Dockerfile is no exception (the one-off seats share the worker image).
+  assert_no_agent_operator "$ASSETS_DIR/Dockerfile.coding-agent.template" \
+    'Dockerfile.coding-agent template mentions agent-operator'
 
   # The workflow template carries no hard-coded Work Pool numbers: the old
   # comment quoted the pool for the example ceiling only.

@@ -1,24 +1,49 @@
 # Deploys one coding-agent instance dedicated to {{OWNER}}/{{REPO}}.
 #
-# The image is built straight from the coding-agent git repository at the ref
-# named by CODING_AGENT_REF in .env (default main) — there is no instance
-# Dockerfile and no stack block: the toolchain is fixed by the image's
-# Supported Toolchain Matrix (coding-agent ADR 0001), not per instance. Change
-# the ref and rerun `docker compose build` to switch agent code; nothing else
-# here needs editing either way.
+# The Worker runs from a derived deployment image (this directory's
+# Dockerfile, built FROM the engine image through the `engine` context
+# below), following the "External builders: the Agent Forge sequence" in
+# coding-agent's docs/ops/workflow-configuration.md (read at v0.4.0). The
+# instance's `workflow/` package (workflow.yml, prompts/ and the reviewed
+# skill-policy.json) is baked into that image and verified there
+# (`config validate`, then `prepare-skill-bundle --mode install`, then
+# `verify-skill-bundle` against the final roots), so the Worker starts with
+# the full v3 `run` invocation and the build — not startup — fails on a
+# mismatch. Change CODING_AGENT_REF and rebuild to switch agent code; any
+# edit under `workflow/` needs `docker compose build` before the container
+# is recreated (the same rule as a profile change for simple-coding-agent).
+# Nothing here needs editing either way.
+#
+# Build arrangement: the `engine` service builds the `deployment` target of
+# the coding-agent git repository at the ref named by CODING_AGENT_REF in
+# .env (default main) — that target already carries the Target Project
+# toolchains and the generated Supported Toolchain Matrix (coding-agent ADR
+# 0001), never per instance. The derived services build FROM it through an
+# `additional_contexts` entry with a `service:` source, so one
+# `docker compose up --build -d worker` builds the base first with no extra
+# step and no shared image tag to clash with another instance on the same
+# context. The `service:` source is part of `additional_contexts`, which
+# needs Compose 2.17 or newer — the same minimum the simple-coding-agent
+# template already requires — and `docker compose config` resolves it
+# client-side, so render-check covers it with no daemon. An image tag
+# instead (the derived Dockerfile naming a prebuilt base tag) would need a
+# separate prior build step and a per-instance tag; the `service:`
+# reference keeps the ordering inside Compose.
 #
 # The Compose project is the directory name: this file deliberately sets no
 # `name:` (coding-agent's own fixed `name: coding-agent` is not copied),
 # because the project name is the Instance identity on this Docker context.
 #
-# Services: `worker` is the one long-running process (`agent run`) and the
-# only Managed Instance, so it alone carries the contract discovery labels.
-# `agent` and `validate` are unlabelled one-off seats (`docker compose run
-# --rm ...`) sharing the worker's state volume: everything the CLI can do,
-# and one checkout validation, against the same ledger. Exactly one Worker
-# per Target Repository and state volume: Pool rendering never applies to
-# this backend (no backend advertises the `pool` Operator Capability yet), so
-# there is no `agent-2..N` stanza here and `manage-pool` does not apply.
+# Services: `worker` is the one long-running process (`agent run` with the
+# full v3 flags) and the only Managed Instance, so it alone carries the
+# contract discovery labels. `agent` and `validate` are unlabelled one-off
+# seats (`docker compose run --rm ...`) on the same derived image, so
+# `validate` and `startup-check` see the same toolchains and the same baked
+# package as the Worker. `engine` is the build-only base image (never run,
+# never labelled). Exactly one Worker per Target Repository and state
+# volume: Pool rendering never applies to this backend (no backend
+# advertises the `pool` Operator Capability yet), so there is no
+# `agent-2..N` stanza here and `manage-pool` does not apply.
 #
 # Hardening mirrors coding-agent's own deployment (its compose.yaml at the
 # chosen ref): read-only root filesystem with a writable /tmp on every
@@ -28,7 +53,7 @@
 # Workflow Configuration's `worker.shutdown-grace-seconds` (default 30 s),
 # or Docker would SIGKILL the Worker mid-finalisation.
 
-# Everything the services share. Each service merges it with `<<: *agent`.
+# Everything the derived services share. Each merges it with `<<: *agent`.
 x-agent: &agent
   # Runtime settings for the container. Values come from the shell or from
   # the .env compose reads beside this file. GITHUB_TOKEN is the default the
@@ -40,7 +65,13 @@ x-agent: &agent
   env_file:
     - .env
   build:
-    context: https://github.com/lbacik/coding-agent.git#${CODING_AGENT_REF:-main}
+    context: .
+    dockerfile: Dockerfile
+    # The engine base image, built by the `engine` service below from the
+    # coding-agent git repository at CODING_AGENT_REF. A `service:` source
+    # makes Compose build it as part of building these services.
+    additional_contexts:
+      engine: service:engine
   image: coding-agent:{{SHORT_NAME}}
   # The image deliberately declares no entrypoint (its verification scripts
   # run `bash` inside it); compose fixes one so a service's arguments read
@@ -63,21 +94,28 @@ x-agent: &agent
     - state:/var/lib/coding-agent
 
 services:
+  # The build-only engine base image: the `deployment` target of the
+  # coding-agent git repository at CODING_AGENT_REF (default main), carrying
+  # the toolchains and the generated Supported Toolchain Matrix the derived
+  # image builds FROM. Never run and never labelled: it exists so the
+  # derived services above resolve their `engine` build context. Rebuilt
+  # automatically as part of `docker compose build` and of
+  # `docker compose up --build -d worker`.
+  engine:
+    build:
+      context: https://github.com/lbacik/coding-agent.git#${CODING_AGENT_REF:-main}
+      target: deployment
+    image: coding-agent-engine:{{SHORT_NAME}}
+
   # The general-purpose seat. Everything the CLI can do, with the
   # subcommand supplied at the command line:
   #
   #   docker compose run --rm agent startup-check --repo {{OWNER}}/{{REPO}}
   #   docker compose run --rm agent config validate --config /etc/coding-agent/workflow.yml --workflow implement
   #
-  # The Workflow Configuration lives in the instance's `workflow/` directory
-  # (mounted read-only on the worker only, as in coding-agent's own
-  # deployment). Commands that read it through this seat mount it
-  # explicitly, so this service stays a bare seat:
-  #
-  #   docker compose run --rm -v ./workflow:/etc/coding-agent:ro agent config validate \
-  #     --config /etc/coding-agent/workflow.yml --workflow implement
-  #
-  # with no secrets set: `config validate` is static. Never labelled: one-off
+  # The Workflow Configuration and its Skill Bundle are baked into this
+  # image (see the Dockerfile), so commands that read them need no mount
+  # and no secrets set: `config validate` is static. Never labelled: one-off
   # containers are never Managed Instances.
   agent:
     <<: *agent
@@ -114,10 +152,12 @@ services:
       - /var/lib/coding-agent/artifacts/target
     command: []
 
-  # The Worker (step-workflow contract §4): `agent run` against the
-  # operator's `version: 3` Workflow Configuration in the instance's
-  # `workflow/` directory. It selects, claims and runs the selected
-  # Workflow's inputs one Attempt at a time until it halts.
+  # The Worker (step-workflow contract §4): `agent run` against the baked
+  # `version: 3` Workflow Configuration at /etc/coding-agent/workflow.yml,
+  # with the baked prompts, reviewed skill-policy.json, prepared bundle
+  # records and Supported Toolchain Matrix the derived image carries. It
+  # selects, claims and runs the selected Workflow's inputs one Attempt at
+  # a time until it halts.
   #
   #   docker compose up -d worker
   #
@@ -154,7 +194,6 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - state:/var/lib/coding-agent
-      - ${WORKFLOW_CONFIG_DIR:-./workflow}:/etc/coding-agent:ro
     # The operator control socket directory: a tmpfs mount shadowing the
     # state volume's `operator` subdirectory, so the Unix socket never
     # touches the named volume. Only the worker carries it; `agent` and
@@ -179,6 +218,16 @@ services:
       - /etc/coding-agent/workflow.yml
       - --workflow
       - ${WORKFLOW:-implement}
+      - --state-dir
+      - /var/lib/coding-agent
+      - --toolchain-matrix
+      - /opt/coding-agent/toolchain-matrix.json
+      - --policy
+      - /etc/coding-agent/skill-policy.json
+      - --bundle-dir
+      - /opt/coding-agent/skill-bundle
+      - --skill-home
+      - /home/agent
 
 volumes:
   state:

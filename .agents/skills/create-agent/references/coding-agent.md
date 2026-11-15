@@ -12,12 +12,13 @@ clone (step 3b) before scaffolding.
 ## What this adapter renders
 
 An `agent-instances/agent-<name>/` directory holding a Compose deployment of
-coding-agent's `worker` with its Workflow Configuration — no instance
+coding-agent's `worker` with its Workflow Configuration — a derived-image
 Dockerfile, no stack block, no Forge-owned profile:
 
 | File | Source |
 |---|---|
 | `compose.yaml` | `assets/compose.coding-agent.yaml.template` |
+| `Dockerfile` | `assets/Dockerfile.coding-agent.template`, copied verbatim (the derived deployment image) |
 | `workflow/workflow.yml` | `assets/workflow.coding-agent.yml.template` (`version: 3`, with a `skills:` block) |
 | `workflow/prompts/*.md` | copied from the `CODING_AGENT_REF` checkout (see step 3b) |
 | `workflow/skill-policy.json` | copied verbatim from the `CODING_AGENT_REF` checkout's `docker/deployment/` (see step 3b) |
@@ -29,23 +30,40 @@ or added, update every reference that names it (`grep -rn` the old name).
 
 ## Compose template
 
-- **Build.** The image builds from coding-agent's git repository at a
-  configurable ref, analogous to `AGENT_SRC_REF`:
-  `build.context` is `https://github.com/lbacik/coding-agent.git#${CODING_AGENT_REF:-main}`,
-  and `CODING_AGENT_REF` in `.env` (default `main`) names the branch, tag or
-  commit. Change it and rerun `docker compose build` to switch agent code.
-  The toolchain is fixed by the image's Supported Toolchain Matrix
-  (coding-agent ADR 0001), never per instance.
+- **Build.** The image is a derived deployment image (this directory's
+  `Dockerfile`, copied verbatim from
+  `assets/Dockerfile.coding-agent.template`), built FROM the engine image
+  the `engine` service produces from coding-agent's git repository at a
+  configurable ref, analogous to `AGENT_SRC_REF`: the engine's
+  `build.context` is
+  `https://github.com/lbacik/coding-agent.git#${CODING_AGENT_REF:-main}`
+  with `target: deployment`, and `CODING_AGENT_REF` in `.env` (default
+  `main`) names the branch, tag or commit. Change it and rerun
+  `docker compose build` to switch agent code. The toolchain is fixed by
+  the image's Supported Toolchain Matrix (coding-agent ADR 0001), never per
+  instance. The derived services reach the base through an
+  `additional_contexts` entry with a `service:` source (`engine:
+  service:engine`), so one `docker compose up --build -d worker` builds the
+  base first with no extra step and no shared image tag that could clash
+  with another instance on the same context. The `service:` source is part
+  of `additional_contexts`, which needs Compose 2.17 or newer — the same
+  minimum the simple-coding-agent template already requires. (The
+  alternative — a prebuilt base image tag the Dockerfile names — would need
+  a separate prior build step and a per-instance tag; the `service:`
+  reference keeps the ordering inside Compose.)
 - **Project.** The file sets no `name:`: the Compose project is the directory
   name, because the project name is the Instance identity on the Docker
   context. coding-agent's own fixed `name: coding-agent` is not copied.
 - **Services.** `worker` (labelled with the four discovery labels,
-  `backend` = `coding-agent`) runs `agent run` with the Workflow
-  Configuration and Workflow id; `agent` and `validate` are unlabelled
-  one-off seats (`docker compose run --rm ...`). All three share one state
-  volume at coding-agent's state path (`/var/lib/coding-agent`, read at the
-  ref). `agent` stays a bare seat: commands that read the Workflow
-  Configuration mount `./workflow` explicitly (see "Validation").
+  `backend` = `coding-agent`) runs `agent run` with the full v3 flags (see
+  "The derived image" below); `agent` and `validate` are unlabelled
+  one-off seats (`docker compose run --rm ...`) on the same derived image,
+  so `validate` and `startup-check` see the same toolchains and the same
+  baked package as the Worker. `engine` is the build-only base image (never
+  run, never labelled). All three runtime seats share one state volume at
+  coding-agent's state path (`/var/lib/coding-agent`, read at the ref).
+  `agent` stays a bare seat: the Workflow Configuration is baked into the
+  image, so commands that read it need no mount (see "Validation").
 - **Hardening** mirrors coding-agent's deployment at the ref: read-only root
   filesystem and a writable `/tmp` on every service, `init: true`,
   `restart: "no"` and `stop_grace_period: 60s` on the worker (above the
@@ -75,11 +93,57 @@ or added, update every reference that names it (`grep -rn` the old name).
   refused by the shared Fleet check (step 1): this backend never advertises
   the `pool` Operator Capability.
 
+## The derived image
+
+The instance Dockerfile implements upstream's "External builders: the Agent
+Forge sequence" (`docs/ops/workflow-configuration.md` at the documented
+ref, `v0.4.0` / `2626351`), the same sequence upstream's `deployment` build
+target performs:
+
+1. **Assembly.** The image builds `FROM` the `deployment` target output,
+   which already carries the toolchains and the generated Supported
+   Toolchain Matrix. It bakes the instance's `workflow/` package —
+   `workflow.yml`, `prompts/` and the reviewed `skill-policy.json` — over
+   the reference package at `/etc/coding-agent`. The prompts directory is
+   replaced wholesale, not merged: the reference package ships
+   `review-policy.md` beside `implement-policy.md`, while the instance ships
+   `implement-policy.md` and `handoff.md`.
+2. **Preparation.** As the runtime user (`agent`) with no Worker GitHub or
+   model secret set: `agent config validate`, then
+   `agent prepare-skill-bundle --mode install --config
+   /etc/coding-agent/workflow.yml --policy
+   /etc/coding-agent/skill-policy.json --bundle-dir
+   /opt/coding-agent/skill-bundle --home /home/agent`. Preparation starts
+   from empty bundle and store directories (the inherited generated records
+   and the inherited managed store are removed first): upstream's own
+   `deployment` stage only ever prepares onto fresh directories, so the
+   derived build reproduces those conditions rather than relying on
+   re-preparation over the reference install. Toolchains and matrix are
+   untouched.
+3. **Final-root verification.** `agent verify-skill-bundle --config …
+   --policy … --bundle-dir … --home …` runs after the last relevant `COPY`,
+   so the build — not startup — fails on a byte-edited copy or a declared
+   member the install cannot provide.
+4. **The rendered `run` invocation.** The `worker` starts with the upstream
+   rendered form:
+   `agent run --config /etc/coding-agent/workflow.yml --workflow
+   ${WORKFLOW:-implement} --state-dir /var/lib/coding-agent
+   --toolchain-matrix /opt/coding-agent/toolchain-matrix.json --policy
+   /etc/coding-agent/skill-policy.json --bundle-dir
+   /opt/coding-agent/skill-bundle --skill-home /home/agent`.
+   The legacy `--skills-home` / `--skill-bundle-dir` options are gone: v3
+   exits 2 on them.
+
+Because the package is baked into the image, **any edit under `workflow/`
+needs `docker compose build` before the container is recreated** — the same
+rule as a profile change for simple-coding-agent. `CODING_AGENT_REF` keeps
+its meaning: change it and rebuild to switch agent code.
+
 ## Workflow Configuration
 
 A `workflow/` directory in the instance holds `workflow.yml` (a `version: 3`
 Workflow Configuration), the prompt files it names, and the reviewed
-`skill-policy.json`, mounted read-only at `/etc/coding-agent`:
+`skill-policy.json`, baked into the derived image at `/etc/coding-agent`:
 
 - `version: 3` is the only accepted format since coding-agent 0.3.0: a
   `version: 2` file is refused with a migration diagnostic before any Claim
@@ -108,9 +172,11 @@ Workflow Configuration), the prompt files it names, and the reviewed
   checkout's `docker/deployment/` into the instance's `workflow/`; Forge
   keeps no copy of its own. The skill never writes or approves policy
   entries: a different bundle membership or source ref means the operator
-  re-reviews the policy first. (`config validate` passes even when the
-  policy file is missing, so validation does not prove the copy happened —
-  check the file is there and byte-identical separately.)
+  re-reviews the policy first. (Secret-free `config validate` passes even
+  when the policy file is missing, but the derived-image build does not:
+  `prepare-skill-bundle --mode install` and the final-root
+  `verify-skill-bundle` fail the build on a missing or mismatched policy —
+  still check the file is there and byte-identical when scaffolding.)
 - One `implement` Workflow with its Selection Label and Attempt Ceiling
   (all four meters: `cost-usd`, `tokens`, `tool-calls`,
   `wall-clock-minutes`). The Work Pool is the ceiling minus the reserved
@@ -155,12 +221,13 @@ are the Worker's only cost authority.
 
 There is no Forge-owned profile for this backend: the Target Repository's
 own Project Profile, read at the Base Revision, stays the only profile. No
-`simple-coding-agent-profile.yml` is written, no Dockerfile `STACK` block is
-rendered, and nothing is baked into the image under
-`/opt/agent-profile/` — the repository-owned profile is the only profile,
-and the Worker pins it at Claim time. At scaffolding time, run both checks
-below against the target checkout and report before writing anything. When
-both pass, scaffold without further prompts; when either fails, ask the
+`simple-coding-agent-profile.yml` is written and no Dockerfile `STACK` block
+is rendered — what the derived image bakes instead is the instance's
+`workflow/` package with its prepared Skill Bundle (see "The derived
+image"), never a Forge-owned profile — and the Worker pins the
+repository-owned profile at Claim time. At scaffolding time, run both
+checks below against the target checkout and report before writing anything.
+When both pass, scaffold without further prompts; when either fails, ask the
 operator (AskUserQuestion) and continue only on an explicit decision to
 proceed.
 
@@ -226,23 +293,31 @@ Run in the instance directory, in this order, and report which passed and
 which remain unverified:
 
 1. `docker compose config -q` (with no secret set).
-2. Secret-free `config validate` through the `agent` one-off seat, with no
-   secrets set (neither the token variable the YAML names nor the model's
-   key variable is needed — validation is static):
+2. `docker compose build` (with no secret set). The derived-image build
+   runs, as the runtime user, `agent config validate`, then
+   `agent prepare-skill-bundle --mode install`, then `agent
+   verify-skill-bundle` against the final roots — and fails when any of
+   them fails (a byte-edited prompt or an undeclared skill fails here, the
+   same refusal `run` would raise at startup). The build needs network
+   access for the skill install; it needs no Worker GitHub or model secret.
+3. Secret-free `config validate` through the built `agent` one-off seat,
+   with no secrets set (neither the token variable the YAML names nor the
+   model's key variable is needed — validation is static):
 
    ```bash
-   docker compose run --rm -v ./workflow:/etc/coding-agent:ro agent config validate \
+   docker compose run --rm agent config validate \
      --config /etc/coding-agent/workflow.yml --workflow implement
    ```
 
-   Offline and static: no Attempt is opened and no value is printed.
-3. `startup-check --repo` with the instance's token (non-mutating, no write
+   Offline and static: no Attempt is opened and no value is printed. No
+   mount is needed: the package the build verified is baked into the image.
+4. `startup-check --repo` with the instance's token (non-mutating, no write
    performed):
 
    ```bash
    docker compose run --rm agent startup-check --repo <owner>/<repo> --token-env GITHUB_TOKEN
    ```
-4. The existing token write-scope check (step 6 of the skill): the
+5. The existing token write-scope check (step 6 of the skill): the
    fine-grained PAT must hold write access to contents, pull requests and
    issues of the Target Repository (empty-body write probes, `422` on all
    three).
@@ -260,9 +335,13 @@ TARGET_PROJECT=<checkout> docker compose run --rm validate [--skip-bootstrap] [-
 
 ## Readiness
 
-Start only the worker (`docker compose up -d worker`: `agent` exits at once
-and `validate` needs `TARGET_PROJECT`). Once the operator starts it, the
-creation report carries, for the Managed Instance `<short-name>`:
+Build first, then start only the worker (`docker compose up --build -d
+worker`: `agent` exits at once and `validate` needs `TARGET_PROJECT`).
+Any edit under `workflow/` needs `docker compose build` before the
+container is recreated — the package is baked into the image, so a
+recreated container without a rebuild keeps running the old package. Once
+the operator starts it, the creation report carries, for the Managed
+Instance `<short-name>`:
 
 ```bash
 DOCKER_CONTEXT=<ctx> agentfleet identity <short-name>
