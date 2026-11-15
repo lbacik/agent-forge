@@ -417,8 +417,10 @@ check_coding_agent_instance() {
   # anchor carries cpus / mem_limit / pids_limit, so all three services
   # inherit them. Compose normalises mem_limit to bytes (3g -> 3221225472),
   # so assert the normalised form, not the literal `3g`.
+  # Count service-level keys only (four-space indent): the model also keeps
+  # the top-level `x-agent` extension, unnormalised, with its own copies.
   for limit_key in 'cpus:' 'mem_limit:' 'pids_limit:'; do
-    limit_count=$(printf '%s\n' "$config_output" | grep -cF -- "$limit_key" || true)
+    limit_count=$(printf '%s\n' "$config_output" | grep -c -- "^    $limit_key" || true)
     if [ "$limit_count" != 3 ]; then
       fail "$label: want $limit_key on all three services, found $limit_count"
     fi
