@@ -47,7 +47,9 @@ configuration separately if needed.
 
 A `coding-agent` instance holds a different layout: `compose.yaml` (the
 labelled `worker` plus the unlabelled `agent` and `validate` one-off seats),
-`workflow/workflow.yml` with its `workflow/prompts/*.md` prompt files,
+`workflow/workflow.yml` (a `version: 3` Workflow Configuration with a
+`skills:` block) with its `workflow/prompts/*.md` prompt files and reviewed
+`workflow/skill-policy.json`,
 `.env`/`.env.example` — and no `Dockerfile`, no repository profile, no
 `compose.litellm.yaml` and no `.env.worker-<n>` (exactly one Worker per Target
 Repository, so Pools never apply; see the

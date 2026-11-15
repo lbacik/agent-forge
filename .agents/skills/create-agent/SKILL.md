@@ -38,6 +38,7 @@ backend chosen in step 0:
 | `simple-coding-agent-profile.yml` | simple-coding-agent only: written from the target repo's CI |
 | `workflow/workflow.yml` | coding-agent only: `assets/workflow.coding-agent.yml.template` |
 | `workflow/prompts/*.md` | coding-agent only: copied from the `CODING_AGENT_REF` checkout |
+| `workflow/skill-policy.json` | coding-agent only: copied verbatim from the `CODING_AGENT_REF` checkout's `docker/deployment/` |
 | `.env.example` | `assets/env.example.template` (simple-coding-agent) or `assets/env.coding-agent.example.template` (coding-agent) |
 | `.env` | same as `.env.example` + real secrets (ignored with all of `agent-instances/`) |
 | `agent-entrypoint.sh` | only for the bundled-services shape (simple-coding-agent only) |
@@ -326,16 +327,31 @@ Shallow-clone that same ref into the scratchpad and read, at that commit:
   (`provider`, `model`, `endpoint`) pins and their prices. Only a pair from
   that table (Anthropic and OpenAI at the documented ref) may go into the
   Workflow Configuration; anything else refuses startup.
-- `docs/ops/workflow-configuration.md` and `examples/workflows.yaml` (or
-  their equivalents at the ref) — the `version: 2` file shape and the
-  `implement` chain the template mirrors.
+- `docs/ops/workflow-configuration.md` and `docker/deployment/workflow.yml`
+  (or their equivalents at the ref) — the `version: 3` file shape the
+  template mirrors: `version: 3`, the `skills:` Skill Bundle declaration,
+  and the reviewed `skill-policy.json` beside the YAML. The template keeps
+  the Forge step graph (`preflight → process → validate → self-review →
+  push → open-pr`, plus `explain-blocked`, the reserved `ai-handoff` and
+  `hard-handoff`); do not adopt the reference's smaller `implement` graph
+  or its `review` workflow.
+- `docker/deployment/skill-policy.json` (or its equivalent at the ref) —
+  the reviewed policy for the reference Skill Bundle selection. Copy it
+  verbatim into the instance's `workflow/` (step 5); Forge keeps no copy of
+  its own. The skill never writes or approves policy entries: a different
+  bundle membership or source ref means the operator re-reviews the policy
+  first.
+- Every prompt file the rendered Workflow Configuration names: at the
+  documented ref that is `docker/deployment/prompts/implement-policy.md`
+  and `examples/prompts/handoff.md` (`handoff.md` lives only under
+  `examples/prompts/` at the ref) — copy each verbatim into the instance's
+  `workflow/prompts/` (step 5), recording the source path per file. They
+  carry no placeholders. `config validate` stats every named prompt file,
+  so a named file must exist next to `workflow.yml`.
 - `src/coding_agent/agentctl.py` (the contract CLI) — whether it documents
   a private-IPC socket directory needing the worker's operator tmpfs, and
   which Operator Capabilities the Worker advertises. If the ref documents no
   such directory, drop that tmpfs entry from the rendered `compose.yaml`.
-- `examples/prompts/implement-policy.md` and `examples/prompts/handoff.md`
-  (or their equivalents at the ref) — copy both verbatim into the
-  instance's `workflow/prompts/` (step 5). They carry no placeholders.
 
 Then run the target checkout checks in `references/coding-agent.md` ("Target
 checkout checks") against the step-2 checkout at its default branch (the
@@ -391,10 +407,32 @@ For `coding-agent`, generate the deployment from
 `coding-agent:<short-name>`; the `build.context` URL reads the ref from
 `CODING_AGENT_REF` in `.env` — nothing to fill in here), `workflow/workflow.yml`
 from `assets/workflow.coding-agent.yml.template` with the prompt files copied
-from the ref checkout (step 3b), and `.env`/`.env.example` from
+from the ref checkout (step 3b) and `workflow/skill-policy.json` copied
+verbatim from the ref checkout's `docker/deployment/`, and
+`.env`/`.env.example` from
 `assets/env.coding-agent.example.template` with the real secrets. No
 `{{...}}` or prompt-file gap may remain: every prompt the YAML names must
-exist next to it. The rest of this step is simple-coding-agent only.
+exist next to it, and the policy file must be byte-identical to the one at
+the ref. The rest of this step is simple-coding-agent only.
+
+On the `coding-agent` path, fill the template's placeholders from the
+operator's choices: the Target Repository, its default branch, the Selection
+Label, the model pin with its confirmed prices, the Attempt Ceiling (all four
+meters), and the two non-reserved Step Allowances (`{{PROCESS_LIMIT_COST_USD}}`
+default 12, `{{SELF_REVIEW_LIMIT_COST_USD}}` default 3; each is shared by all
+executions of its step). Then check the Work Pool fit before writing
+anything: the Work Pool is the Attempt Ceiling minus the reserved
+`ai-handoff` allowance (`cost-usd: 1`, `tokens: 150000`, `tool-calls: 30`,
+`wall-clock-minutes: 5`), per meter, and every non-reserved Step Allowance
+must fit in it on every meter it sets — otherwise `config validate` refuses
+the file. When an allowance does not fit (or the ceiling is not larger than
+the reserve on some meter), stop before writing the Workflow Configuration,
+name each step with its allowance and the Work Pool, and ask the operator for
+new allowances or a higher ceiling; never scale or clamp allowances by
+yourself, and never change the `ai-handoff` reserve. A different Skill Bundle
+membership or source ref than the template's default means the operator
+re-reviews `skill-policy.json` first (the skill never approves a policy
+itself).
 
 **Dockerfile** — start from `assets/Dockerfile.template`. Replace the
 placeholders, and put the target's toolchain in the `STACK` block (language
@@ -648,8 +686,8 @@ fails body validation (`422`) — nothing is created either way. Never use
 ### 7. Validate
 
 For `coding-agent`, validate as `references/coding-agent.md` ("Validation")
-says — `docker compose config -q`, `config validate` through the `agent`
-seat with the named variables set, `startup-check --repo` with the
+says — `docker compose config -q`, secret-free `config validate` through the
+`agent` seat (no secrets set), `startup-check --repo` with the
 instance's token, the token write-scope check of step 6, and the optional
 `validate` run against a target checkout — and report which passed and which
 remain unverified. The rest of this step is simple-coding-agent only.

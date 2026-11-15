@@ -5,9 +5,9 @@ Terms are defined in `CONTEXT.md` (Instance, Worker, Worker identity) and in
 the operator contract glossary (Managed Instance, Fleet, Target Repository,
 Operator Capability, Status Snapshot).
 
-Source facts below were read at coding-agent `9a13c34` unless noted; the skill
-re-checks the HOWTOs against the chosen `CODING_AGENT_REF` clone (step 3b)
-before scaffolding.
+Source facts below were read at coding-agent `v0.4.0` (`2626351`) unless
+noted; the skill re-checks the HOWTOs against the chosen `CODING_AGENT_REF`
+clone (step 3b) before scaffolding.
 
 ## What this adapter renders
 
@@ -18,8 +18,9 @@ Dockerfile, no stack block, no Forge-owned profile:
 | File | Source |
 |---|---|
 | `compose.yaml` | `assets/compose.coding-agent.yaml.template` |
-| `workflow/workflow.yml` | `assets/workflow.coding-agent.yml.template` |
+| `workflow/workflow.yml` | `assets/workflow.coding-agent.yml.template` (`version: 3`, with a `skills:` block) |
 | `workflow/prompts/*.md` | copied from the `CODING_AGENT_REF` checkout (see step 3b) |
+| `workflow/skill-policy.json` | copied verbatim from the `CODING_AGENT_REF` checkout's `docker/deployment/` (see step 3b) |
 | `.env.example` | `assets/env.coding-agent.example.template` |
 | `.env` | same as `.env.example` + real secrets (ignored with all of `agent-instances/`) |
 
@@ -66,8 +67,14 @@ or added, update every reference that names it (`grep -rn` the old name).
 
 ## Workflow Configuration
 
-A `workflow/` directory in the instance holds `workflow.yml` (and the prompt
-files it names), mounted read-only at `/etc/coding-agent`:
+A `workflow/` directory in the instance holds `workflow.yml` (a `version: 3`
+Workflow Configuration), the prompt files it names, and the reviewed
+`skill-policy.json`, mounted read-only at `/etc/coding-agent`:
+
+- `version: 3` is the only accepted format since coding-agent 0.3.0: a
+  `version: 2` file is refused with a migration diagnostic before any Claim
+  (see `docs/ops/v3-breaking-change-notice.md` at the ref). Point the editor
+  `$schema` at `schemas/workflow-v3.schema.json`.
 
 - `target.repository` is the Target Repository, `target.base_branch` its
   default branch. Read the default branch from the target checkout or
@@ -75,28 +82,57 @@ files it names), mounted read-only at `/etc/coding-agent`:
 - `target.token_env` and each model's `api-key-env` name environment
   variables only; values live only in `.env`. `config validate` refuses a
   value that looks like a secret where a name belongs.
-- One `implement` Workflow with its Selection Label and limits (all four
-  meters: `cost-usd`, `tokens`, `tool-calls`, `wall-clock-minutes`). The
-  steps mirror coding-agent's own `examples/workflows.yaml` `implement`
-  chain at the ref; re-check them against the `CODING_AGENT_REF` clone when
-  it moves.
+- `skills:` declares the Skill Bundle membership: the reference
+  deployment's selection (`docker/deployment/workflow.yml` at the ref —
+  `git+https://github.com/mattpocock/skills.git` at
+  `3cca18b368ae95cdbdebbff572ccafa662551015` with `include: [implement,
+  tdd, code-review, codebase-design]`). There is no implicit bundle: a
+  missing `skills` field means an empty bundle, every static `skill:`
+  reference must name a declared member, and every member needs a reviewed
+  entry in `skill-policy.json`. The template keeps the Forge step graph
+  (`preflight → process → validate → self-review → push → open-pr`, plus
+  `explain-blocked`, the reserved `ai-handoff` and `hard-handoff`); it does
+  not adopt the reference's smaller `implement` graph or its `review`
+  workflow.
+- `skill-policy.json` is copied verbatim from the `CODING_AGENT_REF`
+  checkout's `docker/deployment/` into the instance's `workflow/`; Forge
+  keeps no copy of its own. The skill never writes or approves policy
+  entries: a different bundle membership or source ref means the operator
+  re-reviews the policy first. (`config validate` passes even when the
+  policy file is missing, so validation does not prove the copy happened —
+  check the file is there and byte-identical separately.)
+- One `implement` Workflow with its Selection Label and Attempt Ceiling
+  (all four meters: `cost-usd`, `tokens`, `tool-calls`,
+  `wall-clock-minutes`). The Work Pool is the ceiling minus the reserved
+  `ai-handoff` allowance (`cost-usd: 1`, `tokens: 150000`, `tool-calls: 30`,
+  `wall-clock-minutes: 5`), per meter, and every non-reserved Step
+  Allowance (`process`, `self-review`) must fit in it on every meter it
+  sets — otherwise `config validate` refuses the file (for example, a 5 USD
+  ceiling leaves a 4 USD Work Pool that the default 12 USD `process`
+  allowance does not fit). When an allowance does not fit, or the ceiling is
+  not larger than the reserve on some meter, the skill stops before writing
+  the Workflow Configuration, names each step with its allowance and the
+  Work Pool, and asks the operator for new allowances or a higher ceiling;
+  it never scales or clamps allowances itself, and the reserve stays as is.
 - **Selection Label.** Suggest `agent:implement`. Reject a label that breaks
   coding-agent's rules and ask for another: `ready-for-human`, `wontfix` or
   any `wayfinder:*` label (contract W-CFG-12; an input carrying `wontfix` or
   `wayfinder:*` is never claimed, P-SEL-4). `config validate` additionally
   refuses a Selection Label that also appears in the same Workflow's filters
   or as an end label of any Workflow in the file.
-- The prompt files the steps name (`prompts/implement-policy.md`,
-  `prompts/handoff.md`) are copied verbatim from the `CODING_AGENT_REF`
-  checkout (step 3b): `config validate` stats every prompt file, so a named
-  file must exist next to `workflow.yml`. No `{{...}}` may remain in any
-  rendered file.
+- The prompt files the steps name (`prompts/implement-policy.md` from
+  `docker/deployment/prompts/`, `prompts/handoff.md` from
+  `examples/prompts/` — `handoff.md` lives only there at the documented ref)
+  are copied verbatim from the `CODING_AGENT_REF` checkout (step 3b),
+  recording the source path per file: `config validate` stats every prompt
+  file, so a named file must exist next to `workflow.yml`. No `{{...}}` may
+  remain in any rendered file.
 
 ## Model
 
 Model and provider are chosen within the providers coding-agent's Workflow
-Configuration supports at the ref — Anthropic and OpenAI at `9a13c34`
-(`anthropic / claude-sonnet-5 / messages`,
+Configuration supports at the ref — Anthropic and OpenAI at the documented
+ref (`anthropic / claude-sonnet-5 / messages`,
 `openai / gpt-5.6-luna / responses`); any other pair refuses startup. The
 model-backend reference (Meta, LiteLLM) is simple-coding-agent only and does
 not apply here: there is no gateway pin and no Meta route for this backend.
@@ -180,9 +216,9 @@ Run in the instance directory, in this order, and report which passed and
 which remain unverified:
 
 1. `docker compose config -q` (with no secret set).
-2. `config validate` through the `agent` one-off seat, with the token
-   variable the YAML names and the model's key variable set (they reach the
-   container from `.env`):
+2. Secret-free `config validate` through the `agent` one-off seat, with no
+   secrets set (neither the token variable the YAML names nor the model's
+   key variable is needed — validation is static):
 
    ```bash
    docker compose run --rm -v ./workflow:/etc/coding-agent:ro agent config validate \

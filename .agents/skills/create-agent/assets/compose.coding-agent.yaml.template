@@ -70,8 +70,7 @@ services:
   #   docker compose run --rm -v ./workflow:/etc/coding-agent:ro agent config validate \
   #     --config /etc/coding-agent/workflow.yml --workflow implement
   #
-  # with the token variable the YAML's `target.token-env` names and the
-  # model's `api-key-env` set in the environment. Never labelled: one-off
+  # with no secrets set: `config validate` is static. Never labelled: one-off
   # containers are never Managed Instances.
   agent:
     <<: *agent
@@ -109,7 +108,7 @@ services:
     command: []
 
   # The Worker (step-workflow contract §4): `agent run` against the
-  # operator's `version: 2` Workflow Configuration in the instance's
+  # operator's `version: 3` Workflow Configuration in the instance's
   # `workflow/` directory. It selects, claims and runs the selected
   # Workflow's inputs one Attempt at a time until it halts.
   #

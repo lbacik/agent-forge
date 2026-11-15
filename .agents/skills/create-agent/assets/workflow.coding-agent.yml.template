@@ -1,13 +1,23 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/lbacik/coding-agent/main/schemas/workflow-v2.schema.json
-# Workflow Configuration (`version: 2`) for the coding-agent instance
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lbacik/coding-agent/main/schemas/workflow-v3.schema.json
+# Workflow Configuration (`version: 3`) for the coding-agent instance
 # dedicated to {{OWNER}}/{{REPO}}: one `implement` Workflow (issue in, pull
 # request out). Rendered by the create-agent skill from this template; the
 # operator guide is coding-agent's docs/ops/workflow-configuration.md, and
 # the step-workflow runtime contract is the authority. Validate edits with
 #   docker compose run --rm -v ./workflow:/etc/coding-agent:ro agent config validate \
 #     --config /etc/coding-agent/workflow.yml --workflow implement
-# with the token variable `target.token-env` names and the model's
-# `api-key-env` set in the environment (contract §3: still required).
+# with no secrets set: `config validate` is static, it checks the whole file
+# without opening an Attempt or writing to GitHub.
+#
+# `version: 2` files are refused with a migration diagnostic (coding-agent
+# 0.3.0 made `version: 3` the only accepted format): keep `version: 3` and
+# the `skills:` block below. A missing `skills` field means an empty bundle,
+# so every static `skill:` reference below names a declared member, and every
+# member needs a reviewed entry in the workflow directory's
+# `skill-policy.json` (copied verbatim from the CODING_AGENT_REF checkout's
+# `docker/deployment/skill-policy.json`; the skill never writes or approves
+# policy entries, and a changed membership or source ref means the operator
+# re-reviews the policy first).
 #
 # One Worker runs one Workflow. Editing this file affects the next Attempt,
 # never one already open. Values that are credentials never appear here:
@@ -15,7 +25,7 @@
 # variables only; the values live in `.env`. A value that looks like a
 # secret where a name belongs fails validation.
 
-version: 2
+version: 3
 
 target:
   kind: github
@@ -45,6 +55,18 @@ models:
     effort: medium
     api-key-env: {{API_KEY_ENV}}
     prices-usd-per-mtok: {input: {{PRICE_INPUT}}, output: {{PRICE_OUTPUT}}, cache-read: {{PRICE_CACHE_READ}}, cache-write: {{PRICE_CACHE_WRITE}}}
+
+# Skill Bundle membership: the reference deployment's selection
+# (coding-agent's `docker/deployment/workflow.yml` at CODING_AGENT_REF):
+# the four established upstream skills at one recorded commit. The skill
+# copies the matching reviewed `skill-policy.json` verbatim from the same
+# checkout (`docker/deployment/skill-policy.json`) into the instance's
+# `workflow/` directory beside this file. A different membership or source
+# ref means the operator re-reviews the policy first.
+skills:
+  - source: git+https://github.com/mattpocock/skills.git
+    ref: 3cca18b368ae95cdbdebbff572ccafa662551015
+    include: [implement, tdd, code-review, codebase-design]
 
 worker:
   poll-interval-seconds: 60             # idle sleep between sweeps (spends the owner's rate limit)
@@ -108,7 +130,10 @@ workflows:
             blocked:
               reason: document
         max-executions: 3
-        limits: {cost-usd: 12}                      # Step Allowance, shared by all three executions
+        # Step Allowance, shared by all three executions: must fit in the Work
+        # Pool (Attempt Ceiling minus the `ai-handoff` reserve, per meter), or
+        # validation refuses it.
+        limits: {cost-usd: {{PROCESS_LIMIT_COST_USD}}}
         routes:
           done: validate
           blocked: explain-blocked
@@ -133,7 +158,8 @@ workflows:
             changes-needed:
               findings: document
         max-executions: 2
-        limits: {cost-usd: 3}
+        # Step Allowance: must fit in the Work Pool (see `process` above).
+        limits: {cost-usd: {{SELF_REVIEW_LIMIT_COST_USD}}}
         routes:
           approved: push
           changes-needed: process
@@ -173,7 +199,12 @@ workflows:
             handoff:
               note: document
         # Reserved Step: a complete allowance carved out of the Attempt Ceiling, so
-        # Work Pool = 19 USD / 3,850,000 tokens / 570 tool calls / 55 minutes.
+        # the Work Pool (ceiling minus this reserve, per meter) is smaller than
+        # the ceiling on every meter. Every non-reserved Step Allowance
+        # (`process`, `self-review`) must fit in that Work Pool, or validation
+        # refuses it: the skill checks the fit before writing this file and asks
+        # the operator for new allowances or a higher ceiling instead of scaling
+        # them itself.
         reserved: true
         limits: {cost-usd: 1, tokens: 150000, tool-calls: 30, wall-clock-minutes: 5}
         routes:
