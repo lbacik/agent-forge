@@ -422,16 +422,27 @@ operator's choices: the Target Repository, its default branch, the Selection
 Label, the model pin with its confirmed prices, the Attempt Ceiling (all four
 meters), and the two non-reserved Step Allowances (`{{PROCESS_LIMIT_COST_USD}}`
 default 12, `{{SELF_REVIEW_LIMIT_COST_USD}}` default 3; each is shared by all
-executions of its step). Then check the Work Pool fit before writing
-anything: the Work Pool is the Attempt Ceiling minus the reserved
+executions of its step). The mapping of every simple-coding-agent `.env`
+budget, turn, timeout and retry key to its coding-agent counterpart lives in
+`references/coding-agent.md` ("Limits: where simple-coding-agent's settings
+went"): point the operator there when they look for a missing `.env` key, and
+keep budgets out of `.env` — the Effective Configuration digest stays the only
+budget authority. When asking the operator for the Attempt Ceiling, first show
+the resulting Work Pool per meter — the ceiling minus the reserved
 `ai-handoff` allowance (`cost-usd: 1`, `tokens: 150000`, `tool-calls: 30`,
-`wall-clock-minutes: 5`), per meter, and every non-reserved Step Allowance
-must fit in it on every meter it sets — otherwise `config validate` refuses
-the file. When an allowance does not fit (or the ceiling is not larger than
-the reserve on some meter), stop before writing the Workflow Configuration,
-name each step with its allowance and the Work Pool, and ask the operator for
-new allowances or a higher ceiling; never scale or clamp allowances by
-yourself, and never change the `ai-handoff` reserve. A different Skill Bundle
+`wall-clock-minutes: 5`), computed separately for each of the four meters —
+and list the non-reserved Step Allowances that must fit inside it (`process`,
+`self-review`), so the operator sees up front whether the ceiling leaves room
+(for example, a 5 USD ceiling leaves a 4 USD Work Pool on the cost meter that
+the default 12 USD `process` allowance does not fit). Then check the Work Pool
+fit before writing anything: the Work Pool is the Attempt Ceiling minus the
+reserved `ai-handoff` allowance, per meter, and every non-reserved Step
+Allowance must fit in it on every meter it sets — otherwise
+`config validate` refuses the file. When an allowance does not fit (or the
+ceiling is not larger than the reserve on some meter), stop before writing the
+Workflow Configuration, name each step with its allowance and the Work Pool,
+and ask the operator for new allowances or a higher ceiling; never scale or
+clamp allowances by yourself, and never change the `ai-handoff` reserve. A different Skill Bundle
 membership or source ref than the template's default means the operator
 re-reviews `skill-policy.json` first (the skill never approves a policy
 itself).
