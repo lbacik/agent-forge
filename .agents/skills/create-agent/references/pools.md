@@ -1,6 +1,7 @@
 # Pools of N Workers (simple-coding-agent only)
 
 Read this when an Instance gets N>=2 Workers, shares its Worker identity with
+another Instance, joins a contract Pool on the same Target Repository from
 another Instance, or has a Worker with its own Worker identity. The rules
 every Instance needs are in SKILL.md, "Pools"; terms are defined in
 `CONTEXT.md`. The coding-agent adapter never renders a Pool — exactly one
@@ -39,7 +40,11 @@ through Compose `labels:` only, never as an image `LABEL`, so one-off
 containers stay unlabelled.
 A Pool of N ≥ 2 Workers on the contract path requires `pool` in the
 `identity.capabilities` the running instance reports; without it the backend
-cannot run a Pool here. No backend advertises `pool` yet.
+cannot run a Pool here. From `v0.9.0`, `simple-coding-agent` advertises
+`pool` exactly when a Worker id (`WORKER_ID`) is set — a declaration-only
+capability: every Worker of a contract Pool has a Worker id, whatever its
+Worker identity. `coding-agent` does not advertise `pool`, so it never shares
+a Target Repository.
 
 ## Hard rule and the order to N>=2
 
@@ -52,7 +57,14 @@ are in `.agents/skills/manage-pool/references/first-pool-on-a-login.md`.
 A new Instance with N>=2 on an identity nobody else uses starts all Workers
 together, so its first start is the "upgrade all at once" step. A new
 Instance on an identity another Instance already uses waits until that
-Instance has been drained and upgraded. `create-agent` never changes
+Instance has been drained and upgraded. A new Instance joining a contract
+Pool from another Instance follows the same order across Instances: the other
+Instance must already be drained and upgraded to the same Claim protocol
+before the new one starts — even at N=1, and that sole Worker still gets a
+Worker id. Worker ids stay unique across all Workers of the contract Pool,
+across Instances. On different logins there is no shared-identity Claim
+hazard, but `PEER_LOGINS` must list every login working the Queue on both
+Instances. `create-agent` never changes
 existing instances, so tell the user what the other Instance needs; the
 `manage-pool` skill carries it out.
 

@@ -54,7 +54,8 @@ An Instance runs N Workers (default 1): one image and one profile, each Worker
 its own Compose service with its own `/data` volume. Terms are defined in
 `CONTEXT.md` (Instance, Worker, Pool, Worker identity, Worker id, Claim). Read
 `references/pools.md` when N>=2, when another Instance shares this one's
-Worker identity, or when a Worker has its own identity.
+Worker identity or targets the same repository, or when a Worker has its
+own identity.
 
 - **One context, one backend.** A Pool is one Instance, one Compose project,
   so it runs on one Docker context with one model backend
@@ -77,8 +78,12 @@ Worker identity, or when a Worker has its own identity.
 - **When a Worker id is rendered.** For every Worker that shares its Worker
   identity with another Worker: N>=2 on the shared `GITHUB_TOKEN`, or
   another Instance on the same `TARGET_REPO` that the user says acts as the
-  same login. Such a Worker's stanza sets `WORKER_ID` and the commit author
-  `Claude Code (<worker-id>)`. N=1 on an identity of its own runs without one.
+  same login. A Worker joining a contract Pool through an allowed
+  same-repository match gets one too, even as the sole Worker (N=1), whatever
+  its Worker identity. Such a Worker's stanza sets `WORKER_ID` and the commit
+  author `Claude Code (<worker-id>)`. N=1 on an identity of its own, outside
+  any contract Pool, runs without one. Worker ids stay unique across all
+  Workers of the contract Pool, across Instances.
 - **Contract discovery labels.** Every managed Worker service (`agent` and
   `agent-2..N`) carries four Compose `labels:` when `AGENT_SRC_REF` speaks
   the operator contract (its `agentctl` answers `agentctl --contract 1`):
@@ -104,7 +109,9 @@ Worker identity, or when a Worker has its own identity.
 - **Minimum upstream.** A Worker id needs `AGENT_SRC_REF` `v0.7.0` or newer
   (lbacik/simple-coding-agent#302); N>=2 on one identity needs `v0.9.0` or
   newer, the first release with the startup recovery fix of
-  lbacik/simple-coding-agent#364. Contract discovery labels need `v0.9.0` or
+  lbacik/simple-coding-agent#364. Joining a contract Pool from another
+  Instance needs `v0.9.0` or newer too — the first release advertising
+  `pool` — even at N=1. Contract discovery labels need `v0.9.0` or
   newer, the first release whose `agentctl` answers `agentctl --contract 1`
   (lbacik/simple-coding-agent#334): `main` always speaks the contract, a
   release tag `v0.9.0` or newer speaks it (semantic version comparison), a
@@ -209,24 +216,48 @@ can determine by reading the repository.
 - Refusals from the Fleet check:
   - Another instance targeting the same repository — found running or
     stopped through `agentfleet identity` (Offline Read), or as an
-    unlabelled legacy Instance through the env scan above — is refused:
-    stop and tell the user which instance holds the repository. The only
-    exception is a chosen backend that advertises the `pool` Operator
-    Capability in `identity.capabilities`: only then may two instances
-    share one Target Repository. No backend advertises `pool` yet, so every
-    same-repository clash refuses for now.
+    unlabelled legacy Instance through the env scan above — refuses the new
+    one: stop and tell the user which instance holds the repository. A
+    same-repository match is allowed only when both sides form a contract
+    Pool:
+    - every existing Managed Instance on that Target Repository on the
+      target Docker context reports `pool` in `identity.capabilities`
+      (`agentfleet identity`, including stopped ones through Offline Read),
+      **and**
+    - the new Instance will advertise `pool`: the `simple-coding-agent`
+      backend at an `AGENT_SRC_REF` that speaks the contract (`main`, a tag
+      `v0.9.0` or newer, or a branch/SHA whose checkout contains
+      `simple_coding_agent/contract_adapter.py` — the same rule as the
+      contract discovery labels; minimum upstream `v0.9.0`), with a Worker
+      id rendered for every one of its Workers.
+    Otherwise refuse as today and name the instance holding the repository.
+    An unlabelled legacy match from the `TARGET_REPO` env scan cannot report
+    capabilities, so it always refuses regardless of backend or ref. An
+    existing same-repository Instance that lacks `pool` in
+    `identity.capabilities` refuses too: tell the user to give its Workers
+    Worker ids first with the `manage-pool` skill (upgrading it to `v0.9.0`
+    or newer when needed) — `create-agent` never changes existing Instances.
+    `coding-agent` never advertises `pool`, so a same-repository clash with
+    that backend chosen always refuses.
   - A short name already present in the Fleet of the target context is
     refused even for another repository: the Managed Instance name
     (`<short-name>`, or `<short-name>-<n>` for Worker n ≥ 2) must be unique
     there. Ask for another short name.
-  - When the backend advertises `pool` and the same-repository instance is
-    allowed, fall through to the shared-login question: for each match, ask
+  - When a same-repository match is allowed through `pool` above, fall
+    through to the shared-login question: for each matching Instance, ask
     the user whether that Instance's `GITHUB_TOKEN` acts as the same GitHub
-    login as this one's. Never compare or print the tokens. A shared Worker
-    identity means a Worker id for every Worker here, and
-    `references/pools.md` ("Hard rule and the order to N>=2") applies to the
-    other Instance too. While no backend advertises `pool`, this question
-    only matters for N>=2 Workers sharing this Instance's own login.
+    login as this one's. Never compare or print the tokens.
+    - Same login: the Pools reference's "Hard rule and the order to N>=2"
+      applies across Instances — the other Instance must already be drained
+      and upgraded to the same Claim protocol before the new one starts.
+      Tell the user what the other Instance needs; `manage-pool` carries it
+      out.
+    - Different logins: there is no shared-identity Claim hazard, but
+      `PEER_LOGINS` must list every login working the Queue on both
+      Instances. Ask before setting it, and tell the user the other Instance
+      needs the same list.
+    N stays 1 unless the user asks for more, also when the new Instance
+    joins a contract Pool — and that single Worker still gets a Worker id.
 - Engine ref (which commit the image builds from) defaults to `main`. If the
   user names a tag — e.g. "build it against tag v1.4.0" — use that instead;
   see step 3. It's not a one-time choice: it lands in `.env` as an ordinary
