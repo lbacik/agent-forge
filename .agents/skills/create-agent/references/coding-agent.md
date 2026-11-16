@@ -335,10 +335,11 @@ The model's key variable reaches only the `worker` service: on a direct pin
 `LITELLM_PROXY_API_KEY` — whichever the Workflow Configuration names in
 `models.<id>.api-key-env` (see the conditional lines in
 `assets/compose.coding-agent.yaml.template`). It is never added to the
-`agent` or `validate` seats' explicit environment. (The shared
-`env_file: .env` already exposes `.env` to every service, and secret-free
-`config validate` through the `agent` seat depends on that: "worker only"
-means the explicit `environment:` mappings.) The key is set, commented and
+`agent` or `validate` seats' environment, and the template sets no
+`env_file:` (as in upstream's `compose.yaml`), which would copy every `.env`
+key into every seat. `.env` still feeds Compose interpolation; secret-free
+`config validate` needs no environment and `startup-check` needs only
+`GITHUB_TOKEN`, which the shared anchor passes explicitly. The key is set, commented and
 documented next to the other model keys in
 `assets/env.coding-agent.example.template`.
 

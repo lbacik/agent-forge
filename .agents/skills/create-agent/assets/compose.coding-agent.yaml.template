@@ -56,15 +56,17 @@
 # Everything the derived services share. Each merges it with `<<: *agent`.
 x-agent: &agent
   # Runtime settings for the container. Values come from the shell or from
-  # the .env compose reads beside this file. GITHUB_TOKEN is the default the
-  # CLI looks for; SANDBOX_TOKEN is passed through so a sandbox credential
-  # can be selected with `--token-env SANDBOX_TOKEN` rather than copied
-  # under a second name. The model's key variable (ANTHROPIC_API_KEY or
-  # OPENAI_API_KEY on a direct pin, LITELLM_PROXY_API_KEY on a gateway pin —
-  # whichever the Workflow Configuration names in
-  # `models.<id>.api-key-env`) reaches only the worker below.
-  env_file:
-    - .env
+  # the .env compose reads beside this file for interpolation. GITHUB_TOKEN
+  # is the default the CLI looks for; SANDBOX_TOKEN is passed through so a
+  # sandbox credential can be selected with `--token-env SANDBOX_TOKEN`
+  # rather than copied under a second name. The model's key variable
+  # (ANTHROPIC_API_KEY or OPENAI_API_KEY on a direct pin,
+  # LITELLM_PROXY_API_KEY on a gateway pin — whichever the Workflow
+  # Configuration names in `models.<id>.api-key-env`) reaches only the
+  # worker below. There is deliberately no `env_file:` (as in upstream's
+  # compose.yaml): it would copy every .env key, the model key included,
+  # into the `agent` and `validate` seats too. Secret-free `config validate`
+  # needs no environment, and `startup-check` needs only GITHUB_TOKEN.
   build:
     context: .
     dockerfile: Dockerfile

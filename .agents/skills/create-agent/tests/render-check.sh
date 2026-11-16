@@ -602,6 +602,14 @@ check_coding_agent_instance() {
       "$label: compose.yaml sets LITELLM_PROXY_API_KEY on a direct pin"
     assert_not_contains "$config_output" 'LITELLM_PROXY_API_KEY' \
       "$label: Compose model carries LITELLM_PROXY_API_KEY on a direct pin"
+    for seat in agent validate; do
+      for key in ANTHROPIC_API_KEY OPENAI_API_KEY; do
+        assert_not_contains "$(service_block "$config_output" "$seat")" "$key" \
+          "$label: $key reached the $seat seat's environment"
+      done
+    done
+    assert_contains "$(service_block "$config_output" worker)" "$PH_API_KEY_ENV" \
+      "$label: $PH_API_KEY_ENV missing from the worker's environment"
     if [ -e "$dir/compose.coding-agent.litellm.yaml" ]; then
       fail "$label: gateway overlay rendered for a direct pin"
     fi
@@ -627,10 +635,10 @@ check_coding_agent_instance() {
     assert_not_line_matches "$workflow_content" \
       '^    provider:' \
       "$label: workflow.yml gateway pin carries a provider key"
-    # The gateway key reaches the worker's explicit environment only: the
-    # shared env_file already exposes .env to every service, so whole-model
-    # greps cannot attribute it. The empty fixture value keeps the check
-    # secret-free while proving the wiring is live.
+    # The gateway key reaches the worker's environment only (the template
+    # sets no env_file, which would copy .env into every seat). Whole-model
+    # greps cannot attribute it, so check per service. The empty fixture
+    # value keeps the check secret-free while proving the wiring is live.
     worker_block=$(service_block "$config_output" worker)
     agent_block=$(service_block "$config_output" agent)
     validate_block=$(service_block "$config_output" validate)
@@ -662,11 +670,13 @@ check_coding_agent_instance() {
       "$label: gateway network missing from the Compose model"
     assert_contains "$config_output" 'external: true' \
       "$label: gateway network is not external in the Compose model"
-    assert_contains "$worker_block" 'gateway' \
+    # Match the service's `networks:` entry, not a bare word: the fixture's
+    # build context path itself contains "gateway".
+    assert_line_matches "$worker_block" '^      gateway:' \
       "$label: worker is not attached to the gateway network"
-    assert_not_contains "$agent_block" 'gateway' \
+    assert_not_line_matches "$agent_block" '^      gateway:' \
       "$label: agent seat joined the gateway network"
-    assert_not_contains "$validate_block" 'gateway' \
+    assert_not_line_matches "$validate_block" '^      gateway:' \
       "$label: validate seat joined the gateway network"
   fi
   assert_contains "$workflow_content" "label: $PH_SELECTION_LABEL" \
