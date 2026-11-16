@@ -114,9 +114,13 @@ every Managed Instance — including stopped ones through Offline Read inside
 `agentfleet` — comparing each Target Repository case-insensitively, and it
 scans legacy instances' env files for `TARGET_REPO` (file names only, never
 reading or printing tokens). Another instance already targeting the same
-repository refuses the new one unless the chosen backend advertises the
-`pool` Operator Capability (none does yet), and a short name already present
-in the Fleet refuses with a request for another name.
+repository refuses the new one unless both sides form a contract Pool: every
+existing Managed Instance on that repository on the target Docker context
+reports `pool` in `identity.capabilities` and the new Instance will advertise it
+(`simple-coding-agent` at an `AGENT_SRC_REF` speaking the contract, minimum
+`v0.9.0`, with a Worker id for every Worker; `coding-agent` never advertises
+it; an unlabelled legacy env-scan match always refuses), and a short name
+already present in the Fleet refuses with a request for another name.
 
 The skill then inspects the target repository's stack and CI, prepares its Docker
 toolchain, and writes a local profile containing dependency setup and validation

@@ -41,9 +41,9 @@
 # `validate` and `startup-check` see the same toolchains and the same baked
 # package as the Worker. `engine` is the build-only base image (never run,
 # never labelled). Exactly one Worker per Target Repository and state
-# volume: Pool rendering never applies to this backend (no backend
-# advertises the `pool` Operator Capability yet), so there is no
-# `agent-2..N` stanza here and `manage-pool` does not apply.
+# volume: Pool rendering never applies, because this backend never
+# advertises the `pool` Operator Capability, so there is no `agent-2..N`
+# stanza here and `manage-pool` does not apply.
 #
 # Hardening mirrors coding-agent's own deployment (its compose.yaml at the
 # chosen ref): read-only root filesystem with a writable /tmp on every

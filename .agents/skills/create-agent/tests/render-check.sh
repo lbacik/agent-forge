@@ -366,8 +366,10 @@ check_coding_agent_instance() {
       "$label: $service service missing from the Compose model"
   done
   # All three runtime seats share the derived image; the engine base carries
-  # its own tag and is never run.
-  derived_image_count=$(printf '%s\n' "$config_output" | grep -cF -- "image: coding-agent:$PH_SHORT_NAME" || true)
+  # its own tag and is never run. Count service-level keys only (four-space
+  # indent): the model also keeps the top-level `x-agent` extension with its
+  # own copy of the image.
+  derived_image_count=$(printf '%s\n' "$config_output" | grep -cx -- "    image: coding-agent:$PH_SHORT_NAME" || true)
   if [ "$derived_image_count" != 3 ]; then
     fail "$label: want the derived image on all three runtime seats (agent, validate, worker), found $derived_image_count"
   fi
@@ -402,6 +404,7 @@ check_coding_agent_instance() {
     "$label: worker command carries the removed --skill-bundle-dir option (v3 exits 2)"
   # WORKFLOW still selects the Workflow id through interpolation, so the
   # rendered file keeps the defaulted reference.
+  # shellcheck disable=SC2016 # the literal, unexpanded reference is the point
   assert_contains "$(cat "$dir/compose.yaml")" '${WORKFLOW:-implement}' \
     "$label: compose.yaml lost the WORKFLOW interpolation"
   assert_contains "$config_output" '/var/lib/coding-agent/operator:uid=1000,gid=1000,mode=0700' \
@@ -551,6 +554,18 @@ check_coding_agent_instance() {
     "$label: workflow.yml process Step Allowance missing"
   assert_contains "$workflow_content" "cost-usd: $PH_SELF_REVIEW_LIMIT_COST_USD" \
     "$label: workflow.yml self-review Step Allowance missing"
+  # The fixture's Step Allowances fit the Work Pool on the cost meter: the
+  # Attempt Ceiling minus the 1 USD `ai-handoff` reserve leaves room for both.
+  # This mirrors the skill's fit check (a 5 USD ceiling with the default 12
+  # USD `process` allowance must never render). The cost meter is the whole
+  # check here: the rendered steps set `limits` only on `cost-usd`, so it is
+  # the only meter an allowance sets.
+  if [ "$((PH_LIMIT_COST_USD - 1))" -lt "$PH_PROCESS_LIMIT_COST_USD" ]; then
+    fail "$label: process allowance $PH_PROCESS_LIMIT_COST_USD does not fit the $((PH_LIMIT_COST_USD - 1)) USD Work Pool"
+  fi
+  if [ "$((PH_LIMIT_COST_USD - 1))" -lt "$PH_SELF_REVIEW_LIMIT_COST_USD" ]; then
+    fail "$label: self-review allowance $PH_SELF_REVIEW_LIMIT_COST_USD does not fit the $((PH_LIMIT_COST_USD - 1)) USD Work Pool"
+  fi
   assert_not_contains "$workflow_content" 'sk-' \
     "$label: workflow.yml names a secret value, not an environment variable"
   env_content=$(cat "$dir/.env")
@@ -824,6 +839,14 @@ main() {
   if grep -qF 'AGENT_SRC_REF' "$ASSETS_DIR/env.coding-agent.example.template"; then
     fail 'env.coding-agent.example.template sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)'
   fi
+  # Budgets stay in the Workflow Configuration (the Effective Configuration
+  # digest is the only budget authority): no budget, turn, timeout or retry
+  # key may appear in the coding-agent env template.
+  for budget_pattern in 'MAX_' 'BUDGET' 'TIMEOUT' 'TURN' 'RETRY'; do
+    if grep -qF -- "$budget_pattern" "$ASSETS_DIR/env.coding-agent.example.template"; then
+      fail "env.coding-agent.example.template sets $budget_pattern (budgets stay in the Workflow Configuration)"
+    fi
+  done
   for worker_var in 'WORKER_CPUS:-1.5' 'WORKER_MEM_LIMIT:-3g' 'WORKER_PIDS_LIMIT:-1024'; do
     if ! grep -qF -- "$worker_var" "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
       fail "compose.coding-agent.yaml.template misses resource limit default \${$worker_var}"

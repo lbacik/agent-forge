@@ -204,6 +204,62 @@ Workflow Configuration), the prompt files it names, and the reviewed
   file, so a named file must exist next to `workflow.yml`. No `{{...}}` may
   remain in any rendered file.
 
+## Limits: where simple-coding-agent's settings went
+
+Read at coding-agent `v0.4.0` (`2626351`); the skill re-reads the
+code-owned rows below against the chosen `CODING_AGENT_REF` before treating
+them as current. Budgets live only in the Workflow Configuration: the
+Effective Configuration digest is the only budget authority, and neither the
+`env.coding-agent.example.template` nor any rendered `.env` gains a budget,
+turn, timeout or retry key. Each row carries one layer: **workflow** (set in
+the Workflow Configuration), **code** (a coding-agent constant, not
+configurable — never copied as configuration), **deployment** (compose),
+**n/a** (no equivalent by design).
+
+| simple-coding-agent `.env` | coding-agent | Layer |
+|---|---|---|
+| `MAX_BUDGET_USD` | Workflow `limits.cost-usd`: the Attempt Ceiling on the Workflow, the Step Allowance on a step | workflow |
+| `MAX_BUDGET_TOKENS` | `limits.tokens`. Effective tokens exclude prompt-cache reads (`src/coding_agent/runtime/ceilings.py`) | workflow |
+| `MAX_TURNS` | `limits.tool-calls`. Plus the code-owned `MAX_AGENT_ITERATIONS = 30` tool-loop backstop per Step Execution (see the caveat below) | workflow + code |
+| `SOFT_THRESHOLD_PERCENTAGE`, `HANDOFF_RESERVE_TURNS` | The Reserved Step `ai-handoff` (`reserved: true`, allowance on all four meters) | workflow |
+| `MODEL_TIMEOUT` | `limits.wall-clock-minutes` (the whole Attempt, operations included) | workflow |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` / `MAX_CONTEXT_TOKENS` | `context-threshold-tokens` / `output-cap-tokens` — gateway pins only (see below); on a direct pin the context window is code-owned. Companion backstop `MAX_HANDOFFS_PER_STEP = 5` (`src/coding_agent/runtime/context_handoff.py`) | workflow (gateway) + code (direct) |
+| `POLL_INTERVAL` | `worker.poll-interval-seconds` (default 60 s) | workflow |
+| `MODEL_STREAM_IDLE_TIMEOUT_MS` | 300 s per model request, capped by the remaining wall-clock time (`DEFAULT_CODE_OWNED_MODEL_TIMEOUT_SECONDS` in `src/coding_agent/runtime/step_limits.py`) | code |
+| `PUBLISH_TIMEOUT` | 600 s per operation command (`OPERATION_TIMEOUT_SECONDS` in `src/coding_agent/runtime/step_operations.py`; the per-command timeout in `src/coding_agent/runtime/step_limits.py` is likewise 600 s) | code |
+| `MAX_RETRIES` | Provider retry, 3 attempts (`DEFAULT_MAX_ATTEMPTS` in `src/coding_agent/provider/retry.py`); GitHub in-place retry, bounded at 3 attempts / 5 minutes (`src/coding_agent/github/errors.py`) | code |
+| `MAX_CONSECUTIVE_ERRORS` | `MAX_CONSECUTIVE_INFRASTRUCTURE_FAILURES = 3` (`src/coding_agent/worker/run.py`): that many consecutive infrastructure failures halt the Worker | code |
+| `MAX_AUTO_CONTINUATIONS` | None by design ("No Continuation across Attempts"): `unfinished` is an end label, not a resume | n/a |
+| `MAX_CONFLICT_ATTEMPTS`, `PR_AUTO_MERGE`, `PR_MERGE_METHOD` | None: the only publishing operation is `open-pull-request` (draft flag fixed `false` in the template), so there is nothing to merge automatically and no conflict requeue | n/a |
+| `WORKER_CPUS` / `WORKER_MEM_LIMIT` / `WORKER_PIDS_LIMIT` | Compose `x-agent` anchor in `assets/compose.coding-agent.yaml.template` (#103) | deployment |
+
+Every **code** value above is a constant at the stated ref, to be re-read
+when `CODING_AGENT_REF` moves — not a setting to copy anywhere.
+
+- **Gateway-only context fields.** `context-threshold-tokens` and
+  `output-cap-tokens` exist only on gateway pins (`V2ModelDecl` in
+  `src/coding_agent/workflow/v2_schema.py`; the pin policy in
+  `src/coding_agent/provider/config.py` resolves a direct pin's output cap
+  and context window from the code-owned tables). Supporting LiteLLM gateway
+  pins is #102's scope: for a direct pin — the only pin this adapter renders
+  today — the context window stays code-owned. Do not set these fields on the
+  pins the template renders.
+- **`MAX_AGENT_ITERATIONS` caveat** ([lbacik/coding-agent#427](https://github.com/lbacik/coding-agent/issues/427)).
+  Until that issue is resolved, the backstop of 30 model responses per Step
+  Execution (`MAX_AGENT_ITERATIONS` in
+  `src/coding_agent/runtime/graph/agent_step.py` — "the tool loop exceeded
+  its iteration backstop") ends the step with `error`. The template's
+  `defaults.routes` send `error` to `hard-handoff`, which commits and pushes
+  with no AI note, and the backstop can bind long before `tool-calls` does.
+  The validated workaround is to route `error` to the AI-assisted handoff
+  step on the work step (`routes: {error: ai-handoff}` on `process`), so an
+  exhausted tool loop still leaves a handoff note. The template keeps the
+  `hard-handoff` default — an `error` is also what infrastructure failures
+  produce, and those should not spend the reserved AI-assisted handoff — and
+  the operator opts into the workaround per instance when the workload is
+  tool-loop-heavy. (`MAX_HANDOFFS_PER_STEP = 5`, in
+  `src/coding_agent/runtime/context_handoff.py`, likewise stays code-owned.)
+
 ## Model
 
 Model and provider are chosen within the providers coding-agent's Workflow
