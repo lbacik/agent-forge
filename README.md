@@ -59,6 +59,9 @@ Repository, so Pools never apply; see the
 `references/coding-agent.md`). The `workflow/` package is baked into the
 derived image and verified there at build time, so any edit under
 `workflow/` needs `docker compose build` before the container is recreated.
+A gateway pin whose `url` names a Docker service adds
+`compose.coding-agent.litellm.yaml`, which attaches the `worker` — and only
+the `worker` — to the gateway's network.
 
 ## Prerequisites
 
@@ -76,8 +79,12 @@ derived image and verified there at build time, so any edit under
   key as `MODEL_API_KEY`, and `COMPOSE_FILE` in `.env` adds
   `compose.litellm.yaml` to attach the agent to that network. Anthropic models
   connect directly. A `coding-agent` instance instead sets the single model
-  key its Workflow Configuration names (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`,
-  at the documented ref) alongside `GITHUB_TOKEN`; values live only in `.env`.
+  key its Workflow Configuration names alongside `GITHUB_TOKEN`:
+  `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` on a direct `provider:` pin,
+  `LITELLM_PROXY_API_KEY` on a LiteLLM `gateway:` pin (the Meta `muse-*`
+  route through the gateway); a gateway `url` naming a Docker service
+  additionally joins the `worker` to the gateway network through
+  `compose.coding-agent.litellm.yaml`. Values live only in `.env`.
 
 ## Workflow
 
@@ -268,7 +275,9 @@ project name with `-p`.
 
 An instance that uses a LiteLLM gateway needs no extra flags: `COMPOSE_FILE`
 in its env file makes every `docker compose` command load
-`compose.litellm.yaml` as well.
+`compose.litellm.yaml` as well
+(`compose.coding-agent.litellm.yaml` on a `coding-agent` gateway pin, which
+attaches only the `worker`).
 
 ### 4. Manage a Pool
 
@@ -339,17 +348,21 @@ context.
 Every pull request runs the template render check
 ([`render-check.yml`](.github/workflows/render-check.yml)). It renders the
 `create-agent` templates with placeholder values — no secrets — and runs
-`docker compose config` on five Compose variants to prove each result is a
+`docker compose config` on six Compose variants to prove each result is a
 valid Compose model: plain and LiteLLM without labels (a ref that does not
 speak the operator contract, unchanged from today's layout), an N=1
 instance plus an N=2 Pool with the contract discovery labels kept on every
-managed Worker service, and the coding-agent instance (a build-only `engine`
-base plus three derived services sharing one image and one state volume, the
-four discovery labels on the `worker` only, the full v3 `run` invocation
-with no bind mount at `/etc/coding-agent`, the `config validate` →
-`prepare-skill-bundle --mode install` → `verify-skill-bundle` sequence in the
-rendered `Dockerfile` with verification after the last `COPY`, and the
-Compose project name equal to the instance directory name).
+managed Worker service, and the coding-agent direct-pin and gateway
+instances (a build-only `engine` base plus three derived services sharing
+one image and one state volume, the four discovery labels on the `worker`
+only, the full v3 `run` invocation with no bind mount at
+`/etc/coding-agent`, the `config validate` →
+`prepare-skill-bundle --mode install` → `verify-skill-bundle` sequence in
+the rendered `Dockerfile` with verification after the last `COPY`, and the
+Compose project name equal to the instance directory name; the gateway
+variant additionally pins a LiteLLM gateway, passes `LITELLM_PROXY_API_KEY`
+to the `worker` only, and attaches only the `worker` to the gateway
+network).
 
 Run the same check locally (needs Docker with Compose v2.17 or newer):
 

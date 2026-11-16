@@ -1,12 +1,15 @@
-# Model backend (simple-coding-agent only)
+# Model backend (simple-coding-agent routes)
 
-How a simple-coding-agent instance reaches its model. This reference does not
-apply to the coding-agent adapter: its Workflow Configuration pins the
-provider, model, endpoint and prices per model id, with no Meta route and no
-gateway pin — see `references/coding-agent.md` ("Model") instead. The agent supports three
-routes from `AGENT_SRC_REF` v0.3.2 (`MODEL_*` settings, simple-coding-agent
-#164); older refs ignore `MODEL_*` and require `META_API_KEY`. The LiteLLM
-route needs no agent code beyond v0.3.2 (simple-coding-agent #171).
+How a simple-coding-agent instance reaches its model. This reference covers
+the simple-coding-agent routes only (`MODEL_*` settings). For the
+coding-agent backend, the model is pinned in the Workflow Configuration
+instead — a direct `provider:` pin or a LiteLLM `gateway:` pin with
+per-model prices — and `MODEL_*` / `MODEL_BASE_URL` do not apply there: see
+`references/coding-agent.md` ("Model") for that backend's mechanics. The
+agent supports three routes from `AGENT_SRC_REF` v0.3.2 (`MODEL_*` settings,
+simple-coding-agent #164); older refs ignore `MODEL_*` and require
+`META_API_KEY`. The LiteLLM route needs no agent code beyond v0.3.2
+(simple-coding-agent #171).
 
 ## Choosing the route
 

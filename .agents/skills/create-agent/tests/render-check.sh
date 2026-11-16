@@ -3,12 +3,13 @@
 #
 # Renders the simple-coding-agent templates (compose.yaml and
 # compose.litellm.yaml, .env/.env.example from the env example template, and
-# the Dockerfile) and the coding-agent templates (compose.yaml, Dockerfile,
-# .env/.env.example and workflow/workflow.yml) with placeholder values and no
+# the Dockerfile) and the coding-agent templates (compose.yaml,
+# compose.coding-agent.litellm.yaml, Dockerfile, .env/.env.example and
+# workflow/workflow.yml) with placeholder values and no
 # secrets into scratch directories, then runs `docker compose config` on the
-# plain, the LiteLLM, the contract-labels, the contract-labels Pool and the
-# coding-agent variants. Exits non-zero when a rendered result is not a valid
-# Compose model.
+# plain, the LiteLLM, the contract-labels, the contract-labels Pool, the
+# coding-agent direct-pin and the coding-agent gateway variants. Exits
+# non-zero when a rendered result is not a valid Compose model.
 #
 # The contract-labels variants render an AGENT_SRC_REF that speaks the
 # operator contract (`main` or a release tag v0.9.0 or newer — see the
@@ -16,8 +17,8 @@
 # template carries are kept instead of deleted. The plain and LiteLLM
 # variants render an older ref (before v0.9.0) without labels and must stay
 # byte-identical in the Compose model to today's layout.
-# The coding-agent variant always carries its four discovery labels on the
-# worker only and carries no Forge-owned profile (see
+# The coding-agent direct-pin variant always carries its four discovery
+# labels on the worker only and carries no Forge-owned profile (see
 # references/coding-agent.md), and its rendered `Dockerfile` derives the
 # deployment image FROM the `engine` base (the `deployment` target at
 # CODING_AGENT_REF) and runs `config validate`, `prepare-skill-bundle
@@ -27,7 +28,12 @@
 # package is baked into the image, so any edit under `workflow/` needs
 # `docker compose build`). Its rendered `workflow/workflow.yml` is a
 # `version: 3` file with a `skills:` block whose static `skill:` references
-# name declared members only.
+# name declared members only. The coding-agent gateway variant renders the
+# same layout with a LiteLLM gateway pin instead of the direct pin: the
+# worker's explicit environment names `LITELLM_PROXY_API_KEY` (and no other
+# model key), and the `compose.coding-agent.litellm.yaml` overlay attaches
+# the worker — and only the worker — to the external network named by
+# `GATEWAY_NETWORK`.
 #
 # The coding-agent variant additionally runs secret-free `agent config
 # validate` against the rendered `workflow/workflow.yml` (with the prompt
@@ -76,7 +82,9 @@ PH_NODE_MAJOR=22
 PH_GATEWAY_NETWORK=test-gateway-net
 # coding-agent adapter placeholders. Prices are the code-owned table's public
 # list pricing at the documented ref; limits mirror coding-agent's own
-# implement example.
+# implement example. The gateway placeholders render the LiteLLM gateway pin
+# (the Meta route through the gateway; the operator confirms the prices and
+# the two caps, they are never defaulted).
 PH_CODING_AGENT_REF=main
 PH_BASE_BRANCH=main
 PH_SELECTION_LABEL=agent:implement
@@ -88,6 +96,16 @@ PH_PRICE_INPUT=2.00
 PH_PRICE_OUTPUT=10.00
 PH_PRICE_CACHE_READ=0.20
 PH_PRICE_CACHE_WRITE=2.50
+PH_GATEWAY_URL=http://litellm:4000
+PH_GATEWAY_MODEL=muse-spark-1.3-contributor
+PH_GATEWAY_EFFORT=medium
+PH_GATEWAY_API_KEY_ENV=LITELLM_PROXY_API_KEY
+PH_GATEWAY_OUTPUT_CAP_TOKENS=32000
+PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS=300000
+PH_GATEWAY_PRICE_INPUT=0.10
+PH_GATEWAY_PRICE_OUTPUT=0.20
+PH_GATEWAY_PRICE_CACHE_READ=0.002
+PH_GATEWAY_PRICE_CACHE_WRITE=0.10
 PH_LIMIT_COST_USD=20
 PH_LIMIT_TOKENS=4000000
 PH_LIMIT_TOOL_CALLS=600
@@ -206,6 +224,12 @@ assert_line_matches() {
   fi
 }
 
+assert_not_line_matches() {
+  if printf '%s\n' "$1" | grep -Eq -- "$2"; then
+    fail "$3"
+  fi
+}
+
 # assert_no_placeholders DIR LABEL -- no {{...}} may survive rendering, and no
 # <n> worker may survive in a Compose file.
 assert_no_placeholders() {
@@ -221,12 +245,24 @@ assert_no_placeholders() {
 
 # assert_no_secrets ENV_FILE LABEL -- credential keys stay empty or absent.
 assert_no_secrets() {
-  for key in GITHUB_TOKEN META_API_KEY MODEL_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY; do
+  for key in GITHUB_TOKEN META_API_KEY MODEL_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY LITELLM_PROXY_API_KEY; do
     value=$(grep -E "^${key}=" "$1" | cut -d '=' -f 2-)
     if [ -n "$value" ]; then
       fail "$2: $1 sets $key (the check runs with no secrets)"
     fi
   done
+}
+
+# service_block CONFIG SERVICE -- print the `docker compose config` model
+# lines of one service: from its `  <service>:` line to the next service or
+# top-level key. Used to assert per-service wiring (explicit environment,
+# networks) that a whole-model grep cannot attribute.
+service_block() {
+  printf '%s\n' "$1" | awk -v svc="$2" '
+    $0 == "  " svc ":" { show = 1; next }
+    /^  [A-Za-z0-9_.-]+:/ { show = 0 }
+    /^[A-Za-z0-9_.-]+:/ { show = 0 }
+    show { print }'
 }
 
 # compose_config DIR -- print `docker compose config` for the rendered
@@ -334,25 +370,33 @@ check_contract_instance() {
   done
 }
 
-# check_coding_agent_instance DIR LABEL -- `docker compose config` must accept
-# the rendered coding-agent directory, and the resulting model must carry the
-# adapter's shape: the build-only `engine` base plus three derived services
-# sharing one state volume and one derived image, all four discovery labels
-# on the worker and on no one-off service, the worker's hardening (never
-# restarted, init, read-only root filesystem, the full v3 `run` invocation
-# with no bind mount at /etc/coding-agent), the exact stop grace on the
-# rendered file, and the Compose project name equal to the instance
-# directory name. The rendered Workflow Configuration must name credentials
-# by environment variable only and carry a Selection Label that satisfies
-# coding-agent's rules. The rendered Dockerfile must derive FROM the engine
-# base and run `config validate`, `prepare-skill-bundle` and
+# check_coding_agent_instance DIR LABEL VARIANT -- `docker compose config`
+# must accept the rendered coding-agent directory, and the resulting model
+# must carry the adapter's shape: the build-only `engine` base plus three
+# derived services sharing one state volume and one derived image, all four
+# discovery labels on the worker and on no one-off service, the worker's
+# hardening (never restarted, init, read-only root filesystem, the full v3
+# `run` invocation with no bind mount at /etc/coding-agent), the exact stop
+# grace on the rendered file, and the Compose project name equal to the
+# instance directory name. The rendered Workflow Configuration must name
+# credentials by environment variable only and carry a Selection Label that
+# satisfies coding-agent's rules. The rendered Dockerfile must derive FROM
+# the engine base and run `config validate`, `prepare-skill-bundle` and
 # `verify-skill-bundle` in that order, with the verification after the last
-# relevant COPY.
+# relevant COPY. VARIANT is `direct` (a provider pin: no gateway-only keys
+# anywhere, no LITELLM key on the worker) or `gateway` (a LiteLLM gateway
+# pin: a `gateway:` block and no `provider:` key, the LITELLM key in the
+# worker's explicit environment only, and the overlay attaching the worker
+# — and only the worker — to GATEWAY_NETWORK).
 #
 # Add new model assertions here; the CI workflow needs no changes.
 check_coding_agent_instance() {
   dir=$1
   label=$2
+  variant=$3
+  if [ "$variant" != direct ] && [ "$variant" != gateway ]; then
+    fail "check_coding_agent_instance: unknown VARIANT '$variant' (want direct or gateway)"
+  fi
   instance_dir_name=$(basename "$dir")
   info "checking $label instance"
   if ! config_output=$(compose_config "$dir"); then
@@ -532,8 +576,109 @@ check_coding_agent_instance() {
     "$label: workflow.yml base branch is not $PH_BASE_BRANCH"
   assert_contains "$workflow_content" 'token-env: GITHUB_TOKEN' \
     "$label: workflow.yml token-env does not name an environment variable"
-  assert_contains "$workflow_content" "api-key-env: $PH_API_KEY_ENV" \
-    "$label: workflow.yml api-key-env does not name an environment variable"
+  if [ "$variant" = direct ]; then
+    assert_contains "$workflow_content" "api-key-env: $PH_API_KEY_ENV" \
+      "$label: workflow.yml api-key-env does not name an environment variable"
+  fi
+  # The model pin: exactly one variant. A direct pin is a `provider:` block
+  # with no gateway-only keys; a gateway pin is a `gateway:` block with no
+  # `provider:` key. The anchored patterns tell pin keys apart from the
+  # template's prose comments about the other variant.
+  if [ "$variant" = direct ]; then
+    assert_line_matches "$workflow_content" \
+      "^    provider: $PH_PROVIDER\$" \
+      "$label: workflow.yml direct pin is not a provider pin"
+    assert_not_line_matches "$workflow_content" \
+      '^    gateway:' \
+      "$label: workflow.yml direct pin carries a gateway block"
+    assert_not_line_matches "$workflow_content" \
+      '^    output-cap-tokens:' \
+      "$label: workflow.yml direct pin carries output-cap-tokens"
+    assert_not_line_matches "$workflow_content" \
+      '^    context-threshold-tokens:' \
+      "$label: workflow.yml direct pin carries context-threshold-tokens"
+    assert_not_line_matches "$(cat "$dir/compose.yaml")" \
+      '^      LITELLM_PROXY_API_KEY:' \
+      "$label: compose.yaml sets LITELLM_PROXY_API_KEY on a direct pin"
+    assert_not_contains "$config_output" 'LITELLM_PROXY_API_KEY' \
+      "$label: Compose model carries LITELLM_PROXY_API_KEY on a direct pin"
+    for seat in agent validate; do
+      for key in ANTHROPIC_API_KEY OPENAI_API_KEY; do
+        assert_not_contains "$(service_block "$config_output" "$seat")" "$key" \
+          "$label: $key reached the $seat seat's environment"
+      done
+    done
+    assert_contains "$(service_block "$config_output" worker)" "$PH_API_KEY_ENV" \
+      "$label: $PH_API_KEY_ENV missing from the worker's environment"
+    if [ -e "$dir/compose.coding-agent.litellm.yaml" ]; then
+      fail "$label: gateway overlay rendered for a direct pin"
+    fi
+    if grep -qE '^LITELLM_PROXY_API_KEY=' "$dir/.env"; then
+      fail "$label: .env sets LITELLM_PROXY_API_KEY on a direct pin"
+    fi
+  else
+    assert_contains "$workflow_content" \
+      "gateway: {kind: litellm, url: $PH_GATEWAY_URL}" \
+      "$label: workflow.yml gateway pin is not a litellm gateway block"
+    assert_contains "$workflow_content" "model: $PH_GATEWAY_MODEL" \
+      "$label: workflow.yml gateway pin model is not the gateway L1 alias"
+    assert_contains "$workflow_content" 'endpoint: responses' \
+      "$label: workflow.yml gateway pin endpoint is not responses"
+    assert_contains "$workflow_content" "api-key-env: $PH_GATEWAY_API_KEY_ENV" \
+      "$label: workflow.yml gateway pin api-key-env is not $PH_GATEWAY_API_KEY_ENV"
+    assert_contains "$workflow_content" \
+      "output-cap-tokens: $PH_GATEWAY_OUTPUT_CAP_TOKENS" \
+      "$label: workflow.yml gateway pin misses output-cap-tokens"
+    assert_contains "$workflow_content" \
+      "context-threshold-tokens: $PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS" \
+      "$label: workflow.yml gateway pin misses context-threshold-tokens"
+    assert_not_line_matches "$workflow_content" \
+      '^    provider:' \
+      "$label: workflow.yml gateway pin carries a provider key"
+    # The gateway key reaches the worker's environment only (the template
+    # sets no env_file, which would copy .env into every seat). Whole-model
+    # greps cannot attribute it, so check per service. The empty fixture
+    # value keeps the check secret-free while proving the wiring is live.
+    worker_block=$(service_block "$config_output" worker)
+    agent_block=$(service_block "$config_output" agent)
+    validate_block=$(service_block "$config_output" validate)
+    assert_contains "$worker_block" 'LITELLM_PROXY_API_KEY' \
+      "$label: LITELLM_PROXY_API_KEY missing from the worker's environment"
+    assert_not_contains "$agent_block" 'LITELLM_PROXY_API_KEY' \
+      "$label: LITELLM_PROXY_API_KEY reached the agent seat's environment"
+    assert_not_contains "$validate_block" 'LITELLM_PROXY_API_KEY' \
+      "$label: LITELLM_PROXY_API_KEY reached the validate seat's environment"
+    assert_not_contains "$worker_block" 'ANTHROPIC_API_KEY' \
+      "$label: direct-pin key ANTHROPIC_API_KEY left on the gateway worker"
+    assert_not_contains "$worker_block" 'OPENAI_API_KEY' \
+      "$label: direct-pin key OPENAI_API_KEY left on the gateway worker"
+    assert_line_matches "$(cat "$dir/compose.yaml")" \
+      '^      LITELLM_PROXY_API_KEY: ' \
+      "$label: compose.yaml misses the worker LITELLM_PROXY_API_KEY line"
+    assert_contains "$(cat "$dir/.env")" \
+      'COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml' \
+      "$label: .env does not load the gateway overlay"
+    assert_contains "$(cat "$dir/.env")" \
+      "GATEWAY_NETWORK=$PH_GATEWAY_NETWORK" \
+      "$label: .env does not name the gateway network"
+    if [ ! -f "$dir/compose.coding-agent.litellm.yaml" ]; then
+      fail "$label: gateway overlay compose.coding-agent.litellm.yaml missing"
+    fi
+    # The overlay attaches the worker — and only the worker — to the
+    # external network named by GATEWAY_NETWORK.
+    assert_contains "$config_output" "$PH_GATEWAY_NETWORK" \
+      "$label: gateway network missing from the Compose model"
+    assert_contains "$config_output" 'external: true' \
+      "$label: gateway network is not external in the Compose model"
+    # Match the service's `networks:` entry, not a bare word: the fixture's
+    # build context path itself contains "gateway".
+    assert_line_matches "$worker_block" '^      gateway:' \
+      "$label: worker is not attached to the gateway network"
+    assert_not_line_matches "$agent_block" '^      gateway:' \
+      "$label: agent seat joined the gateway network"
+    assert_not_line_matches "$validate_block" '^      gateway:' \
+      "$label: validate seat joined the gateway network"
+  fi
   assert_contains "$workflow_content" "label: $PH_SELECTION_LABEL" \
     "$label: workflow.yml Selection Label is not $PH_SELECTION_LABEL"
   assert_not_contains "$workflow_content" 'label: ready-for-human' \
@@ -676,27 +821,78 @@ MODEL_NAME=muse-spark-1.3-contributor
 EOF
 }
 
-# render_coding_agent_compose SRC DST -- the coding-agent compose.yaml: owner,
-# repo and short name to substitute (the engine ref lives in .env as
+# render_coding_agent_compose SRC DST VARIANT -- the coding-agent compose.yaml:
+# owner, repo and short name to substitute (the engine ref lives in .env as
 # CODING_AGENT_REF, read through ${...} interpolation like AGENT_SRC_REF).
+# VARIANT is `direct` (a provider pin: the worker keeps the ANTHROPIC/OPENAI
+# keys, the gateway key is dropped) or `gateway` (a LiteLLM gateway pin: the
+# worker keeps only LITELLM_PROXY_API_KEY).
 render_coding_agent_compose() {
+  if [ "$3" != direct ] && [ "$3" != gateway ]; then
+    fail "render_coding_agent_compose: unknown VARIANT '$3' (want direct or gateway)"
+  fi
+  tmp="$2.tmp"
   sed -e "s|{{OWNER}}|$PH_OWNER|g" \
     -e "s|{{REPO}}|$PH_REPO|g" \
-    -e "s|{{SHORT_NAME}}|$PH_SHORT_NAME|g" "$1" >"$2"
+    -e "s|{{SHORT_NAME}}|$PH_SHORT_NAME|g" "$1" >"$tmp"
+  if [ "$3" = direct ]; then
+    sed -e '/^      # gateway-model-key-begin$/,/^      # gateway-model-key-end$/d' \
+      -e '/^      # direct-model-key-begin$/d' \
+      -e '/^      # direct-model-key-end$/d' "$tmp" >"$2"
+  else
+    sed -e '/^      # direct-model-key-begin$/,/^      # direct-model-key-end$/d' \
+      -e '/^      # gateway-model-key-begin$/d' \
+      -e '/^      # gateway-model-key-end$/d' \
+      -e 's|^      # LITELLM_PROXY_API_KEY:|      LITELLM_PROXY_API_KEY:|' \
+      "$tmp" >"$2"
+  fi
+  rm -f "$tmp"
 }
 
-# render_coding_agent_env SRC DST -- .env/.env.example from the coding-agent
-# env example template.
+# render_coding_agent_env SRC DST VARIANT -- .env/.env.example from the
+# coding-agent env example template. VARIANT is `direct` or `gateway`, as
+# above: only the model key the Workflow Configuration names stays active,
+# the others stay commented out, and the gateway variant additionally enables
+# the gateway network overlay (COMPOSE_FILE plus GATEWAY_NETWORK).
 render_coding_agent_env() {
+  if [ "$3" != direct ] && [ "$3" != gateway ]; then
+    fail "render_coding_agent_env: unknown VARIANT '$3' (want direct or gateway)"
+  fi
+  tmp="$2.tmp"
   sed -e "s|{{OWNER}}|$PH_OWNER|g" \
     -e "s|{{REPO}}|$PH_REPO|g" \
     -e "s|{{CODING_AGENT_REF}}|$PH_CODING_AGENT_REF|g" \
-    "$1" >"$2"
+    "$1" >"$tmp"
+  if [ "$3" = direct ]; then
+    cp "$tmp" "$2"
+  else
+    sed -e 's|^ANTHROPIC_API_KEY=$|# ANTHROPIC_API_KEY=|' \
+      -e 's|^# LITELLM_PROXY_API_KEY=$|LITELLM_PROXY_API_KEY=|' \
+      -e 's|^# COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml$|COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml|' \
+      -e "s|^# GATEWAY_NETWORK=$|GATEWAY_NETWORK=$PH_GATEWAY_NETWORK|" \
+      "$tmp" >"$2"
+  fi
+  rm -f "$tmp"
 }
 
-# render_coding_agent_workflow SRC DST -- workflow/workflow.yml from the
-# coding-agent Workflow Configuration template.
+# render_coding_agent_overlay SRC DST -- compose.coding-agent.litellm.yaml
+# (gateway variant only): the template carries no placeholders, so copy it
+# verbatim, mirroring render_compose_litellm for the simple-coding-agent
+# overlay.
+render_coding_agent_overlay() {
+  cp "$1" "$2"
+}
+
+# render_coding_agent_workflow SRC DST VARIANT -- workflow/workflow.yml from
+# the coding-agent Workflow Configuration template. VARIANT is `direct` (a
+# provider pin: substitute the direct placeholders and drop the gateway-pin
+# block) or `gateway` (a LiteLLM gateway pin: drop the direct-pin block,
+# uncomment the gateway-pin block and substitute its placeholders).
 render_coding_agent_workflow() {
+  if [ "$3" != direct ] && [ "$3" != gateway ]; then
+    fail "render_coding_agent_workflow: unknown VARIANT '$3' (want direct or gateway)"
+  fi
+  tmp="$2.tmp"
   sed -e "s|{{OWNER}}|$PH_OWNER|g" \
     -e "s|{{REPO}}|$PH_REPO|g" \
     -e "s|{{BASE_BRANCH}}|$PH_BASE_BRANCH|g" \
@@ -709,13 +905,34 @@ render_coding_agent_workflow() {
     -e "s|{{PRICE_OUTPUT}}|$PH_PRICE_OUTPUT|g" \
     -e "s|{{PRICE_CACHE_READ}}|$PH_PRICE_CACHE_READ|g" \
     -e "s|{{PRICE_CACHE_WRITE}}|$PH_PRICE_CACHE_WRITE|g" \
+    -e "s|{{GATEWAY_URL}}|$PH_GATEWAY_URL|g" \
+    -e "s|{{GATEWAY_MODEL}}|$PH_GATEWAY_MODEL|g" \
+    -e "s|{{GATEWAY_EFFORT}}|$PH_GATEWAY_EFFORT|g" \
+    -e "s|{{GATEWAY_API_KEY_ENV}}|$PH_GATEWAY_API_KEY_ENV|g" \
+    -e "s|{{GATEWAY_OUTPUT_CAP_TOKENS}}|$PH_GATEWAY_OUTPUT_CAP_TOKENS|g" \
+    -e "s|{{GATEWAY_CONTEXT_THRESHOLD_TOKENS}}|$PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS|g" \
+    -e "s|{{GATEWAY_PRICE_INPUT}}|$PH_GATEWAY_PRICE_INPUT|g" \
+    -e "s|{{GATEWAY_PRICE_OUTPUT}}|$PH_GATEWAY_PRICE_OUTPUT|g" \
+    -e "s|{{GATEWAY_PRICE_CACHE_READ}}|$PH_GATEWAY_PRICE_CACHE_READ|g" \
+    -e "s|{{GATEWAY_PRICE_CACHE_WRITE}}|$PH_GATEWAY_PRICE_CACHE_WRITE|g" \
     -e "s|{{LIMIT_COST_USD}}|$PH_LIMIT_COST_USD|g" \
     -e "s|{{LIMIT_TOKENS}}|$PH_LIMIT_TOKENS|g" \
     -e "s|{{LIMIT_TOOL_CALLS}}|$PH_LIMIT_TOOL_CALLS|g" \
     -e "s|{{LIMIT_WALL_CLOCK_MINUTES}}|$PH_LIMIT_WALL_CLOCK_MINUTES|g" \
     -e "s|{{PROCESS_LIMIT_COST_USD}}|$PH_PROCESS_LIMIT_COST_USD|g" \
     -e "s|{{SELF_REVIEW_LIMIT_COST_USD}}|$PH_SELF_REVIEW_LIMIT_COST_USD|g" \
-    "$1" >"$2"
+    "$1" >"$tmp"
+  if [ "$3" = direct ]; then
+    sed -e '/^    # gateway-pin-begin$/,/^    # gateway-pin-end$/d' \
+      "$tmp" >"$2"
+  else
+    sed -e '/^    # direct-pin-begin$/,/^    # direct-pin-end$/d' \
+      -e '/^    # gateway-pin-begin$/,/^    # gateway-pin-end$/s/^    # /    /' \
+      -e '/^    gateway-pin-begin$/d' \
+      -e '/^    gateway-pin-end$/d' \
+      "$tmp" >"$2"
+  fi
+  rm -f "$tmp"
 }
 
 # render_coding_agent_dockerfile SRC DST -- the coding-agent instance
@@ -766,24 +983,34 @@ check_coding_agent_validate() {
     fail "$2: secret-free 'agent config validate' failed"
 }
 
-# render_coding_agent DIR -- one scratch coding-agent instance: compose.yaml,
+# render_coding_agent DIR VARIANT -- one scratch coding-agent instance:
+# compose.yaml (plus the gateway network overlay on the gateway variant),
 # Dockerfile, .env/.env.example, workflow/workflow.yml, stub prompt files
 # and the policy stub (written after the secret-free validate run, which
-# needs no policy).
+# needs no policy). VARIANT is `direct` or `gateway` (see
+# render_coding_agent_workflow).
 render_coding_agent() {
+  if [ "$2" != direct ] && [ "$2" != gateway ]; then
+    fail "render_coding_agent: unknown VARIANT '$2' (want direct or gateway)"
+  fi
   render_coding_agent_compose \
-    "$ASSETS_DIR/compose.coding-agent.yaml.template" "$1/compose.yaml"
+    "$ASSETS_DIR/compose.coding-agent.yaml.template" "$1/compose.yaml" "$2"
   render_coding_agent_dockerfile \
     "$ASSETS_DIR/Dockerfile.coding-agent.template" "$1/Dockerfile"
   render_coding_agent_env "$ASSETS_DIR/env.coding-agent.example.template" \
-    "$1/.env.example"
+    "$1/.env.example" "$2"
   cp "$1/.env.example" "$1/.env"
+  if [ "$2" = gateway ]; then
+    render_coding_agent_overlay \
+      "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template" \
+      "$1/compose.coding-agent.litellm.yaml"
+  fi
   mkdir -p "$1/workflow" ||
     fail 'coding-agent: cannot create workflow directory'
   render_coding_agent_workflow \
-    "$ASSETS_DIR/workflow.coding-agent.yml.template" "$1/workflow/workflow.yml"
+    "$ASSETS_DIR/workflow.coding-agent.yml.template" "$1/workflow/workflow.yml" "$2"
   render_coding_agent_prompts "$1"
-  check_coding_agent_validate "$1" 'coding-agent'
+  check_coding_agent_validate "$1" "coding-agent $2"
   render_coding_agent_policy "$1"
 }
 
@@ -801,8 +1028,9 @@ main() {
   contract_dir="$WORK_ROOT/contract"
   contract_pool_dir="$WORK_ROOT/contract-pool"
   coding_agent_dir="$WORK_ROOT/agent-$PH_SHORT_NAME"
+  coding_agent_gateway_dir="$WORK_ROOT/agent-gateway-$PH_SHORT_NAME"
   mkdir -p "$plain_dir" "$litellm_dir" "$contract_dir" \
-    "$contract_pool_dir" "$coding_agent_dir" ||
+    "$contract_pool_dir" "$coding_agent_dir" "$coding_agent_gateway_dir" ||
     fail 'cannot create scratch instance directories'
 
   info 'rendering plain instance'
@@ -813,8 +1041,10 @@ main() {
   render_instance "$contract_dir" labels 1
   info 'rendering contract-labels Pool instance'
   render_instance "$contract_pool_dir" labels 2
-  info 'rendering coding-agent instance'
-  render_coding_agent "$coding_agent_dir"
+  info 'rendering coding-agent direct-pin instance'
+  render_coding_agent "$coding_agent_dir" direct
+  info 'rendering coding-agent gateway instance'
+  render_coding_agent "$coding_agent_gateway_dir" gateway
 
   # Forge never bakes discovery labels into the image; the legacy role image
   # label belongs to simple-coding-agent's own discovery and stays.
@@ -847,6 +1077,24 @@ main() {
       fail "env.coding-agent.example.template sets $budget_pattern (budgets stay in the Workflow Configuration)"
     fi
   done
+  # The coding-agent gateway overlay attaches only the worker (the one-off
+  # `agent` seat is not a Managed Instance) and fixes no project name; the
+  # gateway network name always comes from .env, never hard-coded.
+  if grep -qE '^name:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
+    fail 'compose.coding-agent.litellm.yaml.template sets a project name (the directory is the project)'
+  fi
+  if grep -qE '^  agent:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
+    fail 'compose.coding-agent.litellm.yaml.template attaches the agent seat (only the worker joins the gateway network)'
+  fi
+  if grep -qE '^  validate:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
+    fail 'compose.coding-agent.litellm.yaml.template attaches the validate seat (only the worker joins the gateway network)'
+  fi
+  if ! grep -qE '^  worker:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
+    fail 'compose.coding-agent.litellm.yaml.template misses the worker service'
+  fi
+  if ! grep -qF 'GATEWAY_NETWORK' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
+    fail 'compose.coding-agent.litellm.yaml.template misses GATEWAY_NETWORK (the gateway network comes from .env)'
+  fi
   for worker_var in 'WORKER_CPUS:-1.5' 'WORKER_MEM_LIMIT:-3g' 'WORKER_PIDS_LIMIT:-1024'; do
     if ! grep -qF -- "$worker_var" "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
       fail "compose.coding-agent.yaml.template misses resource limit default \${$worker_var}"
@@ -905,6 +1153,7 @@ main() {
   assert_no_placeholders "$contract_dir" 'contract'
   assert_no_placeholders "$contract_pool_dir" 'contract-pool'
   assert_no_placeholders "$coding_agent_dir" 'coding-agent'
+  assert_no_placeholders "$coding_agent_gateway_dir" 'coding-agent gateway'
   assert_no_secrets "$plain_dir/.env" 'plain'
   assert_no_secrets "$plain_dir/.env.example" 'plain'
   assert_no_secrets "$litellm_dir/.env" 'litellm'
@@ -915,6 +1164,8 @@ main() {
   assert_no_secrets "$contract_pool_dir/.env.example" 'contract-pool'
   assert_no_secrets "$coding_agent_dir/.env" 'coding-agent'
   assert_no_secrets "$coding_agent_dir/.env.example" 'coding-agent'
+  assert_no_secrets "$coding_agent_gateway_dir/.env" 'coding-agent gateway'
+  assert_no_secrets "$coding_agent_gateway_dir/.env.example" 'coding-agent gateway'
   assert_no_agent_operator "$plain_dir/Dockerfile" \
     'plain: Dockerfile mentions agent-operator'
   assert_no_agent_operator "$contract_dir/Dockerfile" \
@@ -927,7 +1178,8 @@ main() {
   check_contract_instance "$contract_dir" 'contract' 1 "$PH_SHORT_NAME"
   check_contract_instance "$contract_pool_dir" 'contract-pool' 2 \
     "$PH_SHORT_NAME" "$PH_SHORT_NAME-2"
-  check_coding_agent_instance "$coding_agent_dir" 'coding-agent'
+  check_coding_agent_instance "$coding_agent_dir" 'coding-agent' direct
+  check_coding_agent_instance "$coding_agent_gateway_dir" 'coding-agent gateway' gateway
 
   info 'PASS: all variants render to a valid Compose model with no secrets'
 }
