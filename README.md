@@ -46,15 +46,19 @@ preconfigured instances in this starting version; keep backups of local
 configuration separately if needed.
 
 A `coding-agent` instance holds a different layout: `compose.yaml` (the
-labelled `worker` plus the unlabelled `agent` and `validate` one-off seats),
+build-only `engine` base, the labelled `worker` plus the unlabelled `agent`
+and `validate` one-off seats on the derived image), `Dockerfile` (the
+derived deployment image, copied verbatim from its template),
 `workflow/workflow.yml` (a `version: 3` Workflow Configuration with a
 `skills:` block) with its `workflow/prompts/*.md` prompt files and reviewed
 `workflow/skill-policy.json`,
-`.env`/`.env.example` — and no `Dockerfile`, no repository profile, no
+`.env`/`.env.example` — and no repository profile, no
 `compose.litellm.yaml` and no `.env.worker-<n>` (exactly one Worker per Target
 Repository, so Pools never apply; see the
 [`create-agent`](.agents/skills/create-agent/SKILL.md) skill and its
-`references/coding-agent.md`).
+`references/coding-agent.md`). The `workflow/` package is baked into the
+derived image and verified there at build time, so any edit under
+`workflow/` needs `docker compose build` before the container is recreated.
 
 ## Prerequisites
 
@@ -92,12 +96,15 @@ The skill first asks which engine backend to deploy: `simple-coding-agent`
 (default) or `coding-agent`. The backend selects the deployment adapter while
 target identification, token verification and the report stay shared. Choosing
 `coding-agent` scaffolds the adapter described in the skill's
-`references/coding-agent.md`: the image builds from coding-agent's git
-repository at the ref named by `CODING_AGENT_REF` (default `main`), the
-labelled `worker` runs coding-agent's `implement` Workflow from the instance's
-`workflow/workflow.yml`, and `agent`/`validate` stay available as unlabelled
-one-off seats against the same state volume. There is no instance Dockerfile
-and no stack block — the toolchain is fixed by coding-agent's Supported
+`references/coding-agent.md`: the `engine` service builds the `deployment`
+target of coding-agent's git repository at the ref named by
+`CODING_AGENT_REF` (default `main`), the derived image builds FROM it and
+bakes the instance's `workflow/` package (`workflow.yml`, `prompts/`, the
+reviewed `skill-policy.json`) with its prepared Skill Bundle, the labelled
+`worker` runs coding-agent's `implement` Workflow with the full v3 `agent
+run` invocation, and `agent`/`validate` stay available as unlabelled
+one-off seats on the same derived image against the same state volume.
+There is no stack block — the toolchain is fixed by coding-agent's Supported
 Toolchain Matrix.
 
 Before scaffolding, the skill checks the Fleet on the target Docker context
@@ -128,8 +135,9 @@ defaults to `main`. Runtime versions are not pinned per instance: upstream at
 Claude Code CLI is the one bundled in that SDK release. To upgrade, move
 upstream or `AGENT_SRC_REF` and rebuild; do not set `CLAUDE_AGENT_SDK_VERSION`
 in `.env`. (A `coding-agent` instance names its ref `CODING_AGENT_REF` instead,
-default `main`, read from the `build.context` git URL; its toolchain follows
-the same ref.)
+default `main`, read from the `engine` service's git URL; its toolchain and
+its prepared Skill Bundle follow the same ref through the derived image —
+rebuild after changing it, or after any edit under `workflow/`.)
 
 **Conflict requeue (optional, off by default).** When the published pull
 request of an issue falls behind its base branch and reports a conflict, the
@@ -335,10 +343,13 @@ Every pull request runs the template render check
 valid Compose model: plain and LiteLLM without labels (a ref that does not
 speak the operator contract, unchanged from today's layout), an N=1
 instance plus an N=2 Pool with the contract discovery labels kept on every
-managed Worker service, and the coding-agent instance (three services sharing
-one state volume, the four discovery labels on the `worker` only, the Workflow
-Configuration mounted read-only, the Compose project name equal to the
-instance directory name).
+managed Worker service, and the coding-agent instance (a build-only `engine`
+base plus three derived services sharing one image and one state volume, the
+four discovery labels on the `worker` only, the full v3 `run` invocation
+with no bind mount at `/etc/coding-agent`, the `config validate` →
+`prepare-skill-bundle --mode install` → `verify-skill-bundle` sequence in the
+rendered `Dockerfile` with verification after the last `COPY`, and the
+Compose project name equal to the instance directory name).
 
 Run the same check locally (needs Docker with Compose v2.17 or newer):
 

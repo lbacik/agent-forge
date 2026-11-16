@@ -34,7 +34,8 @@ backend chosen in step 0:
 | File | Source |
 |---|---|
 | `Dockerfile` | simple-coding-agent only: `assets/Dockerfile.template` + a stack block |
-| `compose.yaml` | `assets/compose.yaml.template` (simple-coding-agent, one service per Worker) or `assets/compose.coding-agent.yaml.template` (coding-agent: labelled `worker`, unlabelled `agent` and `validate` seats) |
+| `compose.yaml` | `assets/compose.yaml.template` (simple-coding-agent, one service per Worker) or `assets/compose.coding-agent.yaml.template` (coding-agent: build-only `engine` base, labelled `worker`, unlabelled `agent` and `validate` seats on the derived image) |
+| `Dockerfile` | coding-agent only: `assets/Dockerfile.coding-agent.template`, copied verbatim (the derived deployment image) |
 | `simple-coding-agent-profile.yml` | simple-coding-agent only: written from the target repo's CI |
 | `workflow/workflow.yml` | coding-agent only: `assets/workflow.coding-agent.yml.template` |
 | `workflow/prompts/*.md` | coding-agent only: copied from the `CODING_AGENT_REF` checkout |
@@ -141,9 +142,9 @@ can determine by reading the repository.
 - The backend selects the deployment adapter; target identification, token
   verification and the report stay shared.
 - `coding-agent`: continue with the coding-agent adapter in
-  `references/coding-agent.md` — no instance Dockerfile, no stack block, no
-  Forge-owned profile, exactly one Worker. Steps 1–2 and 6 stay shared; steps
-  3, 5, 7 and 8 branch per backend as marked below.
+  `references/coding-agent.md` — a derived-image Dockerfile, no stack block,
+  no Forge-owned profile, exactly one Worker. Steps 1–2 and 6 stay shared;
+  steps 3, 5, 7 and 8 branch per backend as marked below.
 - `simple-coding-agent`: continue below; the flow is otherwise unchanged.
 
 ### 1. Identify the target
@@ -350,10 +351,15 @@ Don't ask for one unprompted.
 Shallow-clone that same ref into the scratchpad and read, at that commit:
 
 - `compose.yaml` — the deployment this adapter mirrors (services, hardening,
-  state path `/var/lib/coding-agent`, workflow mount). If the ref's
-  hardening or mount layout diverged from
+  state path `/var/lib/coding-agent`, the worker's `run` flags). If the
+  ref's hardening or flag layout diverged from
   `assets/compose.coding-agent.yaml.template` in a way that matters, follow
   the ref and tell the user.
+- `Dockerfile` — the `deployment` stage this adapter derives FROM (its
+  baked roots, preparation commands and verification). The instance
+  Dockerfile replays that sequence against the instance's `workflow/`
+  starting from empty bundle and store directories; if the ref's sequence
+  diverged in a way that matters, follow the ref and tell the user.
 - `src/coding_agent/provider/config.py` — the code-owned
   (`provider`, `model`, `endpoint`) pins and their prices. Only a pair from
   that table (Anthropic and OpenAI at the documented ref) may go into the
@@ -434,9 +440,12 @@ for example:
 
 For `coding-agent`, generate the deployment from
 `references/coding-agent.md` instead of this step: `compose.yaml` from
-`assets/compose.coding-agent.yaml.template` (image tag
-`coding-agent:<short-name>`; the `build.context` URL reads the ref from
-`CODING_AGENT_REF` in `.env` — nothing to fill in here), `workflow/workflow.yml`
+`assets/compose.coding-agent.yaml.template` (the derived image is tagged
+`coding-agent:<short-name>`, the `engine` base
+`coding-agent-engine:<short-name>`; the engine's git URL reads the ref from
+`CODING_AGENT_REF` in `.env` — nothing to fill in here), `Dockerfile` copied
+verbatim from `assets/Dockerfile.coding-agent.template`,
+`workflow/workflow.yml`
 from `assets/workflow.coding-agent.yml.template` with the prompt files copied
 from the ref checkout (step 3b) and `workflow/skill-policy.json` copied
 verbatim from the ref checkout's `docker/deployment/`, and
@@ -730,11 +739,15 @@ fails body validation (`422`) — nothing is created either way. Never use
 ### 7. Validate
 
 For `coding-agent`, validate as `references/coding-agent.md` ("Validation")
-says — `docker compose config -q`, secret-free `config validate` through the
-`agent` seat (no secrets set), `startup-check --repo` with the
-instance's token, the token write-scope check of step 6, and the optional
-`validate` run against a target checkout — and report which passed and which
-remain unverified. The rest of this step is simple-coding-agent only.
+says — `docker compose config -q`, `docker compose build` (which runs
+`config validate`, `prepare-skill-bundle --mode install` and
+`verify-skill-bundle` inside the derived image and fails when any of them
+fails), secret-free `config validate` through the built `agent` seat (no
+secrets set, no mount: the package is baked in), `startup-check --repo`
+with the instance's token, the token write-scope check of step 6, and the
+optional `validate` run against a target checkout — and report which passed
+and which remain unverified. The rest of this step is simple-coding-agent
+only.
 
 - Profile: load it with the agent's own loader from the cloned agent source
   (`python3 -c "from simple_coding_agent.config import load_repository_profile; ..."`
@@ -791,12 +804,16 @@ for them (runtime version, included/excluded checks, bundled services), the
 model and its route (and, for LiteLLM, the gateway network), and the Workers
 (N, their Worker ids or why none was rendered, the resource limits);
 for coding-agent — the Workflow Configuration (Target Repository, Selection
-Label, limits, model pin and confirmed prices), that there is exactly one
-Worker and no Pool, that no Forge-owned profile was generated (the
-repository-owned `docs/agents/project-profile.yml` stays the only profile),
-and the target checkout check result (Project Profile found at its searched
-location and revision, toolchain matrix match at the chosen ref, or the
-reported miss / Unsupported Environment with the operator's decision). In
+Label, limits, model pin and confirmed prices), the derived deployment image
+(`Dockerfile` copied verbatim from the asset, built FROM the `deployment`
+target at the ref, baking and verifying the instance's `workflow/` package),
+that there is exactly one Worker and no Pool, that no Forge-owned profile
+was generated (the repository-owned `docs/agents/project-profile.yml` stays
+the only profile), the rule that any edit under `workflow/` needs
+`docker compose build` before the container is recreated, and the target
+checkout check result (Project Profile found at its searched location and
+revision, toolchain matrix match at the chosen ref, or the reported miss /
+Unsupported Environment with the operator's decision). In
 both cases:
 the target Docker context and the Fleet check result — which Fleet was listed
 and that no other instance holds the repository, or which one does; which
