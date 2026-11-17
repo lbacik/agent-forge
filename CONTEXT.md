@@ -48,6 +48,10 @@ _Avoid_: Conflict-only attempt, resolver run
 A Worker ending the Conflict requeue of an issue after its Conflict attempts have failed a configured number of times in a row, and handing the pull request to a human; the issue is not requeued again until a human hands it back.
 _Avoid_: Exhausted budget, conflict handoff (a handoff is an ordinary attempt outcome)
 
+**Dashboard deployment**:
+The directory `dashboards/<docker-context>/` that runs one agent-dashboard for one Docker context: upstream compose files pinned to one ref, a Forge overlay and an access profile. It shows the Managed Instances on that context and is itself neither an Instance nor a Managed Instance.
+_Avoid_: Dashboard instance, dashboard agent (`agent-instances/agent-dashboard/` is the Instance whose Target Repository is agent-dashboard)
+
 ### Operator contract
 
 These terms are used as defined in the glossary of operator contract major 1, at the tag pinned in the README's [Operator contract](README.md#operator-contract) section, and are not redefined here: Managed Instance, Fleet, Pool, Backend, Target Repository, Operator Capability, Intake, Operator Command, Acknowledgement, Status Snapshot, Figure, Figure Basis, Attempt, Attempt Archive, Sealed, Offline Read, Halt. Where both glossaries use a word, this file's meaning applies unless the contract's is named, as in "contract Pool".

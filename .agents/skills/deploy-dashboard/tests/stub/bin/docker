@@ -1,0 +1,106 @@
+#!/bin/sh
+# Fake `docker` for the dashboard-helpers test. It never contacts a Docker
+# host: every reply comes from the case's scene directory, and every call is
+# logged through the shared debug-agent stub logger (one
+# `CTX=<docker-context> docker <argv>` record per call).
+#
+# Environment (set by tests/dashboard-helpers.sh):
+#   STUB_ARGV_LOG, STUB_ERROR_LOG, STUB_LIB  as for the debug-agent fakes.
+#   STUB_SCENE  the case's scene directory:
+#     gid                        `stat -c %g` reply of the GID probe run
+#     networks/<net>             `network inspect` subnet reply; missing file
+#                                means no such network
+#     context-<ctx>              `context inspect` endpoint reply
+#     compose-ps.txt             `compose ps` reply (empty: no container)
+#     compose-logs.txt           `compose logs` reply
+#     docker-version.txt / .code `compose exec ... docker version` reply/exit
+#     account-list.txt           `compose exec ... account list` reply
+#     ps-ALL.txt                 bare `ps -a` reply (fleet.sh legacy list)
+#   `compose exec ... account add|reset` answers like upstream, with the
+#   Set-password link built from the --url argument and the token
+#   STUB_TOKEN. Every `compose` call must run in a directory holding .env.
+
+set -eu
+
+scene=${STUB_SCENE:?STUB_SCENE is not set}
+
+# shellcheck disable=SC1091 # resolved at runtime from STUB_LIB, not statically
+. "${STUB_LIB:?STUB_LIB is not set}/log-argv.sh"
+log_argv docker "$@"
+
+reply() {
+  [ -f "$scene/$1" ] || stub_fail "stub docker: no recorded reply: add $1 to the scene"
+  cat "$scene/$1"
+}
+
+cmd=${1:?usage: stub docker ...}
+shift
+
+case "$cmd" in
+  (run)
+    case " $* " in
+      (*" stat -c %g /var/run/docker.sock "*) reply gid; exit 0 ;;
+    esac
+    stub_fail "stub docker: no recorded reply for run $*"
+    ;;
+  (network)
+    [ "${1:-}" = inspect ] || stub_fail "stub docker: no recorded reply for network $*"
+    net=${2:?stub docker: network inspect without a name}
+    if [ -f "$scene/networks/$net" ]; then
+      cat "$scene/networks/$net"
+      exit 0
+    fi
+    printf 'Error response from daemon: network %s not found\n' "$net" >&2
+    exit 1
+    ;;
+  (context)
+    [ "${1:-}" = inspect ] || stub_fail "stub docker: no recorded reply for context $*"
+    reply "context-${2:?stub docker: context inspect without a name}"
+    exit 0
+    ;;
+  (ps)
+    reply ps-ALL.txt
+    exit 0
+    ;;
+  (compose)
+    [ -f .env ] || stub_fail "stub docker: compose ran outside a deployment directory ($(pwd))"
+    sub=${1:?stub docker: compose without a subcommand}
+    case "$sub" in
+      (config|up|down) exit 0 ;;
+      (ps) reply compose-ps.txt; exit 0 ;;
+      (logs) reply compose-logs.txt; exit 0 ;;
+      (exec)
+        case " $* " in
+          (*" docker version "*)
+            reply docker-version.txt
+            exit "$(cat "$scene/docker-version.code" 2>/dev/null || echo 0)"
+            ;;
+          (*" agent-dashboard account list"*)
+            reply account-list.txt
+            exit 0
+            ;;
+          (*" agent-dashboard account add "*|*" agent-dashboard account reset "*)
+            name=""; url=""; prev=""; seen=0
+            for a in "$@"; do
+              if [ "$prev" = --url ]; then url=$a; fi
+              if [ "$seen" = 1 ] && [ -z "$name" ]; then name=$a; fi
+              case "$a" in (add|reset) seen=1 ;; esac
+              prev=$a
+            done
+            printf 'Created Operator account %s (controller).\n' "$name"
+            printf 'Set-password link for %s (works once, until 2026-11-18 12:00 UTC):\n' "$name"
+            printf '  %s/set-password?token=%s\n' "$url" "${STUB_TOKEN:?STUB_TOKEN is not set}"
+            printf 'Send it to %s only.\n' "$name"
+            exit 0
+            ;;
+          (*" agent-dashboard account "*)
+            printf 'ok\n'
+            exit 0
+            ;;
+        esac
+        ;;
+    esac
+    stub_fail "stub docker: no recorded reply for compose $*"
+    ;;
+esac
+stub_fail "stub docker: no recorded reply for '$cmd'"

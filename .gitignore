@@ -1,5 +1,6 @@
 
 agent-instances/
+dashboards/
 
 .claude/settings.local.json
 .agents/settings.local.json

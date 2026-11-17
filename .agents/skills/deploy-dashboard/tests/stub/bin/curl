@@ -1,0 +1,38 @@
+#!/bin/sh
+# Fake `curl` for the dashboard-helpers test: serves the upstream raw files
+# from STUB_UPSTREAM/<ref>/<file> and never touches the network. A HEAD
+# request (-I) succeeds when STUB_UPSTREAM/<ref>/ exists; a missing ref or
+# file fails like `curl -f` on a 404 (exit 22).
+
+set -eu
+
+# shellcheck disable=SC1091 # resolved at runtime from STUB_LIB, not statically
+. "${STUB_LIB:?STUB_LIB is not set}/log-argv.sh"
+log_argv curl "$@"
+
+up=${STUB_UPSTREAM:?STUB_UPSTREAM is not set}
+raw=https://raw.githubusercontent.com/lbacik/agent-dashboard/
+out=""; url=""; head=0; prev=""
+for a in "$@"; do
+  if [ "$prev" = -o ]; then out=$a; prev=""; continue; fi
+  case "$a" in
+    (-o) prev=-o ;;
+    (-*I*) head=1 ;;
+    (-*) ;;
+    (*) url=$a ;;
+  esac
+done
+case "$url" in
+  ("$raw"*) ;;
+  (*) stub_fail "stub curl: unexpected URL $url" ;;
+esac
+path=${url#"$raw"}
+ref=${path%/*}
+file=${path##*/}
+if [ "$head" = 1 ]; then
+  [ -d "$up/$ref" ] || exit 22
+  exit 0
+fi
+[ -f "$up/$ref/$file" ] || exit 22
+[ -n "$out" ] || stub_fail "stub curl: GET without -o"
+cp "$up/$ref/$file" "$out"

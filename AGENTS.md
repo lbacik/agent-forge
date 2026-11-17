@@ -74,6 +74,15 @@ read-only diagnosis in `debug-agent`. Every command runs only on the
 operator's explicit request with a confirmed target. The helpers default to
 `orbstack`; pass `--context <name>` for another context.
 
+## Dashboards
+
+To deploy, upgrade or check an agent-dashboard on a Docker context, or to
+manage its Operator accounts and sign-in access, read and use
+[deploy-dashboard](.agents/skills/deploy-dashboard/SKILL.md). A dashboard
+deployment lives in `dashboards/<context>/` (git-ignored) and never under
+`agent-instances/`. Its Set-password links are one-time credentials, and its
+`state` volume is deleted only on the user's explicit authorization.
+
 ## Debugging instances
 
 For startup failures, unsuccessful issue attempts, logs, state, or questions
@@ -102,8 +111,8 @@ tool output and reports.
 
 Edit shared scaffolding and diagnostics in `.agents/skills/`; `.claude` is a
 symlink to `.agents`, so both paths expose the same files. Edit deployment
-configuration inside the selected `agent-instances/agent-<name>/` directory.
-Upstream agent fixes belong in the separate `simple-coding-agent` checkout.
+configuration inside the selected `agent-instances/agent-<name>/` directory,
+and a dashboard deployment inside `dashboards/<context>/`. Upstream agent fixes belong in the separate `simple-coding-agent` checkout.
 
 Keep [README.md](README.md) aligned with changes to the user workflow or instance
 layout.

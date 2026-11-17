@@ -1,0 +1,19 @@
+#!/bin/sh
+# Fake `git` for the dashboard-helpers test: only `git ls-remote <url>
+# <pattern>...` is served, from STUB_UPSTREAM/refs.txt (`<sha>\t<ref>` lines,
+# as git prints them), filtered to the exact refs asked for. No network.
+
+set -eu
+
+# shellcheck disable=SC1091 # resolved at runtime from STUB_LIB, not statically
+. "${STUB_LIB:?STUB_LIB is not set}/log-argv.sh"
+log_argv git "$@"
+
+[ "${1:-}" = ls-remote ] || stub_fail "stub git: only ls-remote is served, got: $*"
+shift
+[ "${1:-}" = https://github.com/lbacik/agent-dashboard.git ] || stub_fail "stub git: unexpected remote ${1:-}"
+shift
+refs=${STUB_UPSTREAM:?STUB_UPSTREAM is not set}/refs.txt
+for pattern in "$@"; do
+  awk -v r="$pattern" '$2 == r' "$refs"
+done
