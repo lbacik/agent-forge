@@ -1,6 +1,10 @@
 # coding-agent adapter
 
-Read this when step 0 of `create-agent` chose the `coding-agent` backend.
+Read this when step 0 of `create-agent` chose the `coding-agent` backend,
+or when the operator asks to upgrade an existing coding-agent Instance to
+the derived-image layout ("Upgrading an existing coding-agent Instance"
+below).
+
 Terms are defined in `CONTEXT.md` (Instance, Worker, Worker identity) and in
 the operator contract glossary (Managed Instance, Fleet, Target Repository,
 Operator Capability, Status Snapshot).
@@ -509,3 +513,147 @@ DOCKER_CONTEXT=<ctx> agentfleet status <short-name>
 capabilities `next-issue` and `stop-after`; readiness is `instance.state`
 other than `starting`. Until coding-agent ships the contract producer
 (step 4), this part is reported as unverified.
+
+## Upgrading an existing coding-agent Instance
+
+Read this when the operator explicitly asks to move an Instance created
+before the derived-image layout (a `version: 2` Workflow Configuration
+mounted from `./workflow`, an image built straight from coding-agent's
+repository with no `Dockerfile` in the instance) to the layout above. This
+is the one case where `create-agent` changes an existing Instance; the
+new-instance flow (Fleet check, directory refusal, credential questions)
+does not run. Why it is needed: rebuilt against a v3 ref, the old Worker
+refuses its mounted `version: 2` file with a migration diagnostic; built
+at a ref that has the derived Dockerfile but without `target: deployment`,
+the image is the bare base stage, with no toolchains and no skills.
+
+The sequence follows coding-agent's "Upgrading: drain, backup and
+rollback" (`docs/ops/workflow-configuration.md`, read at `v0.4.1`
+(`3ce858f`); re-read it at the new `CODING_AGENT_REF`, it wins over this
+summary). Run every command from the instance directory, on the
+Instance's Docker context (`DOCKER_CONTEXT=<ctx>`), and stop at the first step that fails. Keep
+secrets out of the output: compare `.env` key names, never values.
+
+1. **Drain check.** Close Intake with the old release through
+   [operate-agent](../../operate-agent/SKILL.md) (`stop`, a drain — never
+   `docker stop`). The drain is done when the state is quiescent: Intake
+   stopped, no active Attempt, no unfinished or unconfirmed Claim and no
+   unsettled lifecycle work. A terminal outcome alone does not prove
+   finalisation is complete. Read it from the Status Snapshot
+   (`agentfleet status <short-name>`); when the old release answers no
+   Status Snapshot, read it from the Worker's state with the read-only
+   [debug-agent](../../debug-agent/SKILL.md) helpers. When neither shows a
+   quiescent state, stop and ask. An open Attempt or a pending recovery
+   must be finished with the old release first: the new Worker refuses to
+   recover records it did not write. Only then stop the `worker` service,
+   and only that service:
+
+   ```bash
+   docker compose stop worker
+   ```
+
+2. **Tag the old image** so a rollback has something to run. The new
+   build reuses the tag `coding-agent:<short-name>`, so tag first, with a
+   name that records the old layout and the commit it was built from (the
+   pinned SHA or tag in the old `.env`; for a branch whose built commit is
+   not recorded, the image's creation date from
+   `docker image inspect -f '{{.Created}}'` instead). The tagged image also
+   keeps the old release's prepared Skill Bundle records:
+
+   ```bash
+   docker image tag coding-agent:<short-name> coding-agent:<short-name>-v2-<short-sha>
+   ```
+
+3. **Back up while stopped**, to a directory **outside the instance
+   directory**, e.g.
+   `agent-instances/backups/agent-<short-name>-<YYYY-MM-DD>-pre-v3/`. The
+   derived build uses `.` (the instance directory) as its build context, so
+   a backup inside it would be sent to the builder and could be baked into
+   the image, secrets and state included. Back up the state volume and the
+   operator inputs together — one without the other is not a restore
+   point: `compose.yaml`, `.env`, `.env.example`, `workflow/`, and
+   `compose.coding-agent.litellm.yaml` when the Instance has the gateway
+   overlay. The volume is `<project>_state`, where the Compose project is
+   the instance directory name. Check that it exists first: `docker run -v`
+   creates a missing volume empty, which would make an empty backup with
+   no error. Streaming the archive through stdout works on a remote context
+   too:
+
+   ```bash
+   set -e
+   B=../backups/agent-<short-name>-<YYYY-MM-DD>-pre-v3
+   docker volume inspect agent-<short-name>_state >/dev/null
+   mkdir -p "$B" && cp -p compose.yaml .env .env.example "$B"/ && cp -Rp workflow "$B"/
+   docker run --rm -v agent-<short-name>_state:/state:ro alpine \
+     tar czf - -C /state . > "$B/state.tgz"
+   ```
+
+4. **Re-render the template-owned files** from the current templates and
+   the new `CODING_AGENT_REF` checkout, following "What this
+   adapter renders", "Workflow Configuration" and "Model" above and the
+   skill's step 3b:
+   `compose.yaml` (plus the gateway overlay when the old Instance had one),
+   `Dockerfile`, `workflow/workflow.yml`, the prompt files,
+   `workflow/skill-policy.json` and `.env.example`. Take the values from
+   the old files instead of asking again: the Target Repository and base
+   branch, the short name, the model and its route, and the Workflow
+   settings (Selection Label, Attempt Ceiling, Step Allowances). The
+   "Workflow Configuration" rules still apply: when an old allowance does
+   not fit the Work Pool, stop and ask. The prompts come from the ref:
+   `implement-policy.md` from `docker/deployment/prompts/` and `handoff.md`
+   from `examples/prompts/`. Older Instances copied `implement-policy.md`
+   from `examples/prompts/`; do not carry that copy over. Keep `.env` as
+   is, except for keys the new `.env.example` requires that `.env` lacks
+   (compare key names only), and point `CODING_AGENT_REF` at the new ref.
+   No `{{...}}` may remain.
+
+5. **Validate**, in this order, as in "Validation" above; stop at the first
+   failure and roll back (step 6 below):
+
+   1. `docker compose config -q`
+   2. `docker compose build` — prepares and verifies the Skill Bundle
+   3. `docker compose run --rm agent config validate --config /etc/coding-agent/workflow.yml --workflow implement`
+   4. `docker compose run --rm agent startup-check --repo <owner>/<repo> --token-env GITHUB_TOKEN`
+   5. `docker compose up -d --no-build worker`
+
+   The token is unchanged, so the token write-scope check (the skill's
+   step 6) need not be repeated unless `.env` gained a new token.
+
+6. **Rollback** when any validation step fails or the new Worker refuses
+   to start. Before the new Worker has written state, restore and restart
+   the old release. Restoring wipes the state volume and replaces it with
+   the backup, so get the operator's explicit authorization for that first,
+   even inside a requested upgrade. Run it as one script (`B` is the
+   backup directory from the backup step):
+
+   ```bash
+   set -e
+   B=../backups/agent-<short-name>-<YYYY-MM-DD>-pre-v3
+   test -f "$B/state.tgz"
+   docker compose stop worker
+   cp -p "$B"/compose.yaml "$B"/.env "$B"/.env.example . && rm -rf workflow && cp -Rp "$B"/workflow .
+   rm -f Dockerfile
+   docker run --rm -i -v agent-<short-name>_state:/state alpine \
+     sh -c 'find /state -mindepth 1 -delete && tar xzf - -C /state' < "$B/state.tgz"
+   docker image tag coding-agent:<short-name>-v2-<short-sha> coding-agent:<short-name>
+   docker compose up -d --no-build worker
+   ```
+
+   Restore the gateway overlay too when it was backed up. Once the new
+   Worker has written state or landed GitHub effects (an Attempt, a
+   Claim), restoring the old volume needs those effects reconciled first
+   (upstream's "Roll back only compatibly"): never attach the old Worker
+   blindly, and never delete history or reset state to get past a
+   refusal.
+
+7. **After the upgrade**, read the first startup logs
+   (`docker compose logs worker`): the Worker verifies the baked package
+   and passes its live checks with no refusal, and startup recovery has
+   nothing to recover (`startup-recovery skipped` after a clean drain).
+   Operator Commands the old release left in flight need no manual action:
+   they are settled at startup (a `next-issue` left `accepted` ends
+   `not_fulfilled`); read one back with `operate-agent`'s `command
+   <request-id>` if needed. Then reopen Intake through
+   [operate-agent](../../operate-agent/SKILL.md) (`resume`). Keep the
+   backup and the old image tag until the upgraded Worker has finished an
+   Attempt.

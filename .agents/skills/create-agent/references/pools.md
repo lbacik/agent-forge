@@ -65,8 +65,9 @@ Worker id. Worker ids stay unique across all Workers of the contract Pool,
 across Instances. On different logins there is no shared-identity Claim
 hazard, but `PEER_LOGINS` must list every login working the Queue on both
 Instances. `create-agent` never changes
-existing instances, so tell the user what the other Instance needs; the
-`manage-pool` skill carries it out.
+existing instances here (its only exception, an explicitly requested
+coding-agent upgrade, is in `references/coding-agent.md`), so tell the user
+what the other Instance needs; the `manage-pool` skill carries it out.
 
 ## Changing N later
 
