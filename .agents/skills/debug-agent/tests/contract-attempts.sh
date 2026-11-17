@@ -6,9 +6,12 @@
 # (filtered by issue on the client side, paged with the opaque cursor, native
 # outcome, delivery, attention_required, sealed); fetch-run exports an Attempt
 # Archive through `agentfleet attempts export` into a separate contract cache
-# (only Sealed archives reused after sha256 verification, unsealed refetched
-# and labelled as moving snapshots, a sha256 mismatch fetched again, Offline
-# Read for a stopped container, safe unique paths for `#`/`/` Attempt IDs).
+# (only Sealed archives reused, when the cached manifest is itself Sealed
+# with the `sealed_at` of `attempts show` and passes sha256 verification;
+# a stale cached snapshot, a different `sealed_at` or an unreadable manifest
+# refetched, unsealed refetched and labelled as moving snapshots, a sha256
+# mismatch fetched again, Offline Read for a stopped container, safe unique
+# paths for `#`/`/` Attempt IDs).
 #
 # Usage (from anywhere in this repository):
 #
@@ -352,6 +355,82 @@ main() {
   [ "$(export_count)" -ge 1 ] || fail "fetch sealed corrupted: the cache failed verification but was not fetched again"
   python3 "$SCRIPTS_DIR/lib/verify_archive.py" "$_dest41" || fail "fetch sealed corrupted: refetched copy fails verification"
   info "ok: sealed exports are reused after sha256 verification, corruption refetches"
+
+  # Export: a cached moving snapshot of an Attempt that is now Sealed is
+  # internally consistent (its sha256 values match) but stale: the cached
+  # manifest says unsealed and lacks the files added at sealing. It is
+  # exported again, never reused as `(cached, sealed, verified)`.
+  export AGENT_CONTRACT_CACHE="$WORK_ROOT/cache-stale"
+  _repo_cache="$AGENT_CONTRACT_CACHE/rpi5/foo/coding-agent/example-owner%2Fexample-repo"
+  run_helper fetch-run.sh --context rpi5 foo 42 '#42/1'
+  [ "$CODE" -eq 0 ] || fail "fetch stale setup: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  cp -R "$_repo_cache/%2342%2F1" "$_repo_cache/%2341%2F1"
+  python3 "$SCRIPTS_DIR/lib/verify_archive.py" "$_repo_cache/%2341%2F1" >/dev/null \
+    || fail "fetch stale setup: the planted snapshot is not internally consistent"
+  run_helper fetch-run.sh --context rpi5 foo 41 '#41/1'
+  [ "$CODE" -eq 0 ] || fail "fetch stale snapshot: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  [ "$(export_count)" -ge 1 ] || fail "fetch stale snapshot: the cached unsealed snapshot was reused: $(cat "$ARGV_LOG")"
+  assert_not_contains "$WORK_ROOT/out.txt" "(cached, sealed, verified)" "fetch stale snapshot"
+  assert_contains "$WORK_ROOT/out.txt" "(sealed)" "fetch stale snapshot"
+  python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["attempt"]; sys.exit(0 if a.get("sealed") is True and a.get("attempt_id") == "#41/1" else 1)' \
+    "$_repo_cache/%2341%2F1/manifest.json" || fail "fetch stale snapshot: the refetched manifest is not the Sealed #41/1"
+  [ -f "$_repo_cache/%2341%2F1/transcript.jsonl" ] || fail "fetch stale snapshot: no transcript.jsonl after the refetch"
+  info "ok: a cached unsealed snapshot of a Sealed Attempt is exported again"
+
+  # Export: a cached copy that says Sealed but with a `sealed_at` different
+  # from (or missing against) `attempts show` is exported again, even though
+  # its sha256 values still match.
+  _show_sealed_at=$(python3 -c 'import json,sys; print(json.loads(json.load(open(sys.argv[1]))["stdout"])["result"]["attempt"]["sealed_at"])' "$FIXDIR/attempts-show-sealed.json")
+  for _variant in differs missing; do
+    python3 - "$_repo_cache/%2341%2F1/manifest.json" "$_variant" <<'PYEOF'
+import json, sys
+path, variant = sys.argv[1], sys.argv[2]
+manifest = json.load(open(path))
+if variant == "differs":
+    manifest["attempt"]["sealed_at"] = "2000-01-01T00:00:00Z"
+else:
+    manifest["attempt"].pop("sealed_at", None)
+json.dump(manifest, open(path, "w"))
+PYEOF
+    python3 "$SCRIPTS_DIR/lib/verify_archive.py" "$_repo_cache/%2341%2F1" >/dev/null \
+      || fail "fetch sealed_at $_variant setup: sha256 values no longer match"
+    run_helper fetch-run.sh --context rpi5 foo 41 '#41/1'
+    [ "$CODE" -eq 0 ] || fail "fetch sealed_at $_variant: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+    [ "$(export_count)" -ge 1 ] || fail "fetch sealed_at $_variant: the cached copy was reused: $(cat "$ARGV_LOG")"
+    assert_not_contains "$WORK_ROOT/out.txt" "(cached, sealed, verified)" "fetch sealed_at $_variant"
+    python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["attempt"]; sys.exit(0 if a.get("sealed") is True and a.get("sealed_at") == sys.argv[2] else 1)' \
+      "$_repo_cache/%2341%2F1/manifest.json" "$_show_sealed_at" \
+      || fail "fetch sealed_at $_variant: the refetched manifest does not carry sealed_at $_show_sealed_at"
+  done
+  run_helper fetch-run.sh --context rpi5 foo 41 '#41/1'
+  [ "$CODE" -eq 0 ] || fail "fetch sealed_at refetched: exit $CODE"
+  assert_contains "$WORK_ROOT/out.txt" "(cached, sealed, verified)" "fetch sealed_at refetched copy is reused"
+  [ "$(export_count)" -eq 0 ] || fail "fetch sealed_at refetched: the refetched Sealed copy was exported again"
+  info "ok: a cached Sealed copy with a different or missing sealed_at is exported again"
+
+  # Export: an unreadable cached manifest is exported again.
+  printf 'not json\n' >"$_repo_cache/%2341%2F1/manifest.json"
+  run_helper fetch-run.sh --context rpi5 foo 41 '#41/1'
+  [ "$CODE" -eq 0 ] || fail "fetch unreadable manifest: exit $CODE, stderr: $(cat "$WORK_ROOT/err.txt")"
+  [ "$(export_count)" -ge 1 ] || fail "fetch unreadable manifest: the cached copy was reused: $(cat "$ARGV_LOG")"
+  assert_not_contains "$WORK_ROOT/out.txt" "(cached, sealed, verified)" "fetch unreadable manifest"
+  python3 "$SCRIPTS_DIR/lib/verify_archive.py" --sealed-at "$_show_sealed_at" "$_repo_cache/%2341%2F1" >/dev/null \
+    || fail "fetch unreadable manifest: the refetched copy is not the verified Sealed archive"
+  info "ok: an unreadable cached manifest is exported again"
+
+  # Failure: when the refetch of a stale cached copy fails, the helper exits
+  # with agentfleet's code and leaves no cache directory: never a fall back
+  # to the stale copy.
+  rm -rf "$_repo_cache/%2341%2F1"
+  cp -R "$_repo_cache/%2342%2F1" "$_repo_cache/%2341%2F1"
+  touch "$WORK_ROOT/scene/fail-attexport-_41_1"
+  run_helper fetch-run.sh --context rpi5 foo 41 '#41/1'
+  rm -f "$WORK_ROOT/scene/fail-attexport-_41_1"
+  [ "$CODE" -eq 7 ] || fail "fetch stale export-fail: exit $CODE, want agentfleet's 7"
+  assert_contains "$WORK_ROOT/err.txt" "error: agentfleet attempts export failed" "fetch stale export-fail"
+  assert_not_contains "$WORK_ROOT/out.txt" "(cached, sealed, verified)" "fetch stale export-fail"
+  [ ! -e "$_repo_cache/%2341%2F1" ] || fail "fetch stale export-fail: the stale cache directory was left behind"
+  info "ok: a failed refetch of a stale copy exits with agentfleet's code"
 
   # Export: a sha256 mismatch in an unsealed export is a torn read and is
   # fetched again (agentfleet refetches within its bound; the helper succeeds).

@@ -75,8 +75,10 @@ path fetch the Attempt Archive into the separate contract cache with:
 
 `<attempt-id>` is the native Attempt ID (opaque: coding-agent uses
 `#<issue>/<n>`); `latest` is the newest Attempt of the issue. Only Sealed
-archives are reused (after `sha256` verification against the manifest);
-unsealed archives are moving snapshots, fetched again on every request. A
+archives are reused: the cached manifest itself must be Sealed with the
+`sealed_at` that `attempts show` reports, and every file must pass `sha256`
+verification against the manifest; any other cached copy is exported again.
+Unsealed archives are moving snapshots, fetched again on every request. A
 stopped instance is read through Offline Read inside `agentfleet`: no
 `docker cp` and no throwaway container. Read the cached copy with Read, Grep
 and `jq` as today; the archive layout, Contract Events and backend notes are
