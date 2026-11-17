@@ -63,6 +63,10 @@ A gateway pin whose `url` names a Docker service adds
 `compose.coding-agent.litellm.yaml`, which attaches the `worker` — and only
 the `worker` — to the gateway's network.
 
+To move an older `coding-agent` instance (a mounted `version: 2` Workflow
+Configuration) to this layout, see `references/coding-agent.md`, "Upgrading
+an existing coding-agent Instance".
+
 ## Prerequisites
 
 - Docker with BuildKit and Docker Compose v2.17 or newer, for additional build

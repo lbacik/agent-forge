@@ -1,6 +1,6 @@
 ---
 name: create-agent
-description: Create a new, dedicated agent instance (compose.yaml, .env, .env.example plus, per backend, a Dockerfile with a local repository profile or a Workflow Configuration) for a GitHub repository, in this agent-forge project (always under `agent-instances/agent-<name>/`). The engine backend is simple-coding-agent by default, coding-agent on request. Use this whenever the user gives a repository URL or owner/repo and wants an agent "for" it — e.g. "create an agent for https://github.com/x/y", "set up simple-coding-agent for my Go service", "przygotuj agenta dla ...", "new agent instance like agent-jsonhub-api" — even if they don't say "create-agent" explicitly.
+description: Create a new, dedicated agent instance (compose.yaml, .env, .env.example plus, per backend, a Dockerfile with a local repository profile or a Workflow Configuration) for a GitHub repository, in this agent-forge project (always under `agent-instances/agent-<name>/`). The engine backend is simple-coding-agent by default, coding-agent on request. Use this whenever the user gives a repository URL or owner/repo and wants an agent "for" it — e.g. "create an agent for https://github.com/x/y", "set up simple-coding-agent for my Go service", "przygotuj agenta dla ...", "new agent instance like agent-jsonhub-api" — even if they don't say "create-agent" explicitly. Also use it, through its coding-agent adapter reference, when the user explicitly asks to upgrade an existing coding-agent instance to the v3 derived-image layout, e.g. "upgrade the sandbox agent to v3".
 ---
 
 # create-agent
@@ -12,6 +12,11 @@ default, [coding-agent](https://github.com/lbacik/coding-agent) on request.
 `agent-instances/` is ignored by Git, so
 the instance and its secrets never get committed. Never create an instance
 anywhere else.
+
+`create-agent` never changes an existing Instance, except for an explicitly
+requested upgrade of a coding-agent Instance to the derived-image layout:
+that procedure lives in `references/coding-agent.md`, "Upgrading an existing
+coding-agent Instance", and none of the new-instance steps below apply to it.
 
 The reference implementations live in the sibling project
 `../simple-coding-agent-env/` (top-level `agent-*/` there). Read them before
@@ -238,7 +243,9 @@ can determine by reading the repository.
     existing same-repository Instance that lacks `pool` in
     `identity.capabilities` refuses too: tell the user to give its Workers
     Worker ids first with the `manage-pool` skill (upgrading it to `v0.9.0`
-    or newer when needed) — `create-agent` never changes existing Instances.
+    or newer when needed) — `create-agent` never changes existing Instances
+    (the one exception, an explicitly requested coding-agent upgrade, is in
+    `references/coding-agent.md`).
     `coding-agent` never advertises `pool`, so a same-repository clash with
     that backend chosen always refuses.
   - A short name already present in the Fleet of the target context is
