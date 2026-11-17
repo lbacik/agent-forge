@@ -26,7 +26,6 @@ SKILL_DIR=$(cd "$SCRIPT_DIR/.." && pwd) || exit 1
 HELPER="$SKILL_DIR/scripts/dashboard.sh"
 STUB_BIN="$SCRIPT_DIR/stub/bin"
 STUB_LIB=$(cd "$SKILL_DIR/../debug-agent/tests/stub/lib" && pwd) || exit 1
-FLEET_SH=$(cd "$SKILL_DIR/../debug-agent/scripts" && pwd)/fleet.sh
 
 SHA_OK=0123456789abcdef0123456789abcdef01234567
 SHA_UNKNOWN=89abcdef0123456789abcdef0123456789abcdef
@@ -107,7 +106,7 @@ run() {
   PATH="$STUB_BIN:$PATH" \
     STUB_LIB="$STUB_LIB" STUB_ARGV_LOG="$ARGV_LOG" STUB_ERROR_LOG="$ERROR_LOG" \
     STUB_SCENE="$SCENE" STUB_UPSTREAM="$UPSTREAM" STUB_TOKEN="$TOKEN" \
-    DASHBOARDS_DIR="$DASH" DASHBOARD_FLEET_SH="$FLEET_SH" AGENT_INSTANCES_DIR="$INSTANCES" \
+    DASHBOARDS_DIR="$DASH" AGENT_INSTANCES_DIR="$INSTANCES" \
     HOME="$WORK/home" DASHBOARD_REF=from-the-caller-env \
     "$HELPER" "$@" >"$OUT" 2>"$ERR"
   CODE=$?
@@ -191,6 +190,7 @@ cases_usage() {
   run --context rpi5 init --ref v0.5.0 --profile readonly --host pi; want_code 2; has "$ERR" "needs --bind"
   run --context rpi5 init --ref v0.5.0 --profile readonly --bind 192.168.1.50; want_code 2; has "$ERR" "needs --host"
   run --context rpi5 init --ref v0.5.0 --profile lan --virtual-host d.lan; want_code 2; has "$ERR" "needs --proxy-network"
+  run --context rpi5 init --ref v0.5.0 --profile lan --proxy-network proxy --virtual-host a.lan,b.lan; want_code 2; has "$ERR" "one host name"
   run init --ref v0.5.0 --bind 192.168.1.50; want_code 2; has "$ERR" "readonly options"
   run --context ../x init --ref v0.5.0; want_code 2
   no_deployment orbstack
@@ -345,7 +345,8 @@ cases_upgrade() {
   has "$DASH/orbstack/.env.example" "AGENT_DASHBOARD_NEW_KNOB="
   argv_has "raw.githubusercontent.com/lbacik/agent-dashboard/v0.6.0/docker-compose.yml"
   argv_has "raw.githubusercontent.com/lbacik/agent-dashboard/v0.6.0/docker-compose.lan.yml"
-  has "$OUT" "AGENT_DASHBOARD_NEW_KNOB[new upstream]"
+  has_line "$OUT" "  new (in .env.example, not in .env): AGENT_DASHBOARD_NEW_KNOB "
+  has "$OUT" "unchanged upstream variables left unset in .env: 4"
   grep -q '^  removed .*AGENT_DASHBOARD_POLL_INTERVAL' "$OUT" || fail "upgrade did not report the removed variable"
   grep -q '^  removed .*AGENT_DASHBOARD_UNAUTHENTICATED_CONTROL' "$OUT" || fail "upgrade did not report UNAUTHENTICATED_CONTROL as removed"
   grep '^  removed' "$OUT" | grep -q 'DASHBOARD_REF\|FORGE_' && fail "upgrade reported a forge-only key"
@@ -411,9 +412,14 @@ cases_tunnel() {
   run --context tcpbox tunnel --ssh-host op@box.lan; want_code 0
   has_line "$OUT" "ssh -L 18000:127.0.0.1:8000 op@box.lan"
 
-  case_name "tunnel on the local profile needs no tunnel"
+  case_name "tunnel on the local profile of a local daemon needs no tunnel"
   run tunnel; want_code 0
   has "$OUT" "needs no tunnel: open http://localhost:8100"
+
+  case_name "tunnel on the lan profile needs no tunnel"
+  run --context lanbox tunnel; want_code 0
+  has "$OUT" "needs no tunnel: open https://dash.example.lan"
+  argv_lacks "context inspect"
 }
 
 cases_status() {

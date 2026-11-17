@@ -111,8 +111,8 @@ tool output and reports.
 
 Edit shared scaffolding and diagnostics in `.agents/skills/`; `.claude` is a
 symlink to `.agents`, so both paths expose the same files. Edit deployment
-configuration inside the selected `agent-instances/agent-<name>/` directory.
-Upstream agent fixes belong in the separate `simple-coding-agent` checkout.
+configuration inside the selected `agent-instances/agent-<name>/` directory,
+and a dashboard deployment inside `dashboards/<context>/`. Upstream agent fixes belong in the separate `simple-coding-agent` checkout.
 
 Keep [README.md](README.md) aligned with changes to the user workflow or instance
 layout.

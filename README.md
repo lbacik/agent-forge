@@ -30,16 +30,16 @@ agent-forge/
 ├── CONTEXT.md                # Domain glossary (Instance, Worker, Pool, ...)
 ├── README.md
 ├── docs/adr/                 # Architecture decisions
-└── agent-instances/          # Local instances; ignored by Git
-    └── agent-<name>/
-        ├── Dockerfile
-        ├── compose.yaml          # One service per Worker: agent, agent-2..N
-        ├── simple-coding-agent-profile.yml
-        ├── .env.example
-        ├── .env
-        ├── agent-entrypoint.sh   # Optional, for bundled services
-        ├── compose.litellm.yaml  # Optional, joins every Worker to a LiteLLM gateway network
-        └── .env.worker-<n>       # Optional, a Worker's own GITHUB_TOKEN
+├── agent-instances/          # Local instances; ignored by Git
+│   └── agent-<name>/
+│       ├── Dockerfile
+│       ├── compose.yaml          # One service per Worker: agent, agent-2..N
+│       ├── simple-coding-agent-profile.yml
+│       ├── .env.example
+│       ├── .env
+│       ├── agent-entrypoint.sh   # Optional, for bundled services
+│       ├── compose.litellm.yaml  # Optional, joins every Worker to a LiteLLM gateway network
+│       └── .env.worker-<n>       # Optional, a Worker's own GITHUB_TOKEN
 └── dashboards/               # Local dashboard deployments; ignored by Git
     └── <docker-context>/
         ├── docker-compose.yml       # Fetched from agent-dashboard at the pinned ref

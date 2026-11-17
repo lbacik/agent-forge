@@ -12,8 +12,8 @@ It lives in `dashboards/<context>/` (git-ignored), never under
 *for* the agent-dashboard repository, a different thing. Terms (Dashboard
 deployment, Instance, Managed Instance) are defined in `CONTEXT.md`.
 
-Every step runs the bundled helper; the deployment layout, the `.env` keys
-per profile and every check it makes are in its header and `--help`:
+Every step runs the bundled helper; its commands, options and exit codes are
+in the script's header comment:
 
 ```bash
 .agents/skills/deploy-dashboard/scripts/dashboard.sh [--context <ctx>] init|up|upgrade|account|tunnel|status|down …
@@ -72,9 +72,9 @@ whole fleet. Unauthenticated Control is always written off.
 1. `init --ref <tag|sha> --profile <p> [profile options]`. It validates the
    ref, reads `DOCKER_GID` on the target daemon, fetches the upstream
    compose files and writes `.env`. Done when it prints `initialised`.
-2. `up` (on request, see the ground rules). It runs `config -q`, then
-   `up -d --build --wait`, which waits for the upstream `/healthz`
-   healthcheck. Done when it prints `dashboard up`.
+2. `up` (on request, see the ground rules). It builds on the target daemon
+   and waits for the upstream `/healthz` healthcheck. Done when it prints
+   `dashboard up`.
 3. `status`. Done when it exits 0: container running and healthy, the
    startup line shows the expected LAN mode and Host check, and the Docker
    socket is readable from inside the container.
@@ -86,11 +86,10 @@ whole fleet. Unauthenticated Control is always written off.
 
 ## 4. Upgrade
 
-`upgrade --ref <tag|sha>` re-fetches the upstream files at the new ref,
-keeps `.env` (only `DASHBOARD_REF` changes), reports variables that are new
-in or removed from the new `.env.example` against `.env`, then rebuilds and
-recreates. Walk the user through each reported variable: `[new upstream]`
-ones may need a value; removed ones are dead in `.env`. Then run `status`.
+`upgrade --ref <tag|sha>` keeps `.env` (only `DASHBOARD_REF` changes) and
+the state volume, then rebuilds and recreates. Walk the user through the
+variables it reports: `new` ones may need a value in `.env`, `removed` ones
+are dead there. Then run `status`.
 
 ## 5. Check and troubleshoot
 
@@ -102,8 +101,12 @@ ones may need a value; removed ones are dead in `.env`. Then run `status`.
 - `legacy containers (not shown by the dashboard)` → unlabelled instances on
   that context, from debug-agent's `fleet.sh`. They are expected to be
   missing from the dashboard; name them to the user.
-- Container not running or unhealthy → read
-  `docker --context <ctx> compose logs dashboard` from `dashboards/<ctx>/`.
+- Build failure in `up`, or a container that is not running or unhealthy →
+  read the build output or `docker --context <ctx> compose logs dashboard`
+  from `dashboards/<ctx>/`. A failure inside upstream's `Dockerfile` or
+  compose file is an agent-dashboard bug: report it there (or pin a ref
+  that has the fix) rather than patching the deployment, since the overlay
+  changes only the build source.
 
 `account reset|role|remove|list` manage accounts later; `down` stops the
 dashboard and keeps the state volume.

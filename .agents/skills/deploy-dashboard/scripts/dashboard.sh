@@ -34,8 +34,8 @@
 # without --force, missing proxy network, Docker/Compose failure, a status
 # problem); 2 usage error.
 #
-# Test seams (set only by tests/dashboard-helpers.sh): DASHBOARDS_DIR (the
-# dashboards/ root) and DASHBOARD_FLEET_SH (the fleet overview helper).
+# Test seam (set only by tests/dashboard-helpers.sh): DASHBOARDS_DIR, the
+# dashboards/ root.
 
 set -eu
 
@@ -58,7 +58,7 @@ usage="usage: dashboard.sh [--context <ctx>] init|up|upgrade|account|tunnel|stat
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd) || exit 1
 ROOT=${DASHBOARDS_DIR:-$(cd "$SCRIPT_DIR/../../../.." && pwd)/dashboards}
-FLEET_SH=${DASHBOARD_FLEET_SH:-$SCRIPT_DIR/../../debug-agent/scripts/fleet.sh}
+FLEET_SH=$SCRIPT_DIR/../../debug-agent/scripts/fleet.sh
 
 die() {
   printf 'error: %s\n' "$1" >&2
@@ -98,6 +98,12 @@ check_name() {
 check_hosts() {
   case "$2" in
     ''|*[!A-Za-z0-9.,:_-]*) usage_error "$1 must be host names or addresses, comma-separated: '$2'" ;;
+  esac
+}
+
+check_host() {
+  case "$2" in
+    ''|*[!A-Za-z0-9.:_-]*) usage_error "$1 must be one host name: '$2'" ;;
   esac
 }
 
@@ -173,8 +179,17 @@ fetch_upstream() {
   done
 }
 
+# install_upstream <ref> <scratch-dir>: put the fetched files, the overlay and
+# .upstream-ref into the deployment directory.
+install_upstream() {
+  mkdir -p "$DIR"
+  for _f in $UPSTREAM_FILES; do cp "$2/$_f" "$DIR/$_f"; done
+  write_overlay
+  printf '%s\n' "$1" >"$DIR/.upstream-ref"
+}
+
 write_overlay() {
-  cat >"$1/$OVERLAY" <<EOF
+  cat >"$DIR/$OVERLAY" <<EOF
 # Written by agent-forge (deploy-dashboard skill, dashboard.sh); do not edit.
 # The only change to upstream: build the image from the upstream git build
 # context at DASHBOARD_REF (a tag or full commit SHA, set in .env and equal
@@ -273,8 +288,8 @@ cmd_init() {
       --port) need_value "$1" $#; check_port "$1" "$2"; port=$2; shift 2 ;;
       --local-port) need_value "$1" $#; check_port "$1" "$2"; local_port=$2; shift 2 ;;
       --proxy-network) need_value "$1" $#; check_name "$1" "$2"; proxy_network=$2; shift 2 ;;
-      --virtual-host) need_value "$1" $#; check_hosts "$1" "$2"; virtual_host=$2; shift 2 ;;
-      --letsencrypt-host) need_value "$1" $#; check_hosts "$1" "$2"; letsencrypt_host=$2; shift 2 ;;
+      --virtual-host) need_value "$1" $#; check_host "$1" "$2"; virtual_host=$2; shift 2 ;;
+      --letsencrypt-host) need_value "$1" $#; check_host "$1" "$2"; letsencrypt_host=$2; shift 2 ;;
       --bind) need_value "$1" $#; check_ip "$1" "$2"; bind=$2; shift 2 ;;
       --host) need_value "$1" $#; check_hosts "$1" "$2"; hosts=$2; shift 2 ;;
       --force) force=1; shift ;;
@@ -320,10 +335,7 @@ cmd_init() {
   trap 'rm -rf "$scratch"' EXIT
   fetch_upstream "$ref" "$scratch"
 
-  mkdir -p "$DIR"
-  for f in $UPSTREAM_FILES; do cp "$scratch/$f" "$DIR/$f"; done
-  write_overlay "$DIR"
-  printf '%s\n' "$ref" >"$DIR/.upstream-ref"
+  install_upstream "$ref" "$scratch"
 
   compose_file=$FILES_BASE
   lan_mode=on
@@ -397,24 +409,24 @@ cmd_upgrade() {
   trap 'rm -rf "$scratch"' EXIT
   fetch_upstream "$ref" "$scratch"
 
-  # Variables of the new .env.example against .env (forge-only keys aside);
-  # "[new upstream]" marks one the previous .env.example did not list.
+  # Variables of the new .env.example against .env, forge-only keys aside.
+  # "new" lists those the previous .env.example did not list either; the
+  # optional upstream knobs .env leaves unset are only counted.
   env_keys "$DIR/.env" >"$scratch/env.keys"
   env_keys "$scratch/.env.example" >"$scratch/new.keys"
   if [ -f "$DIR/.env.example" ]; then env_keys "$DIR/.env.example" >"$scratch/old.keys"; else : >"$scratch/old.keys"; fi
   # shellcheck disable=SC2086 # word-splitting the key list is intended
   printf '%s\n' $FORGE_KEYS | sort -u >"$scratch/forge.keys"
-  added=$(comm -23 "$scratch/new.keys" "$scratch/env.keys" | while IFS= read -r k; do
-    if grep -qx "$k" "$scratch/old.keys"; then printf ' %s' "$k"; else printf ' %s[new upstream]' "$k"; fi
-  done)
+  comm -23 "$scratch/new.keys" "$scratch/env.keys" >"$scratch/unset.keys"
+  added=$(comm -23 "$scratch/unset.keys" "$scratch/old.keys" | tr '\n' ' ')
+  known=$(comm -12 "$scratch/unset.keys" "$scratch/old.keys" | wc -l | tr -d ' ')
   removed=$(comm -23 "$scratch/env.keys" "$scratch/new.keys" | comm -23 - "$scratch/forge.keys" | tr '\n' ' ')
   printf '.env.example at %s against .env:\n' "$ref"
-  printf '  new (in .env.example, not in .env):%s\n' "${added:- none}"
+  printf '  new (in .env.example, not in .env): %s\n' "${added:-none}"
   printf '  removed (in .env, not in .env.example): %s\n' "${removed:-none}"
+  printf '  unchanged upstream variables left unset in .env: %s\n' "$known"
 
-  for f in $UPSTREAM_FILES; do cp "$scratch/$f" "$DIR/$f"; done
-  write_overlay "$DIR"
-  printf '%s\n' "$ref" >"$DIR/.upstream-ref"
+  install_upstream "$ref" "$scratch"
   env_set DASHBOARD_REF "$ref" "$DIR/.env"
   printf 'upgraded %s to %s (.env kept, DASHBOARD_REF updated)\n' "$DIR" "$ref"
   build_and_start
@@ -448,15 +460,17 @@ cmd_tunnel() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --local-port) need_value "$1" $#; check_port "$1" "$2"; lport=$2; shift 2 ;;
-      --ssh-host) need_value "$1" $#; check_hosts "$1" "${2#*@}"; ssh_host=$2; shift 2 ;;
+      --ssh-host) need_value "$1" $#; check_host "$1" "${2#*@}"; ssh_host=$2; shift 2 ;;
       *) usage_error "tunnel: unknown argument '$1'" ;;
     esac
   done
   require_deployment
-  if [ "$PROFILE" != tunnel ]; then
-    printf 'profile %s needs no tunnel: open %s\n' "$PROFILE" "$(base_url)"
-    return 0
-  fi
+  case "$PROFILE" in
+    lan|readonly)
+      printf 'profile %s needs no tunnel: open %s\n' "$PROFILE" "$(base_url)"
+      return 0
+      ;;
+  esac
   stored=$(env_get FORGE_TUNNEL_LOCAL_PORT "$DIR/.env")
   if [ -z "$lport" ]; then lport=${stored:-$PORT}; fi
   if [ -n "$stored" ] && [ "$lport" != "$stored" ]; then
@@ -476,6 +490,10 @@ cmd_tunnel() {
         esac
         ;;
       *)
+        if [ "$PROFILE" = local ]; then
+          printf 'profile local on a local daemon needs no tunnel: open %s\n' "$(base_url)"
+          return 0
+        fi
         printf 'error: context %s has a non-SSH endpoint (%s), so the tunnel host cannot be derived.\n' "$CONTEXT" "$endpoint" >&2
         printf 'Which host runs this daemon? Re-run with --ssh-host <[user@]host>, or use:\n' >&2
         printf '  ssh -L %s:127.0.0.1:%s <host>\n' "$lport" "$PORT" >&2
