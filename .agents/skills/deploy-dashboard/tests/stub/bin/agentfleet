@@ -1,0 +1,16 @@
+#!/bin/sh
+# Fake `agentfleet` for the dashboard-helpers test: just enough for
+# debug-agent's fleet.sh to reach its legacy list (contract major 1, an empty
+# contract Fleet).
+
+set -eu
+
+# shellcheck disable=SC1091 # resolved at runtime from STUB_LIB, not statically
+. "${STUB_LIB:?STUB_LIB is not set}/log-argv.sh"
+log_argv agentfleet "$@"
+
+case "${1:-}" in
+  (--version) printf 'agentfleet 1.0.4 (contract major 1)\n' ;;
+  (ls) printf '{"instances": []}\n' ;;
+  (*) stub_fail "stub agentfleet: no recorded reply for $*" ;;
+esac

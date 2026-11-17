@@ -7,7 +7,8 @@ It follows the same workflow as the sibling
 `../simple-coding-agent-env` project: create an agent with `create-agent`, build
 its Docker image, start it with Docker Compose, change its Workers with
 `manage-pool` (simple-coding-agent only), stop and resume them with
-`operate-agent`, and investigate problems with `debug-agent`.
+`operate-agent`, investigate problems with `debug-agent`, and watch them in
+an agent-dashboard deployed per Docker context with `deploy-dashboard`.
 
 Each instance targets one repository and has its own toolchain, repository
 profile and configuration. It runs one or more Workers (containers), each
@@ -22,7 +23,8 @@ agent-forge/
 │   ├── create-agent/          # Instance scaffolding instructions and templates
 │   ├── manage-pool/           # Add, remove, stop and resume Workers of an instance
 │   ├── operate-agent/         # Operator Commands (stop, resume, next-issue, handoff, recovery, errors-reset, command lookup) and helper
-│   └── debug-agent/           # Diagnostics instructions and helper scripts
+│   ├── debug-agent/           # Diagnostics instructions and helper scripts
+│   └── deploy-dashboard/      # One agent-dashboard per Docker context: helper and instructions
 ├── .claude -> .agents        # Exposes the same skills to Claude Code
 ├── .gitignore
 ├── CONTEXT.md                # Domain glossary (Instance, Worker, Pool, ...)
@@ -38,6 +40,14 @@ agent-forge/
         ├── agent-entrypoint.sh   # Optional, for bundled services
         ├── compose.litellm.yaml  # Optional, joins every Worker to a LiteLLM gateway network
         └── .env.worker-<n>       # Optional, a Worker's own GITHUB_TOKEN
+└── dashboards/               # Local dashboard deployments; ignored by Git
+    └── <docker-context>/
+        ├── docker-compose.yml       # Fetched from agent-dashboard at the pinned ref
+        ├── docker-compose.lan.yml   # Fetched; used by the lan profile
+        ├── .env.example             # Fetched
+        ├── docker-compose.forge.yml # Forge overlay: build from the upstream git context at DASHBOARD_REF
+        ├── .upstream-ref            # The ref the files were fetched at
+        └── .env                     # COMPOSE_FILE, DASHBOARD_REF, DOCKER_GID, access profile
 ```
 
 **Create all instances inside `agent-instances/`.** The entire directory is
@@ -347,6 +357,41 @@ project root:
 They default to the `orbstack` Docker context; pass `--context <name>` for another
 context.
 
+### 7. Deploy a dashboard
+
+Ask your coding assistant to use the
+[`deploy-dashboard`](.agents/skills/deploy-dashboard/SKILL.md) skill to run
+an [agent-dashboard](https://github.com/lbacik/agent-dashboard) on one
+Docker context. For example:
+
+```text
+Use deploy-dashboard to deploy the dashboard on the rpi5 context.
+```
+
+One dashboard serves one Docker context and shows the labelled Managed
+Instances on it. Its deployment lives in `dashboards/<context>/`, never in
+`agent-instances/`. The skill confirms the context, agrees an access profile
+with you, and drives the helper (default context `orbstack`):
+
+```bash
+h=.agents/skills/deploy-dashboard/scripts/dashboard.sh
+$h --context rpi5 init --ref v0.5.0       # tunnel profile off orbstack, local on it
+$h --context rpi5 up                      # config -q, then up -d --build --wait
+$h --context rpi5 account add alice --role controller
+$h --context rpi5 tunnel                  # prints ssh -L <port>:127.0.0.1:<port> <host>
+```
+
+`--ref` is an agent-dashboard tag or a full commit SHA; branches and short
+SHAs are refused. The compose files are fetched from upstream at that ref and
+the image builds on the target daemon from the same ref. The access profiles
+are `local` (workstation), `tunnel` (sign-in over an SSH tunnel), `lan`
+(behind a TLS reverse proxy on an existing proxy network) and `readonly` (no
+sign-in, Control off, trusted network only). `account add` prints a one-time
+Set-password link: it is for you only. `upgrade --ref` moves to another ref
+and keeps `.env` and the `state` volume, `status` checks health, Docker socket
+access and accounts and lists the unlabelled containers the dashboard will
+not show, and `down` never removes volumes.
+
 ## Continuous integration
 
 Every pull request runs the template render check
@@ -503,6 +548,22 @@ Run the same check locally (needs `agentfleet` from the pinned tag, no Docker):
 
 ```bash
 .agents/skills/operate-agent/tests/operate-helpers.sh
+```
+
+Every pull request also runs the dashboard helper check
+([`dashboard-helpers.yml`](.github/workflows/dashboard-helpers.yml)). It
+parses and shellchecks `deploy-dashboard`'s `dashboard.sh` and runs it
+against stubbed Docker, curl and git — no Docker host, no network: ref
+validation (tags and full SHAs only), `init` for each access profile, the
+existing `.env` guard, the `lan` proxy-network check, `up`, `upgrade`
+(`.env` kept, variable report), `down` without volumes, `account`,
+`tunnel` and `status`.
+
+Run the same check locally (needs a POSIX shell, shellcheck and python3, no
+Docker):
+
+```bash
+.agents/skills/deploy-dashboard/tests/dashboard-helpers.sh
 ```
 
 ## Relationship to simple-coding-agent-env

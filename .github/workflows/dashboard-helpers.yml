@@ -1,0 +1,20 @@
+# dashboard-helpers: pin the deploy-dashboard helper against stubbed Docker,
+# curl and git.
+#
+# The assertions live in the script this workflow calls; to pin more
+# behaviour, add a case to the script, not this file. The suite needs no
+# Docker host and no network.
+name: dashboard-helpers
+
+on:
+  pull_request:
+
+jobs:
+  dashboard:
+    name: Pin deploy-dashboard helper
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Parse, shellcheck and pin the deploy-dashboard helper
+        run: .agents/skills/deploy-dashboard/tests/dashboard-helpers.sh
