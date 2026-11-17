@@ -27,10 +27,14 @@
 # separate contract cache (see lib/contract_attempts.sh): <run> is then a
 # native Attempt ID (opaque: coding-agent uses `#<issue>/<n>`), the cache key
 # is context, Managed Instance, backend, Target Repository and Attempt ID,
-# only Sealed archives are reused (after `sha256` verification against the
-# manifest), and unsealed archives are moving snapshots fetched again on
-# every request. A stopped instance is read through Offline Read inside
-# `agentfleet`: no `docker cp` and no legacy throwaway container.
+# and only Sealed archives are reused: `attempts show` must report the
+# Attempt Sealed, the cached manifest must itself be Sealed with the same
+# `sealed_at`, and every file must pass `sha256` verification against the
+# manifest. Any other cached copy (a moving snapshot cached before sealing,
+# a corrupt file) is exported again, never used as a fallback. Unsealed
+# archives are moving snapshots fetched again on every request. A stopped
+# instance is read through Offline Read inside `agentfleet`: no `docker cp`
+# and no legacy throwaway container.
 
 set -eu
 
@@ -156,25 +160,35 @@ if [ "$_use_contract" -eq 1 ]; then
       rm -rf "$_tmpdir"
       exit "$_code"
     fi
-    _sealed=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get("result",{}) if isinstance(d.get("result"),dict) else {}; a=r.get("attempt",{}) if isinstance(r.get("attempt"),dict) else {}; s=a.get("sealed"); sys.stdout.write("yes" if s is True else ("no" if s is False else ""))' "$_tmpdir/show.json") || {
+    # One line: the sealed flag (yes/no, empty when absent), a space, then
+    # `sealed_at` (empty unless it is a string).
+    _seal=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r=d.get("result",{}) if isinstance(d.get("result"),dict) else {}; a=r.get("attempt",{}) if isinstance(r.get("attempt"),dict) else {}; s=a.get("sealed"); t=a.get("sealed_at"); sys.stdout.write(("yes" if s is True else ("no" if s is False else "")) + " " + (t if isinstance(t,str) else ""))' "$_tmpdir/show.json") || {
       rm -rf "$_tmpdir"
       echo "error: cannot read attempts show for '$_id'" >&2
       exit 1
     }
+    _sealed=${_seal%% *}
+    _sealed_at=${_seal#* }
     if [ -z "$_sealed" ]; then
       rm -rf "$_tmpdir"
       echo "error: attempts show for '$_id' names no sealed flag" >&2
       exit 1
     fi
     _dest=$(contract_cache_dir "$context" "$_managed" "$_backend" "$_repo" "$_id")
-    if [ "$_sealed" = yes ] && [ -f "$_dest/manifest.json" ] \
-      && python3 "$(dirname "$0")/lib/verify_archive.py" "$_dest" >/dev/null 2>&1; then
+    # Reuse only the Sealed archive itself: the cached manifest must be
+    # Sealed with the `sealed_at` that `attempts show` reports, and every
+    # file must match its `sha256`. A cached moving snapshot of an Attempt
+    # Sealed since is internally consistent, so `sha256` alone cannot tell.
+    if [ "$_sealed" = yes ] && [ -n "$_sealed_at" ] && [ -f "$_dest/manifest.json" ] \
+      && python3 "$(dirname "$0")/lib/verify_archive.py" --sealed-at "$_sealed_at" "$_dest" >/dev/null 2>&1; then
       echo "$_dest   (cached, sealed, verified)"
       _fetched="$_fetched $_id"
       continue
     fi
-    # Sealed but unverifiable, or unsealed: export again. A `sha256`
-    # mismatch in the fresh export is a torn read: export again, bounded.
+    # Unsealed, or a cached copy that is stale (not Sealed, other or missing
+    # `sealed_at`), corrupt or missing: export again, never fall back to the
+    # cached copy. A `sha256` mismatch in the fresh export is a torn read:
+    # export again, bounded.
     _done=0
     _try=1
     while [ "$_try" -le 3 ]; do

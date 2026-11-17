@@ -71,10 +71,15 @@ into a separate contract cache
 (`~/.cache/simple-coding-agent-env/contract-attempts/<context>/<managed>/<backend>/<repo>/<attempt>/`,
 each key component percent-encoded so opaque Attempt IDs such as `#41/1`
 become one safe path component). Read the cached copy with Read, Grep and
-`jq` exactly as the legacy cache. Only Sealed archives are reused, after
-`sha256` verification against the manifest; unsealed archives are moving
-snapshots, fetched again on every request. A `sha256` mismatch in a fresh
-export is a torn read and is fetched again.
+`jq` exactly as the legacy cache. A cached copy is reused only when
+`attempts show` reports the Attempt Sealed, the cached manifest is itself the
+Sealed archive (its `attempt.sealed` is `true` and its `attempt.sealed_at`
+equals the `sealed_at` from `attempts show`), and every file passes `sha256`
+verification against the manifest. Any other cached copy — a moving snapshot
+cached before the Attempt was Sealed, a different or missing `sealed_at`, a
+corrupt file — is exported again, never used as a fallback. Unsealed archives
+are moving snapshots, fetched again on every request. A `sha256` mismatch in a
+fresh export is a torn read and is fetched again.
 
 ```bash
 A=<path fetch-run.sh printed>
@@ -116,7 +121,8 @@ summary's `outcome` (`native` as the backend labels it, a human `label`, and a
 `reason`) is recorded when the Attempt finishes — or stays `null` while the
 Attempt is still open. `sealed` tells whether the archive is finished and
 immutable: a Sealed archive carries `sealed_at` and never changes, so the
-helper reuses the cached copy after `sha256` verification. An unsealed archive
+helper reuses a cached copy whose own manifest is Sealed with the same
+`sealed_at` as `attempts show`, after `sha256` verification. An unsealed archive
 (including the active Attempt) is a moving snapshot: it is fetched again on
 every request and labelled as such in the helper output. Never treat a cached
 unsealed copy as current, and never infer sealedness from files on disk — the
