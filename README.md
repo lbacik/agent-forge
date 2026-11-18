@@ -125,7 +125,11 @@ reviewed `skill-policy.json`) with its prepared Skill Bundle, the labelled
 `worker` runs coding-agent's `implement` Workflow with the full v3 `agent
 run` invocation, and `agent`/`validate` stay available as unlabelled
 one-off seats on the same derived image against the same state volume.
-There is no stack block — the toolchain is fixed by coding-agent's Supported
+A bare `docker compose up -d` starts only the `worker`: `engine` has
+`scale: 0` and the one-off seats sit in the `tools` profile.
+`docker compose run --rm agent ...` and `run --rm validate` work without
+`--profile`. To list all four services, run
+`docker compose --profile '*' config --services`. There is no stack block — the toolchain is fixed by coding-agent's Supported
 Toolchain Matrix.
 
 Before scaffolding, the skill checks the Fleet on the target Docker context
