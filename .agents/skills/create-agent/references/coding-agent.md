@@ -64,7 +64,16 @@ or added, update every reference that names it (`grep -rn` the old name).
   one-off seats (`docker compose run --rm ...`) on the same derived image,
   so `validate` and `startup-check` see the same toolchains and the same
   baked package as the Worker. `engine` is the build-only base image (never
-  run, never labelled). All three runtime seats share one state volume at
+  run, never labelled). So that a bare `docker compose up -d` starts the
+  Worker alone, `engine` has `scale: 0` and `agent` and `validate` are in
+  the `tools` profile. Naming a service (`docker compose run --rm validate`)
+  enables its profile, so the one-off commands need no `--profile`. `engine`
+  must not take a profile: an inactive profile drops it from the model, and
+  then the `service:engine` build context fails to resolve and every
+  command fails, `docker compose config` included. `scale: 0` is a plain
+  Compose Specification field and needs no swarm.
+  `docker compose config --services` lists `engine` and `worker`; add
+  `--profile '*'` to list all four. All three runtime seats share one state volume at
   coding-agent's state path (`/var/lib/coding-agent`, read at the ref).
   `agent` stays a bare seat: the Workflow Configuration is baked into the
   image, so commands that read it need no mount (see "Validation").

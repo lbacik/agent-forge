@@ -40,10 +40,21 @@
 # seats (`docker compose run --rm ...`) on the same derived image, so
 # `validate` and `startup-check` see the same toolchains and the same baked
 # package as the Worker. `engine` is the build-only base image (never run,
-# never labelled). Exactly one Worker per Target Repository and state
-# volume: Pool rendering never applies, because this backend never
-# advertises the `pool` Operator Capability, so there is no `agent-2..N`
-# stanza here and `manage-pool` does not apply.
+# never labelled). So that a bare `docker compose up -d` starts the Worker
+# alone, `engine` has `scale: 0` and `agent` and `validate` sit in the
+# `tools` profile. Naming a service (`docker compose run --rm validate`)
+# enables its profile, so the one-off commands need no `--profile` flag.
+# `engine` cannot take a profile instead: a profile left inactive drops it
+# from the model, the `service:engine` build context no longer resolves, and
+# every command fails, even `docker compose config`. `scale: 0` keeps it in
+# the model, so it is still built, but Compose creates no container for it.
+# `docker compose config --services` therefore lists `engine` and `worker`;
+# add `--profile '*'` to see all four.
+#
+# Exactly one Worker per Target Repository and state volume: Pool rendering
+# never applies, because this backend never advertises the `pool` Operator
+# Capability, so there is no `agent-2..N` stanza here and `manage-pool` does
+# not apply.
 #
 # Hardening mirrors coding-agent's own deployment (its compose.yaml at the
 # chosen ref): read-only root filesystem with a writable /tmp on every
@@ -103,8 +114,12 @@ services:
   # image builds FROM. Never run and never labelled: it exists so the
   # derived services above resolve their `engine` build context. Rebuilt
   # automatically as part of `docker compose build` and of
-  # `docker compose up --build -d worker`.
+  # `docker compose up --build -d worker`. `scale: 0` keeps it out of a bare
+  # `docker compose up -d`. It must not take a profile: that would remove it
+  # from the model and break the `service:engine` build context (see the
+  # header).
   engine:
+    scale: 0
     build:
       context: https://github.com/lbacik/coding-agent.git#${CODING_AGENT_REF:-main}
       target: deployment
@@ -119,9 +134,12 @@ services:
   # The Workflow Configuration and its Skill Bundle are baked into this
   # image (see the Dockerfile), so commands that read them need no mount
   # and no secrets set: `config validate` is static. Never labelled: one-off
-  # containers are never Managed Instances.
+  # containers are never Managed Instances. In the `tools` profile, so a bare
+  # `docker compose up -d` skips it; `docker compose run --rm agent ...`
+  # names it and needs no `--profile`.
   agent:
     <<: *agent
+    profiles: [tools]
     command: ["--help"]
 
   # Validates one checkout against its own Project Profile. Point it at the
@@ -137,9 +155,11 @@ services:
   # Always set it to a real checkout when running this service. The two
   # paths sit in the entrypoint rather than in `command` so that arguments
   # given to `docker compose run` are appended to them instead of replacing
-  # them. Never labelled: a one-off seat, not a Managed Instance.
+  # them. Never labelled: a one-off seat, not a Managed Instance. In the
+  # `tools` profile, like `agent`.
   validate:
     <<: *agent
+    profiles: [tools]
     volumes:
       - state:/var/lib/coding-agent
       - ${TARGET_PROJECT:-./target}:/var/lib/coding-agent/workspaces/target

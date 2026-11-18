@@ -270,9 +270,20 @@ service_block() {
 # fixture's .env in Compose interpolation, so an exported COMPOSE_FILE,
 # GATEWAY_NETWORK or credential from the caller's shell would rewire the
 # fixture and could leak a real secret into the check. `config` is
-# client-side and needs no daemon, so PATH and HOME suffice.
+# client-side and needs no daemon, so PATH and HOME suffice. Any further
+# arguments are global Compose flags placed before `config` (for example
+# `--profile '*'`, to include services kept out of the default model by a
+# profile).
 compose_config() {
-  (cd "$1" && env -i PATH="$PATH" HOME="$HOME" docker compose config)
+  (cd "$1" && shift && env -i PATH="$PATH" HOME="$HOME" docker compose "$@" config)
+}
+
+# compose_services DIR [FLAGS...] -- print `docker compose config --services`
+# for the rendered directory, as hermetically as compose_config and with the
+# same optional global flags: the services a bare `docker compose up`
+# considers when no profile is enabled.
+compose_services() {
+  (cd "$1" && shift && env -i PATH="$PATH" HOME="$HOME" docker compose "$@" config --services)
 }
 
 # check_model_shape CONFIG LABEL -- assertions shared by the plain and the
@@ -373,7 +384,9 @@ check_contract_instance() {
 # check_coding_agent_instance DIR LABEL VARIANT -- `docker compose config`
 # must accept the rendered coding-agent directory, and the resulting model
 # must carry the adapter's shape: the build-only `engine` base plus three
-# derived services sharing one state volume and one derived image, all four
+# derived services sharing one state volume and one derived image, a default
+# model (no profile) of `engine` (`scale: 0`) and `worker` only so that a
+# bare `docker compose up` starts the Worker alone, all four
 # discovery labels on the worker and on no one-off service, the worker's
 # hardening (never restarted, init, read-only root filesystem, the full v3
 # `run` invocation with no bind mount at /etc/coding-agent), the exact stop
@@ -399,9 +412,34 @@ check_coding_agent_instance() {
   fi
   instance_dir_name=$(basename "$dir")
   info "checking $label instance"
-  if ! config_output=$(compose_config "$dir"); then
-    fail "$label: 'docker compose config' failed"
+  # The full model: `agent` and `validate` sit in the `tools` profile, so
+  # every per-service assertion below reads the model with all profiles
+  # enabled. Without it their blocks would be empty and the "key absent
+  # from this seat" checks would pass vacuously.
+  if ! config_output=$(compose_config "$dir" --profile '*'); then
+    fail "$label: 'docker compose --profile * config' failed"
   fi
+  # A bare `docker compose up -d` must start the Worker alone. `engine` must
+  # stay in the default model, because a profile left inactive would drop it
+  # and break the `service:engine` build context; `scale: 0` keeps it out of
+  # `up` instead. The one-off seats are kept out by the `tools` profile.
+  if ! default_services=$(compose_services "$dir"); then
+    fail "$label: 'docker compose config --services' failed"
+  fi
+  default_services=$(printf '%s\n' "$default_services" | sort | tr '\n' ' ')
+  if [ "$default_services" != "engine worker " ]; then
+    fail "$label: default services are '$default_services', want 'engine worker ' (agent and validate belong in the tools profile)"
+  fi
+  assert_contains "$(service_block "$config_output" engine)" 'scale: 0' \
+    "$label: engine lacks scale: 0, so a bare 'docker compose up' would start it"
+  assert_not_contains "$(service_block "$config_output" engine)" 'profiles:' \
+    "$label: engine must not take a profile (it would break the service:engine build context)"
+  for seat in agent validate; do
+    assert_contains "$(service_block "$config_output" "$seat")" '- tools' \
+      "$label: $seat seat is not in the tools profile"
+  done
+  assert_not_contains "$(service_block "$config_output" worker)" 'profiles:' \
+    "$label: worker must not take a profile (a bare 'docker compose up' starts it)"
   # The Compose project is the directory name: the template sets no `name:`.
   assert_contains "$config_output" "name: $instance_dir_name" \
     "$label: Compose project name is not the instance directory name"
