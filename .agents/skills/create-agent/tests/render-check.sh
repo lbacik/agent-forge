@@ -27,7 +27,7 @@
 # `agent run` invocation and bind-mounts nothing at /etc/coding-agent (the
 # package is baked into the image, so any edit under `workflow/` needs
 # `docker compose build`). Its rendered `workflow/workflow.yml` is a
-# `version: 3` file with a `skills:` block whose static `skill:` references
+# `version: 4` file with a `skills:` block whose static `skill:` references
 # name declared members only. The coding-agent gateway variant renders the
 # same layout with a LiteLLM gateway pin instead of the direct pin: the
 # worker's explicit environment names `LITELLM_PROXY_API_KEY` (and no other
@@ -45,7 +45,7 @@
 # has no coding-agent installed — neither an `agent` CLI at a pinned ref
 # nor a built image — so there the script records the skip and passes;
 # install the CLI at the pinned ref (for example `uv tool
-# install git+https://github.com/lbacik/coding-agent@v0.4.0`) or build the
+# install git+https://github.com/lbacik/coding-agent@v0.4.7`) or build the
 # image and re-run this script locally to cover validation too.
 #
 # Usage (from anywhere in this repository):
@@ -96,10 +96,14 @@ PH_PRICE_INPUT=2.00
 PH_PRICE_OUTPUT=10.00
 PH_PRICE_CACHE_READ=0.20
 PH_PRICE_CACHE_WRITE=2.50
+PH_CONTEXT_WINDOW_TOKENS=1000000
+PH_CONTEXT_THRESHOLD_TOKENS=80000
+PH_OUTPUT_CAP_TOKENS=32000
 PH_GATEWAY_URL=http://litellm:4000
 PH_GATEWAY_MODEL=muse-spark-1.3-contributor
 PH_GATEWAY_EFFORT=medium
 PH_GATEWAY_API_KEY_ENV=LITELLM_PROXY_API_KEY
+PH_GATEWAY_CONTEXT_WINDOW_TOKENS=1000000
 PH_GATEWAY_OUTPUT_CAP_TOKENS=32000
 PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS=300000
 PH_GATEWAY_PRICE_INPUT=0.10
@@ -107,11 +111,21 @@ PH_GATEWAY_PRICE_OUTPUT=0.20
 PH_GATEWAY_PRICE_CACHE_READ=0.002
 PH_GATEWAY_PRICE_CACHE_WRITE=0.10
 PH_LIMIT_COST_USD=20
-PH_LIMIT_TOKENS=4000000
+PH_LIMIT_EFFECTIVE_TOKENS=4000000
 PH_LIMIT_TOOL_CALLS=600
 PH_LIMIT_WALL_CLOCK_MINUTES=60
 PH_PROCESS_LIMIT_COST_USD=12
 PH_SELF_REVIEW_LIMIT_COST_USD=3
+# The reserved `ai-handoff` effective-tokens allowance: 150000, raised to one
+# maximal Admission hold (Usable Threshold = threshold - 2000, plus the
+# output cap) when the pin's threshold needs more. Per variant, because the
+# gateway fixture's 300000 threshold needs 330000.
+handoff_effective_tokens() {
+  floor=$(($1 - 2000 + $2))
+  if [ "$floor" -gt 150000 ]; then echo "$floor"; else echo 150000; fi
+}
+PH_DIRECT_HANDOFF_EFFECTIVE_TOKENS=$(handoff_effective_tokens "$PH_CONTEXT_THRESHOLD_TOKENS" "$PH_OUTPUT_CAP_TOKENS")
+PH_GATEWAY_HANDOFF_EFFECTIVE_TOKENS=$(handoff_effective_tokens "$PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS" "$PH_GATEWAY_OUTPUT_CAP_TOKENS")
 
 WORK_ROOT=""
 
@@ -573,18 +587,18 @@ check_coding_agent_instance() {
   if ! grep -qF -- 'stop_grace_period: 60s' "$dir/compose.yaml"; then
     fail "$label: compose.yaml lost stop_grace_period: 60s"
   fi
-  # The rendered Workflow Configuration: a version: 3 file with a Skill
+  # The rendered Workflow Configuration: a version: 4 file with a Skill
   # Bundle, repository, branch, credentials by environment-variable name
   # only, a lawful Selection Label, the full Attempt Ceiling and Step
   # Allowances that fit the Work Pool. Every static `skill:` reference must
   # name a declared bundle member.
   workflow_content=$(cat "$dir/workflow/workflow.yml")
-  assert_contains "$workflow_content" 'version: 3' \
-    "$label: workflow.yml is not a version: 3 file"
-  assert_line_matches "$workflow_content" '^version: 3$' \
-    "$label: workflow.yml version line is not exactly 'version: 3'"
-  assert_contains "$workflow_content" 'workflow-v3.schema.json' \
-    "$label: workflow.yml editor schema is not workflow-v3"
+  assert_contains "$workflow_content" 'version: 4' \
+    "$label: workflow.yml is not a version: 4 file"
+  assert_line_matches "$workflow_content" '^version: 4$' \
+    "$label: workflow.yml version line is not exactly 'version: 4'"
+  assert_contains "$workflow_content" 'workflow-v4.schema.json' \
+    "$label: workflow.yml editor schema is not workflow-v4"
   assert_contains "$workflow_content" 'skills:' \
     "$label: workflow.yml declares no Skill Bundle"
   assert_contains "$workflow_content" 'git+https://github.com/mattpocock/skills.git' \
@@ -619,8 +633,8 @@ check_coding_agent_instance() {
       "$label: workflow.yml api-key-env does not name an environment variable"
   fi
   # The model pin: exactly one variant. A direct pin is a `provider:` block
-  # with no gateway-only keys; a gateway pin is a `gateway:` block with no
-  # `provider:` key. The anchored patterns tell pin keys apart from the
+  # with no `gateway:` key; a gateway pin is a `gateway:` block with no
+  # `provider:` key. Both declare the three token keys (version 4). The anchored patterns tell pin keys apart from the
   # template's prose comments about the other variant.
   if [ "$variant" = direct ]; then
     assert_line_matches "$workflow_content" \
@@ -629,12 +643,16 @@ check_coding_agent_instance() {
     assert_not_line_matches "$workflow_content" \
       '^    gateway:' \
       "$label: workflow.yml direct pin carries a gateway block"
-    assert_not_line_matches "$workflow_content" \
-      '^    output-cap-tokens:' \
-      "$label: workflow.yml direct pin carries output-cap-tokens"
-    assert_not_line_matches "$workflow_content" \
-      '^    context-threshold-tokens:' \
-      "$label: workflow.yml direct pin carries context-threshold-tokens"
+    assert_line_matches "$workflow_content" \
+      "^    context-window-tokens: $PH_CONTEXT_WINDOW_TOKENS\$" \
+      "$label: workflow.yml direct pin misses context-window-tokens"
+    assert_line_matches "$workflow_content" \
+      "^    context-threshold-tokens: $PH_CONTEXT_THRESHOLD_TOKENS\$" \
+      "$label: workflow.yml direct pin misses context-threshold-tokens"
+    assert_line_matches "$workflow_content" \
+      "^    output-cap-tokens: $PH_OUTPUT_CAP_TOKENS\$" \
+      "$label: workflow.yml direct pin misses output-cap-tokens"
+    handoff_tokens=$PH_DIRECT_HANDOFF_EFFECTIVE_TOKENS
     assert_not_line_matches "$(cat "$dir/compose.yaml")" \
       '^      LITELLM_PROXY_API_KEY:' \
       "$label: compose.yaml sets LITELLM_PROXY_API_KEY on a direct pin"
@@ -664,6 +682,10 @@ check_coding_agent_instance() {
       "$label: workflow.yml gateway pin endpoint is not responses"
     assert_contains "$workflow_content" "api-key-env: $PH_GATEWAY_API_KEY_ENV" \
       "$label: workflow.yml gateway pin api-key-env is not $PH_GATEWAY_API_KEY_ENV"
+    assert_line_matches "$workflow_content" \
+      "^    context-window-tokens: $PH_GATEWAY_CONTEXT_WINDOW_TOKENS\$" \
+      "$label: workflow.yml gateway pin misses context-window-tokens"
+    handoff_tokens=$PH_GATEWAY_HANDOFF_EFFECTIVE_TOKENS
     assert_contains "$workflow_content" \
       "output-cap-tokens: $PH_GATEWAY_OUTPUT_CAP_TOKENS" \
       "$label: workflow.yml gateway pin misses output-cap-tokens"
@@ -727,8 +749,16 @@ check_coding_agent_instance() {
     "$label: workflow.yml Selection Label breaks coding-agent's rules"
   assert_contains "$workflow_content" "cost-usd: $PH_LIMIT_COST_USD" \
     "$label: workflow.yml Attempt Ceiling cost is incomplete"
-  assert_contains "$workflow_content" "tokens: $PH_LIMIT_TOKENS" \
-    "$label: workflow.yml Attempt Ceiling tokens are incomplete"
+  assert_contains "$workflow_content" "effective-tokens: $PH_LIMIT_EFFECTIVE_TOKENS" \
+    "$label: workflow.yml Attempt Ceiling effective-tokens are incomplete"
+  # Version 4 renamed the token meter: a `tokens` limit is refused as an
+  # unknown key, in a block or a flow mapping.
+  assert_not_line_matches "$workflow_content" '^ *tokens:' \
+    "$label: workflow.yml still names the version 3 tokens meter"
+  assert_not_line_matches "$workflow_content" '[{,] *tokens:' \
+    "$label: workflow.yml still names the version 3 tokens meter"
+  assert_contains "$workflow_content" "effective-tokens: $handoff_tokens, tool-calls: 30" \
+    "$label: workflow.yml ai-handoff reserve is not $handoff_tokens effective-tokens"
   assert_contains "$workflow_content" "tool-calls: $PH_LIMIT_TOOL_CALLS" \
     "$label: workflow.yml Attempt Ceiling tool-calls are incomplete"
   assert_contains "$workflow_content" "wall-clock-minutes: $PH_LIMIT_WALL_CLOCK_MINUTES" \
@@ -930,6 +960,11 @@ render_coding_agent_workflow() {
   if [ "$3" != direct ] && [ "$3" != gateway ]; then
     fail "render_coding_agent_workflow: unknown VARIANT '$3' (want direct or gateway)"
   fi
+  if [ "$3" = direct ]; then
+    handoff=$PH_DIRECT_HANDOFF_EFFECTIVE_TOKENS
+  else
+    handoff=$PH_GATEWAY_HANDOFF_EFFECTIVE_TOKENS
+  fi
   tmp="$2.tmp"
   sed -e "s|{{OWNER}}|$PH_OWNER|g" \
     -e "s|{{REPO}}|$PH_REPO|g" \
@@ -943,10 +978,14 @@ render_coding_agent_workflow() {
     -e "s|{{PRICE_OUTPUT}}|$PH_PRICE_OUTPUT|g" \
     -e "s|{{PRICE_CACHE_READ}}|$PH_PRICE_CACHE_READ|g" \
     -e "s|{{PRICE_CACHE_WRITE}}|$PH_PRICE_CACHE_WRITE|g" \
+    -e "s|{{CONTEXT_WINDOW_TOKENS}}|$PH_CONTEXT_WINDOW_TOKENS|g" \
+    -e "s|{{CONTEXT_THRESHOLD_TOKENS}}|$PH_CONTEXT_THRESHOLD_TOKENS|g" \
+    -e "s|{{OUTPUT_CAP_TOKENS}}|$PH_OUTPUT_CAP_TOKENS|g" \
     -e "s|{{GATEWAY_URL}}|$PH_GATEWAY_URL|g" \
     -e "s|{{GATEWAY_MODEL}}|$PH_GATEWAY_MODEL|g" \
     -e "s|{{GATEWAY_EFFORT}}|$PH_GATEWAY_EFFORT|g" \
     -e "s|{{GATEWAY_API_KEY_ENV}}|$PH_GATEWAY_API_KEY_ENV|g" \
+    -e "s|{{GATEWAY_CONTEXT_WINDOW_TOKENS}}|$PH_GATEWAY_CONTEXT_WINDOW_TOKENS|g" \
     -e "s|{{GATEWAY_OUTPUT_CAP_TOKENS}}|$PH_GATEWAY_OUTPUT_CAP_TOKENS|g" \
     -e "s|{{GATEWAY_CONTEXT_THRESHOLD_TOKENS}}|$PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS|g" \
     -e "s|{{GATEWAY_PRICE_INPUT}}|$PH_GATEWAY_PRICE_INPUT|g" \
@@ -954,7 +993,8 @@ render_coding_agent_workflow() {
     -e "s|{{GATEWAY_PRICE_CACHE_READ}}|$PH_GATEWAY_PRICE_CACHE_READ|g" \
     -e "s|{{GATEWAY_PRICE_CACHE_WRITE}}|$PH_GATEWAY_PRICE_CACHE_WRITE|g" \
     -e "s|{{LIMIT_COST_USD}}|$PH_LIMIT_COST_USD|g" \
-    -e "s|{{LIMIT_TOKENS}}|$PH_LIMIT_TOKENS|g" \
+    -e "s|{{LIMIT_EFFECTIVE_TOKENS}}|$PH_LIMIT_EFFECTIVE_TOKENS|g" \
+    -e "s|{{HANDOFF_EFFECTIVE_TOKENS}}|$handoff|g" \
     -e "s|{{LIMIT_TOOL_CALLS}}|$PH_LIMIT_TOOL_CALLS|g" \
     -e "s|{{LIMIT_WALL_CLOCK_MINUTES}}|$PH_LIMIT_WALL_CLOCK_MINUTES|g" \
     -e "s|{{PROCESS_LIMIT_COST_USD}}|$PH_PROCESS_LIMIT_COST_USD|g" \
