@@ -1,5 +1,5 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/lbacik/coding-agent/main/schemas/workflow-v3.schema.json
-# Workflow Configuration (`version: 3`) for the coding-agent instance
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lbacik/coding-agent/main/schemas/workflow-v4.schema.json
+# Workflow Configuration (`version: 4`) for the coding-agent instance
 # dedicated to {{OWNER}}/{{REPO}}: one `implement` Workflow (issue in, pull
 # request out). Rendered by the create-agent skill from this template; the
 # operator guide is coding-agent's docs/ops/workflow-configuration.md, and
@@ -13,9 +13,9 @@
 # with no secrets set: `config validate` is static, it checks the whole file
 # without opening an Attempt or writing to GitHub.
 #
-# `version: 2` files are refused with a migration diagnostic (coding-agent
-# 0.3.0 made `version: 3` the only accepted format): keep `version: 3` and
-# the `skills:` block below. A missing `skills` field means an empty bundle,
+# `version: 2` and `version: 3` files are refused with a migration
+# diagnostic (coding-agent 0.4.7 made `version: 4` the only accepted
+# format): keep `version: 4` and the `skills:` block below. A missing `skills` field means an empty bundle,
 # so every static `skill:` reference below names a declared member, and every
 # member needs a reviewed entry in the workflow directory's
 # `skill-policy.json` (copied verbatim from the CODING_AGENT_REF checkout's
@@ -29,7 +29,7 @@
 # variables only; the values live in `.env`. A value that looks like a
 # secret where a name belongs fails validation.
 
-version: 3
+version: 4
 
 target:
   kind: github
@@ -42,10 +42,12 @@ models:
   # a `gateway` pin through a Model Gateway (coding-agent
   # `docs/ops/workflow-configuration.md`, "Gateway pins", at
   # CODING_AGENT_REF). The skill renders one variant below and deletes the
-  # other; a file carrying both is a duplicate `main` key. The context window
-  # and the per-request output cap of a direct pin stay in code; a gateway pin
-  # carries its own `output-cap-tokens` and `context-threshold-tokens`, and a
-  # direct pin naming either key is refused. `target.token-env` and each
+  # other; a file carrying both is a duplicate `main` key. Every pin, direct
+  # or gateway, declares its own `context-window-tokens` (the Model Context
+  # Window), `context-threshold-tokens` (the Handoff Threshold) and
+  # `output-cap-tokens`: `context-threshold-tokens + output-cap-tokens` must
+  # not exceed the window, and the threshold must exceed the code-owned
+  # safety margin plus request overhead (1,000 + 1,000). `target.token-env` and each
   # model's `api-key-env` name environment variables only; the values live in
   # `.env`. Prices (`prices-usd-per-mtok`: `input`, `output`, `cache-read`,
   # `cache-write`) come from the operator — confirm them (defaults are the
@@ -53,7 +55,10 @@ models:
   # prices are the Worker's only cost authority.
   main:
     # Direct provider pin: delete the lines from direct-pin-begin through
-    # direct-pin-end for a gateway pin.
+    # direct-pin-end for a gateway pin. The three token keys default to the
+    # upstream recommendation for the pinned model (workflow-configuration.md
+    # at CODING_AGENT_REF: claude-sonnet-5 1,000,000 / 80,000 / 32,000,
+    # gpt-5.6-luna 1,050,000 / 100,000 / 32,000).
     # direct-pin-begin
     provider: {{PROVIDER}}
     model: {{MODEL}}
@@ -61,6 +66,9 @@ models:
     effort: medium
     api-key-env: {{API_KEY_ENV}}
     prices-usd-per-mtok: {input: {{PRICE_INPUT}}, output: {{PRICE_OUTPUT}}, cache-read: {{PRICE_CACHE_READ}}, cache-write: {{PRICE_CACHE_WRITE}}}
+    context-window-tokens: {{CONTEXT_WINDOW_TOKENS}}
+    context-threshold-tokens: {{CONTEXT_THRESHOLD_TOKENS}}
+    output-cap-tokens: {{OUTPUT_CAP_TOKENS}}
     # direct-pin-end
     # Gateway pin variant: for a LiteLLM gateway pin, delete the direct pin
     # above and uncomment the block from gateway-pin-begin through
@@ -71,12 +79,11 @@ models:
     # `url-env` at the documented ref (proposed upstream, not available), so
     # the address is baked into the image. `model` is the gateway's L1 alias,
     # the name the gateway reports in `x-litellm-model-group`. `effort` is
-    # low, medium or high. `output-cap-tokens` and
-    # `context-threshold-tokens` are the pin's own output cap and
-    # context-window threshold (the threshold triggers Context-Window
-    # Handoffs, bounded per step by the code-owned handoff cap, and must
-    # exceed the code-owned safety margin plus request overhead): ask the
-    # operator for both. For a Meta model, which has no cache-write premium,
+    # low, medium or high. `context-window-tokens`, `output-cap-tokens` and
+    # `context-threshold-tokens` are the pin's own Model Context Window,
+    # output cap and context-window threshold (the threshold triggers
+    # Context-Window Handoffs, bounded per step by the code-owned handoff
+    # cap): ask the operator for all three. For a Meta model, which has no cache-write premium,
     # set `cache-write` equal to `input` (a gateway response without
     # `cache_write_tokens` is priced at max(`input`, `cache-write`)).
     # gateway-pin-begin
@@ -85,6 +92,7 @@ models:
     # endpoint: responses
     # effort: {{GATEWAY_EFFORT}}
     # api-key-env: {{GATEWAY_API_KEY_ENV}}
+    # context-window-tokens: {{GATEWAY_CONTEXT_WINDOW_TOKENS}}
     # output-cap-tokens: {{GATEWAY_OUTPUT_CAP_TOKENS}}
     # context-threshold-tokens: {{GATEWAY_CONTEXT_THRESHOLD_TOKENS}}
     # prices-usd-per-mtok: {input: {{GATEWAY_PRICE_INPUT}}, output: {{GATEWAY_PRICE_OUTPUT}}, cache-read: {{GATEWAY_PRICE_CACHE_READ}}, cache-write: {{GATEWAY_PRICE_CACHE_WRITE}}}
@@ -123,7 +131,7 @@ workflows:
       skip-open-agent-pr: true          # skip an issue whose own agent PR is still open
     limits:                             # Attempt Ceiling (mandatory, all four meters)
       cost-usd: {{LIMIT_COST_USD}}
-      tokens: {{LIMIT_TOKENS}}
+      effective-tokens: {{LIMIT_EFFECTIVE_TOKENS}}  # excludes prompt-cache reads
       tool-calls: {{LIMIT_TOOL_CALLS}}
       wall-clock-minutes: {{LIMIT_WALL_CLOCK_MINUTES}}
     max-parallel-subagents: 2
@@ -238,9 +246,13 @@ workflows:
         # (`process`, `self-review`) must fit in that Work Pool, or validation
         # refuses it: the skill checks the fit before writing this file and asks
         # the operator for new allowances or a higher ceiling instead of scaling
-        # them itself.
+        # them itself. Every limit declaring `effective-tokens` or `cost-usd`
+        # must also hold one maximal Admission hold: `effective-tokens` >=
+        # Usable Threshold (`context-threshold-tokens` - 2,000) +
+        # `output-cap-tokens`. The skill renders 150000 here, or that floor
+        # when the pin's threshold needs more.
         reserved: true
-        limits: {cost-usd: 1, tokens: 150000, tool-calls: 30, wall-clock-minutes: 5}
+        limits: {cost-usd: 1, effective-tokens: {{HANDOFF_EFFECTIVE_TOKENS}}, tool-calls: 30, wall-clock-minutes: 5}
         routes:
           handoff: handoff-push
 

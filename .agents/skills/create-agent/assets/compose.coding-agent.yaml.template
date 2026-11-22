@@ -176,7 +176,7 @@ services:
     command: []
 
   # The Worker (step-workflow contract §4): `agent run` against the baked
-  # `version: 3` Workflow Configuration at /etc/coding-agent/workflow.yml,
+  # `version: 4` Workflow Configuration at /etc/coding-agent/workflow.yml,
   # with the baked prompts, reviewed skill-policy.json, prepared bundle
   # records and Supported Toolchain Matrix the derived image carries. It
   # selects, claims and runs the selected Workflow's inputs one Attempt at

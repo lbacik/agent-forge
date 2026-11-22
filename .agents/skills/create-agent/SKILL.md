@@ -375,14 +375,18 @@ Shallow-clone that same ref into the scratchpad and read, at that commit:
 - `src/coding_agent/provider/config.py` — the code-owned direct
   (`provider`, `model`, `endpoint`) pins and their prices. Only a pair from
   that table (Anthropic and OpenAI at the documented ref) may go into a
-  direct pin; anything else refuses startup. A gateway pin instead carries
-  its own `output-cap-tokens` and `context-threshold-tokens` (see
-  `src/coding_agent/provider/pinned_model.py` and the "Gateway pins"
-  section below); a direct pin naming either key is refused.
+  direct pin; anything else refuses startup. Every pin, direct or gateway,
+  declares its own `context-window-tokens`, `context-threshold-tokens` and
+  `output-cap-tokens` (see `src/coding_agent/provider/pinned_model.py`,
+  the recommended values in `docs/ops/workflow-configuration.md` and the
+  "Gateway pins" section below).
 - `docs/ops/workflow-configuration.md` and `docker/deployment/workflow.yml`
-  (or their equivalents at the ref) — the `version: 3` file shape the
-  template mirrors: `version: 3`, the `skills:` Skill Bundle declaration,
-  and the reviewed `skill-policy.json` beside the YAML. Re-check the
+  (or their equivalents at the ref) — the `version: 4` file shape the
+  template mirrors: `version: 4`, the three token keys on every pin, the
+  `effective-tokens` meter in every `limits` block, the `skills:` Skill
+  Bundle declaration, and the reviewed `skill-policy.json` beside the
+  YAML. A ref older than coding-agent 0.4.7 accepts only `version: 3`:
+  render this template only at 0.4.7 or later. Re-check the
   "Gateway pins" and "Recommended gateway configuration" sections (gateway
   shape, the pin-violation guarantee, the Provider Capability Assertion) and
   the contract's pin-violation rows (§12, §16.3: the Attempt ends
@@ -482,16 +486,24 @@ the ref. The rest of this step is simple-coding-agent only.
 
 On the `coding-agent` path, fill the template's placeholders from the
 operator's choices: the Target Repository, its default branch, the Selection
-Label, the model pin with its confirmed prices, the Attempt Ceiling (all four
-meters), and the two non-reserved Step Allowances (`{{PROCESS_LIMIT_COST_USD}}`
+Label, the model pin with its confirmed prices and its three token keys
+(`{{CONTEXT_WINDOW_TOKENS}}`, `{{CONTEXT_THRESHOLD_TOKENS}}`,
+`{{OUTPUT_CAP_TOKENS}}` on a direct pin default to the upstream
+recommendation for the model — 1,000,000 / 80,000 / 32,000 for
+`claude-sonnet-5`, 1,050,000 / 100,000 / 32,000 for `gpt-5.6-luna`; on a
+gateway pin all three are asked, never defaulted), the Attempt Ceiling (all
+four meters, `{{LIMIT_EFFECTIVE_TOKENS}}` for the `effective-tokens` meter),
+the reserved `ai-handoff` effective-tokens allowance
+(`{{HANDOFF_EFFECTIVE_TOKENS}}`, see below), and the two non-reserved Step Allowances (`{{PROCESS_LIMIT_COST_USD}}`
 default 12, `{{SELF_REVIEW_LIMIT_COST_USD}}` default 3; each is shared by all
 executions of its step). Render exactly one model-pin variant (see the
 markers in the templates): on a direct pin, substitute the direct
 placeholders and delete the gateway-pin block (and the gateway model-key
 lines in `compose.yaml`); on a gateway pin, delete the direct-pin block and
 uncomment the gateway-pin block, substituting its `{{GATEWAY_*}}`
-placeholders (gateway `url`, L1 model name, `effort`, both caps and prices —
-all asked from the operator, never defaulted), and keep only
+placeholders (gateway `url`, L1 model name, `effort`, the context window,
+threshold, output cap and prices — all asked from the operator, never
+defaulted), and keep only
 `LITELLM_PROXY_API_KEY` in the worker's explicit environment. In
 `.env` (and `.env.example`), leave exactly the chosen model key active and
 the others commented out; on a gateway pin with a service-name `url`,
@@ -504,8 +516,9 @@ they look for a missing `.env` key, and keep budgets out of `.env` — the
 Effective Configuration digest stays the only budget authority. When asking
 the operator for the Attempt Ceiling, first show the resulting Work Pool per
 meter — the ceiling minus the reserved
-`ai-handoff` allowance (`cost-usd: 1`, `tokens: 150000`, `tool-calls: 30`,
-`wall-clock-minutes: 5`), computed separately for each of the four meters —
+`ai-handoff` allowance (`cost-usd: 1`, `effective-tokens: 150000` or the
+pin's Admission floor below, `tool-calls: 30`, `wall-clock-minutes: 5`),
+computed separately for each of the four meters —
 and list the non-reserved Step Allowances that must fit inside it (`process`,
 `self-review`), so the operator sees up front whether the ceiling leaves room
 (for example, a 5 USD ceiling leaves a 4 USD Work Pool on the cost meter that
@@ -517,7 +530,20 @@ Allowance must fit in it on every meter it sets — otherwise
 ceiling is not larger than the reserve on some meter), stop before writing the
 Workflow Configuration, name each step with its allowance and the Work Pool,
 and ask the operator for new allowances or a higher ceiling; never scale or
-clamp allowances by yourself, and never change the `ai-handoff` reserve. A different Skill Bundle
+clamp allowances by yourself, and never change the `ai-handoff` reserve
+beyond the floor rule that follows. Version 4 also requires every limit that
+declares `effective-tokens` or `cost-usd` to hold one maximal Admission
+hold: `effective-tokens` >= Usable Threshold + `output-cap-tokens`, where the
+Usable Threshold is `context-threshold-tokens` minus 2,000 (the code-owned
+safety margin plus request overhead), and `cost-usd` >= Usable Threshold ×
+`input` (max(`input`, `cache-write`) on a gateway pin) + `output-cap-tokens`
+× `output`, both priced per MTok. Render `{{HANDOFF_EFFECTIVE_TOKENS}}` as
+150000, or as that floor when the pin's threshold needs more (a gateway pin
+with a 400,000 threshold and a 32,000 cap needs 430,000), and tell the
+operator which. Check the same floor on the Attempt Ceiling, the Work Pool
+and every Step Allowance that declares the meter (`process` and
+`self-review` declare only `cost-usd`); when one falls short, stop and ask
+as above. A different Skill Bundle
 membership or source ref than the template's default means the operator
 re-reviews `skill-policy.json` first (the skill never approves a policy
 itself).

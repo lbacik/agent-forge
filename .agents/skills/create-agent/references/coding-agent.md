@@ -23,7 +23,7 @@ Dockerfile, no stack block, no Forge-owned profile:
 |---|---|
 | `compose.yaml` | `assets/compose.coding-agent.yaml.template` |
 | `Dockerfile` | `assets/Dockerfile.coding-agent.template`, copied verbatim (the derived deployment image) |
-| `workflow/workflow.yml` | `assets/workflow.coding-agent.yml.template` (`version: 3`, with a `skills:` block) |
+| `workflow/workflow.yml` | `assets/workflow.coding-agent.yml.template` (`version: 4`, with a `skills:` block) |
 | `workflow/prompts/*.md` | copied from the `CODING_AGENT_REF` checkout (see step 3b) |
 | `workflow/skill-policy.json` | copied verbatim from the `CODING_AGENT_REF` checkout's `docker/deployment/` (see step 3b) |
 | `.env.example` | `assets/env.coding-agent.example.template` |
@@ -98,7 +98,7 @@ or added, update every reference that names it (`grep -rn` the old name).
   not part of the hardening mirrored from coding-agent's own deployment:
   upstream's `compose.yaml` sets no resource limits. It is a deployment
   concern and stays out of the Workflow Configuration: the workflow
-  `limits` (cost, tokens, tool calls, wall clock) budget an Attempt and do
+  `limits` (cost, effective tokens, tool calls, wall clock) budget an Attempt and do
   not bound host resources.
 - **Exactly one Worker** per Target Repository and state volume. There is no
   `agent-2..N` stanza, Pool rendering never applies, and `manage-pool` does
@@ -154,14 +154,19 @@ its meaning: change it and rebuild to switch agent code.
 
 ## Workflow Configuration
 
-A `workflow/` directory in the instance holds `workflow.yml` (a `version: 3`
+A `workflow/` directory in the instance holds `workflow.yml` (a `version: 4`
 Workflow Configuration), the prompt files it names, and the reviewed
 `skill-policy.json`, baked into the derived image at `/etc/coding-agent`:
 
-- `version: 3` is the only accepted format since coding-agent 0.3.0: a
-  `version: 2` file is refused with a migration diagnostic before any Claim
-  (see `docs/ops/v3-breaking-change-notice.md` at the ref). Point the editor
-  `$schema` at `schemas/workflow-v3.schema.json`.
+- `version: 4` is the only accepted format since coding-agent 0.4.7: a
+  `version: 3` (or `version: 2`) file is refused with a migration diagnostic
+  before any Claim, at build time in the derived image's `config validate`
+  step. Version 4 declares `context-window-tokens`,
+  `context-threshold-tokens` and `output-cap-tokens` on every pin and names
+  the token meter `effective-tokens` in every `limits` block (a `tokens`
+  key is refused as unknown). Point the editor `$schema` at
+  `schemas/workflow-v4.schema.json`. An existing `version: 3` Instance moves
+  with "Moving an Instance from `version: 3` to `version: 4`" below.
 
 - `target.repository` is the Target Repository, `target.base_branch` its
   default branch. Read the default branch from the target checkout or
@@ -191,10 +196,10 @@ Workflow Configuration), the prompt files it names, and the reviewed
   `verify-skill-bundle` fail the build on a missing or mismatched policy —
   still check the file is there and byte-identical when scaffolding.)
 - One `implement` Workflow with its Selection Label and Attempt Ceiling
-  (all four meters: `cost-usd`, `tokens`, `tool-calls`,
+  (all four meters: `cost-usd`, `effective-tokens`, `tool-calls`,
   `wall-clock-minutes`). The Work Pool is the ceiling minus the reserved
-  `ai-handoff` allowance (`cost-usd: 1`, `tokens: 150000`, `tool-calls: 30`,
-  `wall-clock-minutes: 5`), per meter, and every non-reserved Step
+  `ai-handoff` allowance (`cost-usd: 1`, `effective-tokens: 150000` or the
+  pin's Admission floor, `tool-calls: 30`, `wall-clock-minutes: 5`), per meter, and every non-reserved Step
   Allowance (`process`, `self-review`) must fit in it on every meter it
   sets — otherwise `config validate` refuses the file (for example, a 5 USD
   ceiling leaves a 4 USD Work Pool that the default 12 USD `process`
@@ -202,7 +207,20 @@ Workflow Configuration), the prompt files it names, and the reviewed
   not larger than the reserve on some meter, the skill stops before writing
   the Workflow Configuration, names each step with its allowance and the
   Work Pool, and asks the operator for new allowances or a higher ceiling;
-  it never scales or clamps allowances itself, and the reserve stays as is.
+  it never scales or clamps allowances itself, and the reserve stays as is
+  apart from the Admission floor.
+- **Admission floor** (contract §3, version 4). Every limit that declares
+  `effective-tokens` or `cost-usd` — the Attempt Ceiling, the Work Pool, the
+  `ai-handoff` reserve and any Step Allowance declaring the meter — must hold
+  one maximal Admission hold: `effective-tokens` >= Usable Threshold +
+  `output-cap-tokens`, `cost-usd` >= Usable Threshold × `input`
+  (max(`input`, `cache-write`) on a gateway pin) + `output-cap-tokens` ×
+  `output`, per MTok. The Usable Threshold is `context-threshold-tokens`
+  minus the code-owned 1,000 safety margin and 1,000 request overhead. The
+  `ai-handoff` effective-tokens reserve renders as 150000, or as that floor
+  when the pin's threshold needs more: 150000 holds a direct pin at the
+  recommended 80,000 / 32,000, while a gateway pin at 400,000 / 32,000
+  needs 430,000.
 - **Selection Label.** Suggest `agent:implement`. Reject a label that breaks
   coding-agent's rules and ask for another: `ready-for-human`, `wontfix` or
   any `wayfinder:*` label (contract W-CFG-12; an input carrying `wontfix` or
@@ -232,11 +250,11 @@ configurable — never copied as configuration), **deployment** (compose),
 | simple-coding-agent `.env` | coding-agent | Layer |
 |---|---|---|
 | `MAX_BUDGET_USD` | Workflow `limits.cost-usd`: the Attempt Ceiling on the Workflow, the Step Allowance on a step | workflow |
-| `MAX_BUDGET_TOKENS` | `limits.tokens`. Effective tokens exclude prompt-cache reads (`src/coding_agent/runtime/ceilings.py`) | workflow |
+| `MAX_BUDGET_TOKENS` | `limits.effective-tokens`. Effective tokens exclude prompt-cache reads (`src/coding_agent/runtime/ceilings.py`) | workflow |
 | `MAX_TURNS` | `limits.tool-calls`. Plus the code-owned `MAX_AGENT_ITERATIONS = 30` tool-loop backstop per Step Execution (see the caveat below) | workflow + code |
 | `SOFT_THRESHOLD_PERCENTAGE`, `HANDOFF_RESERVE_TURNS` | The Reserved Step `ai-handoff` (`reserved: true`, allowance on all four meters) | workflow |
 | `MODEL_TIMEOUT` | `limits.wall-clock-minutes` (the whole Attempt, operations included) | workflow |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` / `MAX_CONTEXT_TOKENS` | `context-threshold-tokens` / `output-cap-tokens` — gateway pins only (see below); on a direct pin the context window is code-owned. Companion backstop `MAX_HANDOFFS_PER_STEP = 5` (`src/coding_agent/runtime/context_handoff.py`) | workflow (gateway) + code (direct) |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` / `MAX_CONTEXT_TOKENS` | `context-threshold-tokens` / `output-cap-tokens`, with `context-window-tokens` for the window — declared on every pin since `version: 4` (see below). Companion backstop `MAX_HANDOFFS_PER_STEP = 5` (`src/coding_agent/runtime/context_handoff.py`) | workflow + code |
 | `POLL_INTERVAL` | `worker.poll-interval-seconds` (default 60 s) | workflow |
 | `MODEL_STREAM_IDLE_TIMEOUT_MS` | 300 s per model request, capped by the remaining wall-clock time (`DEFAULT_CODE_OWNED_MODEL_TIMEOUT_SECONDS` in `src/coding_agent/runtime/step_limits.py`) | code |
 | `PUBLISH_TIMEOUT` | 600 s per operation command (`OPERATION_TIMEOUT_SECONDS` in `src/coding_agent/runtime/step_operations.py`; the per-command timeout in `src/coding_agent/runtime/step_limits.py` is likewise 600 s) | code |
@@ -249,14 +267,12 @@ configurable — never copied as configuration), **deployment** (compose),
 Every **code** value above is a constant at the stated ref, to be re-read
 when `CODING_AGENT_REF` moves — not a setting to copy anywhere.
 
-- **Gateway-only context fields.** `context-threshold-tokens` and
-  `output-cap-tokens` exist only on gateway pins (`V2ModelDecl` in
-  `src/coding_agent/workflow/v2_schema.py`; the pin policy in
-  `src/coding_agent/provider/config.py` resolves a direct pin's output cap
-  and context window from the code-owned tables). Supporting LiteLLM gateway
-  pins is #102's scope: for a direct pin — the only pin this adapter renders
-  today — the context window stays code-owned. Do not set these fields on the
-  pins the template renders.
+- **Context fields on every pin.** Since `version: 4` (coding-agent 0.4.7)
+  every pin, direct or gateway, declares `context-window-tokens`,
+  `context-threshold-tokens` and `output-cap-tokens`; the code-owned table
+  in `src/coding_agent/provider/config.py` admits the (`provider`, `model`,
+  `endpoint`) triple only and carries no token budget. The safety margin,
+  request overhead and handoff cap stay code-owned.
 - **`MAX_AGENT_ITERATIONS` caveat** ([lbacik/coding-agent#427](https://github.com/lbacik/coding-agent/issues/427)).
   Until that issue is resolved, the backstop of 30 model responses per Step
   Execution (`MAX_AGENT_ITERATIONS` in
@@ -286,11 +302,15 @@ A direct pin's (`provider`, `model`, `endpoint`) triple must come from the
 code-owned table in coding-agent's `src/coding_agent/provider/config.py` at
 the ref — Anthropic and OpenAI at the documented ref
 (`anthropic / claude-sonnet-5 / messages`,
-`openai / gpt-5.6-luna / responses`); any other pair refuses startup. The
-context window and the per-request output cap stay in code; `effort` is low,
-medium or high.
+`openai / gpt-5.6-luna / responses`); any other pair refuses startup.
+`effort` is low, medium or high. Its three token keys default to the
+upstream recommendation (`docs/ops/workflow-configuration.md` at the ref):
+1,000,000 / 80,000 / 32,000 for `claude-sonnet-5` and 1,050,000 / 100,000
+/ 32,000 for `gpt-5.6-luna` (window / threshold / output cap). The threshold
+counts provider-reported tokens since the anchored measure (coding-agent ADR
+0031).
 
-A gateway pin carries its own output cap and context-window threshold:
+A gateway pin carries the same three keys, always asked from the operator:
 
 ```yaml
 models:
@@ -300,6 +320,7 @@ models:
     endpoint: responses
     effort: medium
     api-key-env: LITELLM_PROXY_API_KEY
+    context-window-tokens: 1000000
     output-cap-tokens: 32000
     context-threshold-tokens: 300000
     prices-usd-per-mtok: {input: 0.10, output: 0.20, cache-read: 0.002, cache-write: 0.10}
@@ -318,15 +339,18 @@ models:
   `litellm:<model>@responses`. `endpoint` is `responses` (the endpoint the
   code-owned table admits for the gateway kind) and `effort` is low, medium
   or high.
-- `output-cap-tokens` and `context-threshold-tokens` are the pin's own
-  output cap and context-window threshold. A direct pin naming either key is
-  refused. The threshold triggers Context-Window Handoffs (coding-agent ADR
+- `context-window-tokens`, `output-cap-tokens` and
+  `context-threshold-tokens` are the pin's own Model Context Window, output
+  cap and context-window threshold; `context-threshold-tokens +
+  output-cap-tokens` must not exceed the window. The threshold triggers Context-Window Handoffs (coding-agent ADR
   0013): the Handoff continues the same Step Execution against its Step
   Allowance and Attempt Ceiling, and Handoffs per step are bounded by the
   code-owned `MAX_HANDOFFS_PER_STEP` (`5` at the documented ref). The
   threshold must exceed the code-owned safety margin plus request overhead
-  (`1000 + 1000` at the documented ref). Ask the operator for both values;
-  never default them.
+  (`1000 + 1000` at the documented ref). Ask the operator for all three
+  values; never default them. A threshold above 152,000 with a 32,000 cap
+  raises the `ai-handoff` effective-tokens reserve above 150000 (see the
+  Admission floor under "Workflow Configuration").
 - Prices (`prices-usd-per-mtok`: `input`, `output`, `cache-read`,
   `cache-write`) come from the operator — confirm them, never default them
   — because the pin's configured prices are the Worker's only cost
@@ -340,7 +364,8 @@ The template renders exactly one variant: the skill substitutes the direct
 placeholders and deletes the gateway block, or deletes the direct block and
 uncomments the gateway block (see the markers in
 `assets/workflow.coding-agent.yml.template`). A direct-pin render carries no
-`gateway:`, `output-cap-tokens` or `context-threshold-tokens` key. No
+`gateway:` key and a gateway render no `provider:` key; both carry the three
+token keys. No
 `{{...}}` may remain in either variant.
 
 The model's key variable reaches only the `worker` service: on a direct pin
@@ -666,3 +691,37 @@ secrets out of the output: compare `.env` key names, never values.
    [operate-agent](../../operate-agent/SKILL.md) (`resume`). Keep the
    backup and the old image tag until the upgraded Worker has finished an
    Attempt.
+
+## Moving an Instance from `version: 3` to `version: 4`
+
+Read this when an Instance already on the derived-image layout moves its
+`CODING_AGENT_REF` to coding-agent 0.4.7 or later. Without it the build
+fails at the instance Dockerfile's `agent config validate` step with
+`unsupported version 3: must be 4`, before anything is installed or
+written. Upstream treats this as a coordinated upgrade, not a restart (its
+"Upgrading: drain, backup and rollback"; the new release refuses to
+recover records it did not write), so the drain, image tag, backup,
+validation, rollback and after-upgrade steps of "Upgrading an existing
+coding-agent Instance" above apply unchanged — name the backup and image
+tag `-pre-v4` / `-wf3-<short-sha>`. Only step 4 differs: instead of
+re-rendering, edit the existing `workflow/workflow.yml` in place and keep
+every other file:
+
+1. `version: 3` → `version: 4`, and the `$schema` comment to
+   `schemas/workflow-v4.schema.json`.
+2. On the pin, add `context-window-tokens` (and, on a direct pin,
+   `context-threshold-tokens` and `output-cap-tokens`, which it newly
+   declares). Take the direct-pin values from the upstream recommendation
+   and ask the operator for a gateway pin's window; keep an existing
+   gateway threshold and cap unless the operator changes them.
+3. Rename `tokens` to `effective-tokens` in the Workflow `limits` and in
+   every step `limits`. The meter now excludes prompt-cache reads; tell
+   the operator the same number is a looser budget than before.
+4. Check the Admission floor ("Workflow Configuration" above): an
+   `ai-handoff` reserve of 150000 does not hold a gateway threshold above
+   152,000 with a 32,000 cap. Raise only that reserve to the floor, show
+   the operator the resulting Work Pool, and stop and ask if an allowance
+   no longer fits.
+
+`skill-policy.json` and the prompts still come byte-identical from the new
+ref; compare them and re-copy a file that changed.

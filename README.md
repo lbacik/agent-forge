@@ -59,7 +59,7 @@ A `coding-agent` instance holds a different layout: `compose.yaml` (the
 build-only `engine` base, the labelled `worker` plus the unlabelled `agent`
 and `validate` one-off seats on the derived image), `Dockerfile` (the
 derived deployment image, copied verbatim from its template),
-`workflow/workflow.yml` (a `version: 3` Workflow Configuration with a
+`workflow/workflow.yml` (a `version: 4` Workflow Configuration with a
 `skills:` block) with its `workflow/prompts/*.md` prompt files and reviewed
 `workflow/skill-policy.json`,
 `.env`/`.env.example` — and no repository profile, no
