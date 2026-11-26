@@ -51,10 +51,11 @@
 # `docker compose config --services` therefore lists `engine` and `worker`;
 # add `--profile '*'` to see all four.
 #
-# Exactly one Worker per Target Repository and state volume: Pool rendering
-# never applies, because this backend never advertises the `pool` Operator
+# Exactly one Worker per Instance and state volume: Pool rendering never
+# applies, because this backend never advertises the `pool` Operator
 # Capability, so there is no `agent-2..N` stanza here and `manage-pool` does
-# not apply.
+# not apply. A Target Repository holds at most one coding-agent Instance; an
+# Instance of another backend may share it (docs/adr/0003).
 #
 # Hardening mirrors coding-agent's own deployment (its compose.yaml at the
 # chosen ref): read-only root filesystem with a writable /tmp on every

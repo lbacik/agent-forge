@@ -100,11 +100,21 @@ or added, update every reference that names it (`grep -rn` the old name).
   concern and stays out of the Workflow Configuration: the workflow
   `limits` (cost, effective tokens, tool calls, wall clock) budget an Attempt and do
   not bound host resources.
-- **Exactly one Worker** per Target Repository and state volume. There is no
+- **Exactly one Worker** per Instance and state volume. There is no
   `agent-2..N` stanza, Pool rendering never applies, and `manage-pool` does
-  not apply to this backend. A second instance for the same repository is
-  refused by the shared Fleet check (step 1): this backend never advertises
-  the `pool` Operator Capability.
+  not apply to this backend. A second coding-agent Instance for the same
+  repository is refused by the shared Fleet check (step 1): this backend
+  never advertises the `pool` Operator Capability. An Instance of another
+  backend on that repository (for example a simple-coding-agent Instance
+  implementing the issues a coding-agent `triage` Workflow hands it) does
+  not refuse: the operator confirms the pairing once, and the report states
+  that keeping the two Instances' selection labels apart is the operator's
+  responsibility (SKILL.md, step 1, "Pairing with another backend";
+  `docs/adr/0003-one-instance-per-backend-without-label-checks.md`).
+- **Name.** The short name is `<project>-<suffix>`, with this backend's
+  suffix from the backend suffix table in SKILL.md, step 0 (for example
+  `agent-instances/agent-jsonhub-api-rex/` with the Managed Instance
+  `jsonhub-api-rex`).
 
 ## The derived image
 

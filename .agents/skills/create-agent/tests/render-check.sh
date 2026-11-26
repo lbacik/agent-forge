@@ -72,7 +72,10 @@ ASSETS_DIR="$ROOT_DIR/.agents/skills/create-agent/assets"
 # with no secret present.
 PH_OWNER=testowner
 PH_REPO=testrepo
-PH_SHORT_NAME=testrepo
+# Short names follow create-agent's `<project>-<suffix>` rule, with the
+# suffixes from the backend suffix table in SKILL.md, step 0.
+PH_SHORT_NAME="$PH_REPO-sid"
+PH_CODING_AGENT_SHORT_NAME="$PH_REPO-rex"
 PH_AGENT_SRC_REF=main
 PH_MAX_BUDGET_USD=20
 PH_MAX_TURNS=120
@@ -465,11 +468,11 @@ check_coding_agent_instance() {
   # its own tag and is never run. Count service-level keys only (four-space
   # indent): the model also keeps the top-level `x-agent` extension with its
   # own copy of the image.
-  derived_image_count=$(printf '%s\n' "$config_output" | grep -cx -- "    image: coding-agent:$PH_SHORT_NAME" || true)
+  derived_image_count=$(printf '%s\n' "$config_output" | grep -cx -- "    image: coding-agent:$PH_CODING_AGENT_SHORT_NAME" || true)
   if [ "$derived_image_count" != 3 ]; then
     fail "$label: want the derived image on all three runtime seats (agent, validate, worker), found $derived_image_count"
   fi
-  assert_contains "$config_output" "image: coding-agent-engine:$PH_SHORT_NAME" \
+  assert_contains "$config_output" "image: coding-agent-engine:$PH_CODING_AGENT_SHORT_NAME" \
     "$label: engine base image tag missing from the Compose model"
   assert_contains "$config_output" '/var/lib/coding-agent' \
     "$label: state path missing from the Compose model"
@@ -522,8 +525,8 @@ check_coding_agent_instance() {
   assert_line_matches "$config_output" \
     "io\\.github\\.lbacik\\.agent-operator\\.contract: (\"1\"|1)\$" \
     "$label: contract label is not major 1"
-  assert_contains "$config_output" 'io.github.lbacik.agent-operator.instance: '"$PH_SHORT_NAME" \
-    "$label: instance label is not $PH_SHORT_NAME"
+  assert_contains "$config_output" 'io.github.lbacik.agent-operator.instance: '"$PH_CODING_AGENT_SHORT_NAME" \
+    "$label: instance label is not $PH_CODING_AGENT_SHORT_NAME"
   assert_contains "$config_output" 'io.github.lbacik.agent-operator.exec-user: agent' \
     "$label: exec-user label is not agent"
   assert_not_contains "$config_output" 'agent-operator.exec-user: root' \
@@ -902,7 +905,7 @@ render_coding_agent_compose() {
   tmp="$2.tmp"
   sed -e "s|{{OWNER}}|$PH_OWNER|g" \
     -e "s|{{REPO}}|$PH_REPO|g" \
-    -e "s|{{SHORT_NAME}}|$PH_SHORT_NAME|g" "$1" >"$tmp"
+    -e "s|{{SHORT_NAME}}|$PH_CODING_AGENT_SHORT_NAME|g" "$1" >"$tmp"
   if [ "$3" = direct ]; then
     sed -e '/^      # gateway-model-key-begin$/,/^      # gateway-model-key-end$/d' \
       -e '/^      # direct-model-key-begin$/d' \
@@ -1105,8 +1108,8 @@ main() {
   litellm_dir="$WORK_ROOT/litellm"
   contract_dir="$WORK_ROOT/contract"
   contract_pool_dir="$WORK_ROOT/contract-pool"
-  coding_agent_dir="$WORK_ROOT/agent-$PH_SHORT_NAME"
-  coding_agent_gateway_dir="$WORK_ROOT/agent-gateway-$PH_SHORT_NAME"
+  coding_agent_dir="$WORK_ROOT/agent-$PH_CODING_AGENT_SHORT_NAME"
+  coding_agent_gateway_dir="$WORK_ROOT/agent-gateway-$PH_CODING_AGENT_SHORT_NAME"
   mkdir -p "$plain_dir" "$litellm_dir" "$contract_dir" \
     "$contract_pool_dir" "$coding_agent_dir" "$coding_agent_gateway_dir" ||
     fail 'cannot create scratch instance directories'
