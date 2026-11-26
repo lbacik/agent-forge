@@ -56,22 +56,25 @@ preconfigured instances in this starting version; keep backups of local
 configuration separately if needed.
 
 A `coding-agent` instance holds a different layout: `compose.yaml` (the
-build-only `engine` base, the labelled `worker` plus the unlabelled `agent`
-and `validate` one-off seats on the derived image), `Dockerfile` (the
-derived deployment image, copied verbatim from its template),
+build-only `engine` base, the labelled `worker` — plus `worker-2` when it
+runs both Workflows with one Worker each — and the unlabelled `agent` and
+`validate` one-off seats on the derived image), `Dockerfile` (the derived
+deployment image, copied verbatim from its template),
 `workflow/workflow.yml` (a `version: 4` Workflow Configuration with a
-`skills:` block) with its `workflow/prompts/*.md` prompt files and reviewed
-`workflow/skill-policy.json`,
-`.env`/`.env.example` — and no repository profile, no
-`compose.litellm.yaml` and no `.env.worker-<n>` (exactly one Worker per
-instance, so Pools never apply; see the
-[`create-agent`](.agents/skills/create-agent/SKILL.md) skill and its
-`references/coding-agent.md`). The `workflow/` package is baked into the
-derived image and verified there at build time, so any edit under
-`workflow/` needs `docker compose build` before the container is recreated.
-A gateway pin whose `url` names a Docker service adds
-`compose.coding-agent.litellm.yaml`, which attaches the `worker` — and only
-the `worker` — to the gateway's network.
+`skills:` block, declaring the `implement` Workflow, the `triage`
+Workflow, or both) with its `workflow/prompts/*.md` prompt files and
+reviewed `workflow/skill-policy.json`, `.env`/`.env.example` — and no
+repository profile, no `compose.litellm.yaml` and no `.env.worker-<n>`
+(at most one Worker per Workflow, each with its own state volume, and no
+Worker id; see the [`create-agent`](.agents/skills/create-agent/SKILL.md)
+skill, its `references/coding-agent.md` and
+`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`). Each
+Worker's Workflow is set by `--workflow` in its own stanza. The
+`workflow/` package is baked into the derived image and verified there at
+build time, so any edit under `workflow/` needs `docker compose build`
+before the containers are recreated. A gateway pin whose `url` names a
+Docker service adds `compose.coding-agent.litellm.yaml`, which attaches
+the Workers using such a pin — and only those — to the gateway's network.
 
 To move an older `coding-agent` instance (a mounted `version: 2` Workflow
 Configuration) to this layout, see `references/coding-agent.md`, "Upgrading
@@ -92,13 +95,16 @@ an existing coding-agent Instance".
   runs separately on a shared Docker network, the agent holds only its master
   key as `MODEL_API_KEY`, and `COMPOSE_FILE` in `.env` adds
   `compose.litellm.yaml` to attach the agent to that network. Anthropic models
-  connect directly. A `coding-agent` instance instead sets the single model
-  key its Workflow Configuration names alongside `GITHUB_TOKEN`:
-  `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` on a direct `provider:` pin,
-  `LITELLM_PROXY_API_KEY` on a LiteLLM `gateway:` pin (the Meta `muse-*`
-  route through the gateway); a gateway `url` naming a Docker service
-  additionally joins the `worker` to the gateway network through
-  `compose.coding-agent.litellm.yaml`. Values live only in `.env`.
+  connect directly. A `coding-agent` instance instead sets, alongside
+  `GITHUB_TOKEN`, every model key its Workflow Configuration's pins name
+  (the `implement` pin; the `triage` pin and its Advisor pin), each pin on
+  its own route: `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for a direct
+  `provider:` pin, `LITELLM_PROXY_API_KEY` for a LiteLLM `gateway:` pin
+  (the Meta `muse-*` route, or another model, through the gateway); a
+  gateway `url` naming a Docker service additionally joins the Workers
+  using it to the gateway network through
+  `compose.coding-agent.litellm.yaml`. Each Worker receives only its own
+  pins' keys. Values live only in `.env`.
 
 ## Workflow
 
@@ -133,16 +139,46 @@ target identification, token verification and the report stay shared. Choosing
 target of coding-agent's git repository at the ref named by
 `CODING_AGENT_REF` (default `main`), the derived image builds FROM it and
 bakes the instance's `workflow/` package (`workflow.yml`, `prompts/`, the
-reviewed `skill-policy.json`) with its prepared Skill Bundle, the labelled
-`worker` runs coding-agent's `implement` Workflow with the full v3 `agent
-run` invocation, and `agent`/`validate` stay available as unlabelled
-one-off seats on the same derived image against the same state volume.
-A bare `docker compose up -d` starts only the `worker`: `engine` has
-`scale: 0` and the one-off seats sit in the `tools` profile.
-`docker compose run --rm agent ...` and `run --rm validate` work without
-`--profile`. To list all four services, run
+reviewed `skill-policy.json`) with its prepared Skill Bundle (validating
+the file once per declared Workflow), each labelled Worker runs its own
+Workflow with the full v3 `agent run` invocation, and `agent`/`validate`
+stay available as unlabelled one-off seats on the same derived image
+against the first Worker's state volume. A bare `docker compose up -d`
+starts only the Workers: `engine` has `scale: 0` and the one-off seats sit
+in the `tools` profile. `docker compose run --rm agent ...` and
+`run --rm validate` work without `--profile`. To list every service, run
 `docker compose --profile '*' config --services`. There is no stack block — the toolchain is fixed by coding-agent's Supported
 Toolchain Matrix.
+
+For a `coding-agent` instance the skill asks which Workflows to declare
+and which one each Worker runs:
+
+- `implement` (default): issue in, pull request out — readiness,
+  validation, self-review and a pull request, as before.
+- `triage`: issues labelled `needs-triage` go through the `triage` skill
+  (with `grilling` and `domain-modeling`) and end labelled
+  `ready-for-agent` (with an agent brief), `needs-info` (with triage notes)
+  or `ready-for-human` (with a recommendation, also for `wontfix`). The
+  questions the skill would put to the maintainer go to an Advisor, a
+  second, stronger pin (for example muse for triage, Opus as the Advisor).
+  Every result posts its document, then pushes what the skill wrote
+  (`CONTEXT.md`, ADRs, `.out-of-scope/`) and opens a draft pull request
+  with the same document. Two policy prompts, rendered with the instance
+  from the skill's `assets/prompts/`, answer the skill's interactive parts.
+  Needs `CODING_AGENT_REF` `v0.5.0` or newer; the skill refuses an older
+  ref.
+- both: one Worker for either, or two Workers, `worker` and `worker-2`,
+  one per Workflow.
+
+Its Skill Bundle covers the declared Workflows. The reference bundle
+(`implement` alone) keeps coding-agent's reviewed `skill-policy.json`
+byte for byte. Any bundle with `triage` gets its policy drafted before the
+image builds: the skill installs the declared skills and runs
+`agent draft-skill-policy` in a one-off container on the engine base
+image, shows you the review report, and writes each placeholder decision
+(file disposition, reference classification, reasons) only after you
+approve it; it never approves anything itself
+(`docs/adr/0004-forge-drafts-skill-policy-operator-approves.md`).
 
 Before scaffolding, the skill checks the Fleet on the target Docker context
 (the context the instance will run on, `orbstack` unless the user names
@@ -210,13 +246,19 @@ budget. The setting is independent of `PR_AUTO_MERGE`: conflicts block manual
 merges too. It needs an upstream agent that contains the feature
 (`AGENT_SRC_REF` v0.6.0 or newer; `main` tracks upstream).
 
-**Pools (several Workers; simple-coding-agent only).** An instance runs one Worker by default; ask
+**Pools (several Workers).** An instance runs one Worker by default; ask
 `create-agent` for N to get a Pool of N Workers taking issues from the same
-Queue. A `coding-agent` instance always runs exactly one Worker — Pool
-rendering never applies to it and `manage-pool` does not apply. A Pool is
+Queue. A `coding-agent` instance runs at most one Worker per Workflow:
+with both Workflows declared it can have `worker` and `worker-2`, each on
+its own Workflow and Queue, and nothing below about Worker ids, Claim
+markers or logins applies to it. coding-agent does not advertise `pool`,
+so its two Workers depart from the operator contract's rule for a second
+instance on one repository; the report says so
+(`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`). A Pool is
 always one backend: an instance of another backend on the same repository is
 a pairing (see the Fleet check above), not a Pool member. A Pool is one instance and one Compose project, so it runs on one Docker
-context with one model backend; Workers on another host or backend are a
+context (with one model backend for simple-coding-agent; a coding-agent
+Pool may use one route per pin); Workers on another host or backend are a
 separate instance (see `docs/adr/0002-one-pool-per-docker-context-without-swarm.md`).
 In `compose.yaml` the first Worker is the service `agent` with the volume
 `agent_data`; further Workers are `agent-2..N` with the volumes `data_2..N`.
@@ -251,8 +293,9 @@ Release tags `v0.9.0` or newer (the first contract-speaking release,
 simple-coding-agent#334) and `main` render with labels; older tags render
 without labels, staying on the legacy path exactly as today; any other
 branch or commit SHA renders with labels when that checkout contains
-`simple_coding_agent/contract_adapter.py`. A `coding-agent` instance's `worker`
-always carries the four labels (`backend: coding-agent`); until that backend
+`simple_coding_agent/contract_adapter.py`. A `coding-agent` instance's Workers
+always carry the four labels (`backend: coding-agent`; `worker-2` as
+`<short-name>-2`); until that backend
 ships its contract producer (step 4), its identity and readiness report as
 unverified. Once the operator starts a contract
 instance, the creation report carries `agentfleet identity` (backend,
@@ -325,7 +368,7 @@ An instance that uses a LiteLLM gateway needs no extra flags: `COMPOSE_FILE`
 in its env file makes every `docker compose` command load
 `compose.litellm.yaml` as well
 (`compose.coding-agent.litellm.yaml` on a `coding-agent` gateway pin, which
-attaches only the `worker`).
+attaches only the Workers using that pin).
 
 ### 4. Manage a Pool
 
@@ -339,9 +382,11 @@ rpi5 context.
 ```
 
 It covers adding a Worker (on the shared login, or with its own GitHub
-account in `.env.worker-<n>`), removing one, stopping and resuming one Worker
-or the whole Pool, and `next issue` for a chosen Worker, including
-the order above when a login gets its second Worker. The stop, resume and
+account in `.env.worker-<n>`; for a `coding-agent` instance, `worker-2` on
+the declared Workflow the first Worker does not run, after asking which),
+removing one, stopping and resuming one Worker or the whole Pool, and
+`next issue` for a chosen Worker, including the order above when a login
+gets its second Worker. The stop, resume and
 `next issue` submissions themselves go through `operate-agent` (next
 section). Every change waits for
 your go-ahead, a Worker holding a Claim is never removed, and volumes are
@@ -431,21 +476,27 @@ not show, and `down` never removes volumes.
 Every pull request runs the template render check
 ([`render-check.yml`](.github/workflows/render-check.yml)). It renders the
 `create-agent` templates with placeholder values — no secrets — and runs
-`docker compose config` on six Compose variants to prove each result is a
-valid Compose model: plain and LiteLLM without labels (a ref that does not
-speak the operator contract, unchanged from today's layout), an N=1
+`docker compose config` on eight Compose variants to prove each result is
+a valid Compose model: plain and LiteLLM without labels (a ref that does
+not speak the operator contract, unchanged from today's layout), an N=1
 instance plus an N=2 Pool with the contract discovery labels kept on every
-managed Worker service, and the coding-agent direct-pin and gateway
-instances (a build-only `engine` base plus three derived services sharing
-one image and one state volume, the four discovery labels on the `worker`
-only, the full v3 `run` invocation with no bind mount at
-`/etc/coding-agent`, the `config validate` →
-`prepare-skill-bundle --mode install` → `verify-skill-bundle` sequence in
-the rendered `Dockerfile` with verification after the last `COPY`, and the
-Compose project name equal to the instance directory name; the gateway
-variant additionally pins a LiteLLM gateway, passes `LITELLM_PROXY_API_KEY`
-to the `worker` only, and attaches only the `worker` to the gateway
-network).
+managed Worker service, and four coding-agent instances: `implement` on a
+direct pin, `implement` on a gateway pin, `triage` alone, and both
+Workflows with one Worker each (a build-only `engine` base plus derived
+services sharing one image, each Worker with its own state volume,
+`--workflow` and Managed Instance name, the four discovery labels on the
+Workers only, the full v3 `run` invocation with no bind mount at
+`/etc/coding-agent`, each Worker receiving only its own pins' model keys
+and joining the gateway network only for a gateway pin, the per-Workflow
+`config validate` → `prepare-skill-bundle --mode install` →
+`verify-skill-bundle` sequence in the rendered `Dockerfile` with
+verification after the last `COPY`, and the Compose project name equal to
+the instance directory name). The `triage` variants also check the
+rendered Workflow: its input and exclusions, the three results and end
+labels, `input.comments`, the Advisor, and a draft pull request behind
+`commit-and-push` on every result path. With the `agent` CLI on `PATH`
+the check also runs secret-free `config validate` once per declared
+Workflow.
 
 Run the same check locally (needs Docker with Compose v2.17 or newer):
 

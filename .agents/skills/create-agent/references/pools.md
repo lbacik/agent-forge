@@ -1,12 +1,16 @@
-# Pools of N Workers (simple-coding-agent only)
+# Pools of N Workers (simple-coding-agent)
 
 Read this when an Instance gets N>=2 Workers, shares its Worker identity with
 another Instance, joins a contract Pool on the same Target Repository from
 another Instance, or has a Worker with its own Worker identity. The rules
 every Instance needs are in SKILL.md, "Pools"; terms are defined in
-`CONTEXT.md`. The coding-agent adapter never renders a Pool — exactly one
-Worker per Instance and state volume — so this reference does not apply to
-it; see `references/coding-agent.md` instead. An Instance of another backend
+`CONTEXT.md`. Everything below is about simple-coding-agent Pools. A
+coding-agent Pool is different and small: at most one Worker per Workflow
+(`worker`, and `worker-2` on the other Workflow), each with its own state
+volume and Managed Instance name, no Worker id and no Claim marker, on one
+shared login (`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`;
+`references/coding-agent.md`, "Workflow selection"); none of the Worker
+id, `PEER_LOGINS` or Claim-protocol rules below apply to it. An Instance of another backend
 on the same Target Repository is not part of any Pool either: it never
 refuses a new Instance, and the pairing follows SKILL.md, step 1, "Pairing
 with another backend".
@@ -47,7 +51,8 @@ cannot run a Pool here. From `v0.9.0`, `simple-coding-agent` advertises
 `pool` exactly when a Worker id (`WORKER_ID`) is set — a declaration-only
 capability: every Worker of a contract Pool has a Worker id, whatever its
 Worker identity. `coding-agent` does not advertise `pool`, so a Target
-Repository holds at most one coding-agent Instance; it may still share the
+Repository holds at most one coding-agent Instance (whose two Workers, one
+per Workflow, are the documented exception of ADR 0005); it may still share the
 repository with one simple-coding-agent Instance or Pool, because the Fleet
 check refuses only a same-backend match
 (`docs/adr/0003-one-instance-per-backend-without-label-checks.md`).

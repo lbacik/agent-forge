@@ -1,17 +1,21 @@
 ---
 name: manage-pool
-description: Change or steer the Pool of an existing simple-coding-agent Instance in this agent-forge project (`agent-instances/agent-<name>/`) - add a Worker (on the shared login or with its own GitHub identity), remove a Worker, stop or resume one Worker or the whole Pool, or point a Worker at an issue (`next issue`, submitted through operate-agent). Use this whenever the user wants more or fewer Workers, to pause or restart intake, or to prioritise an issue, e.g. "add a second worker to battles", "dodaj workera do agent-cli", "remove worker 3", "zatrzymaj pool na rpi5", "resume agent-2", "let a worker take #57 next".
+description: Change or steer the Pool of an existing simple-coding-agent or coding-agent Instance in this agent-forge project (`agent-instances/agent-<name>/`) - add a Worker (on the shared login or with its own GitHub identity; for coding-agent, a second Worker on the other Workflow), remove a Worker, stop or resume one Worker or the whole Pool, or point a Worker at an issue (`next issue`, submitted through operate-agent). Use this whenever the user wants more or fewer Workers, to pause or restart intake, or to prioritise an issue, e.g. "add a second worker to battles", "dodaj workera do agent-cli", "remove worker 3", "zatrzymaj pool na rpi5", "resume agent-2", "let a worker take #57 next".
 ---
 
 # manage-pool
 
 Change the Pool of one existing Instance: add, remove, stop, resume, and
 `next issue`. Terms (Instance, Worker, Pool, Worker identity, Worker id,
-Claim, Claim marker, Queue) are defined in `CONTEXT.md`. The layout a Pool
-follows is the one `create-agent` renders (`create-agent/SKILL.md`, "Pools",
-and `create-agent/assets/compose.yaml.template`); this skill edits it by
-hand, as `docs/adr/0002-one-pool-per-docker-context-without-swarm.md`
-decides: there is no generator and no script of its own.
+Claim, Claim marker, Queue, Workflow) are defined in `CONTEXT.md`. The
+layout a Pool follows is the one `create-agent` renders
+(`create-agent/SKILL.md`, "Pools", and
+`create-agent/assets/compose.yaml.template`); this skill edits it by hand,
+as `docs/adr/0002-one-pool-per-docker-context-without-swarm.md` decides:
+there is no generator and no script of its own. A coding-agent Instance
+(discovery label `backend: "coding-agent"` in its `compose.yaml`) follows
+section 6 for adding and removing a Worker; sections 2 and 3 apply to it
+as written.
 
 ## Ground rules
 
@@ -21,9 +25,10 @@ decides: there is no generator and no script of its own.
   commands, which Workers are affected), then act. Read-only checks
   (`/usr/local/bin/agentctl status`, `pool-status.sh`, `gh` queries) need none; reading back
   a committed command goes through `operate-agent`.
-- **One context.** A Pool is one Compose project on one Docker context with
-  one model backend. Workers on another host or backend are another
-  Instance, not a change to this Pool.
+- **One context.** A Pool is one Compose project on one Docker context.
+  A simple-coding-agent Pool has one model backend; a coding-agent Pool may
+  use one model route per pin. Workers on another host or backend are
+  another Instance, not a change to this Pool.
 - **Hard rule.** Never run Workers of different Claim protocol versions on
   one Worker identity. A login's first N>=2, and any upgrade of Workers that
   share a login, follow `references/first-pool-on-a-login.md`.
@@ -44,9 +49,12 @@ match. Establish, and keep for the report:
 - **Env file.** `.env`, unless the Instance runs with an alternative file
   (one setting `AGENT_ENV_FILE`, e.g. `.env.litellm`); that file is then the
   "shared env file" below. Ask when unsure which one is live.
-- **Workers.** The services in `compose.yaml` (`agent`, `agent-<n>`), each
-  one's Worker id (its `WORKER_ID` line, or none), and whether it has its
-  own Worker identity (an `.env.worker-<n>` in its `env_file`).
+- **Workers.** The services in `compose.yaml` (`agent`, `agent-<n>`; for
+  coding-agent `worker` and `worker-2`), each one's Worker id (its
+  `WORKER_ID` line, or none; coding-agent renders none), and whether it has
+  its own Worker identity (an `.env.worker-<n>` in its `env_file`). For
+  coding-agent, also each Worker's Workflow (the value after `--workflow`
+  in its stanza) and the Workflows `workflow/workflow.yml` declares.
 - `TARGET_REPO` and `AGENT_SRC_REF` (`grep -E '^(TARGET_REPO|AGENT_SRC_REF)=' <env file>`;
   no `AGENT_SRC_REF` means `main`). The version a Worker actually runs is
   the `agent version:` line of its `/usr/local/bin/agentctl status`.
@@ -70,7 +78,8 @@ match. Establish, and keep for the report:
 with `DOCKER_CONTEXT=<ctx>` set and, for an alternative env file,
 `docker compose --env-file <file>`. The examples leave both out.
 
-Talking to one Worker (`<service>` is `agent` or `agent-<n>`; upstream's
+Talking to one Worker (`<service>` is `agent` or `agent-<n>`, for
+coding-agent `worker` or `worker-2`; upstream's
 operator docs require the absolute path, because the target repo's venv can
 come first on `PATH` in the container and a target repo can ship its own
 `agentctl` that shadows the agent's):
@@ -228,7 +237,94 @@ issue with the Claim marker query of step 2 and point the user at it: they
 remove the label, and the assignment when no other `claimed-by:*` label
 remains on that issue. Continue at step 3 once the issue is clean.
 
-## 6. Report
+## 6. coding-agent Instances
+
+A coding-agent Pool runs at most one Worker per Workflow: `worker`, and
+`worker-2` on the other Workflow
+(`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`). Its Workers
+have no Worker id and leave no Claim marker; they are told apart by their
+Managed Instance names, `<short-name>` and `<short-name>-2`. Sections 4
+and 5 do not apply; use these instead.
+
+**Add a Worker** (only while the Pool has one Worker):
+
+1. **Workflow.** Ask which Workflow the new Worker runs (AskUserQuestion).
+   It must be declared in `workflow/workflow.yml` and must not be the one
+   `worker` runs. Refuse a second Worker on the same Workflow: with no
+   `pool` capability and no Claim marker, two Workers on one Queue and one
+   login would race. Refuse a Workflow the file does not declare: declaring
+   one means re-rendering the Workflow Configuration (its pins, prompts,
+   Skill Bundle and a drafted, operator-reviewed policy) with
+   `create-agent`'s coding-agent reference and rebuilding, which this skill
+   does not do.
+2. **State volume.** `worker-2` uses `state_2`. If
+   `docker volume ls -q | grep -E '^agent-<name>_state_2$'` finds one left
+   by an earlier `worker-2`, ask: reuse it only when that Worker ran the
+   same Workflow, otherwise delete it first on the user's explicit
+   authorization (`docker volume rm agent-<name>_state_2`).
+3. **Edit the files.** In `compose.yaml`, add the `worker-2` stanza and the
+   `state_2:` volume as `create-agent/assets/compose.coding-agent.yaml.template`
+   shows them between its `worker-2-begin` and `worker-2-end` markers
+   (without the markers): instance label `<short-name>-2`, `--workflow
+   <id>`, and exactly the model key lines of the new Worker's own pins (its
+   Workflow's pin, plus the Advisor pin `triage-advisor` for `triage`; read
+   each pin's `api-key-env` in `workflow/workflow.yml`). Every key it needs
+   must be set in `.env` (`grep -cE '^KEY=.' .env` per key, never print a
+   value); ask the user to add a missing one. When one of its pins is a
+   gateway pin whose `url` names a Docker service, add `worker-2` to
+   `compose.coding-agent.litellm.yaml` (creating it from the template and
+   setting `COMPOSE_FILE` and `GATEWAY_NETWORK` in `.env` when the Instance
+   has none yet).
+4. **Validate.** `docker compose config -q`, then
+   `docker compose --profile '*' config --format json | jq '.services | map_values({workflow: ((.command // []) | index("--workflow") as $i | if $i then .[$i + 1] else null end), instance: .labels["io.github.lbacik.agent-operator.instance"], volumes: [.volumes[]?.source], keys: ((.environment // {}) | keys | map(select(endswith("_API_KEY")))), networks: (.networks // {} | keys)})'`:
+   each Worker on a different Workflow with its own instance name and
+   volume, model keys on the Workers only, the gateway network only on
+   Workers with a gateway pin. Then the secret-free static check of the
+   baked package for the new Worker's Workflow:
+   `docker compose run --rm agent config validate --config /etc/coding-agent/workflow.yml --workflow <id>`.
+5. **Start only the new Worker:** `docker compose up -d --no-build worker-2`
+   (the image is the one already built; `worker` keeps running untouched).
+
+Done when `pool-status.sh` lists `worker-2` running with intake running,
+`agentfleet identity <short-name>-2` names the Target Repository, and the
+report states: "The two Workers are two Managed Instances on one Target
+Repository. coding-agent does not advertise the `pool` capability, so this
+departs from the operator contract's rule that an adapter refuses a second
+instance for the same repository on the host; they run different
+Workflows and take from different Queues (docs/adr/0005)." (translated
+into the user's language without changing its meaning).
+
+**Remove a Worker** (`worker-2`; `worker` stays as long as the Instance
+exists — stop it instead, section 2):
+
+1. **Drain** it (section 2, `--worker 2`).
+2. **Claim check.** Its Status Snapshot (`agentfleet status
+   <short-name>-2`, or `/usr/local/bin/agentctl status` in the container)
+   shows no active Attempt and no unfinished or unconfirmed Claim. While it
+   does, refuse, report what holds it, and stop. There is no force mode.
+3. **Remove the container:** `docker compose stop worker-2`, then
+   `docker compose rm -f worker-2`.
+4. **Edit the files.** Drop the `worker-2` stanza and its `state_2:` entry
+   from `compose.yaml`, and its block from `compose.coding-agent.litellm.yaml`
+   (delete the overlay, and `COMPOSE_FILE` and `GATEWAY_NETWORK` from
+   `.env`, only when no Worker uses a gateway pin any more). Then
+   `docker compose config -q`. The Workflow stays declared in
+   `workflow/workflow.yml`: no rebuild is needed.
+5. **Volume.** `agent-<name>_state_2` stays on the context. Tell the user
+   how to delete it, and run it only on their explicit authorization:
+   `docker volume rm agent-<name>_state_2`.
+
+Done when `pool-status.sh` no longer lists `worker-2`,
+`docker compose config -q` passes, and the report names the volume left
+behind.
+
+**Switch a Worker's Workflow** (both Workflows declared, one Worker):
+drain it (section 2), edit `--workflow` and its model key lines in its
+stanza as in step 3 of "Add a Worker", then `docker compose up -d
+--no-build worker`. Its state volume keeps the earlier Workflow's history,
+which is expected.
+
+## 7. Report
 
 Tell the user, in their language: the Instance and context, the operation,
 each Worker touched (service, Worker id, identity), the commands run with
