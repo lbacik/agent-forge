@@ -5,11 +5,11 @@ Configuration and skills for running dedicated simple-coding-agent deployments, 
 ## Language
 
 **Instance**:
-The deployment directory `agent-instances/agent-<name>/` for one target repository: one image, one repository profile, one or more Workers.
+The deployment directory `agent-instances/agent-<name>/` for one target repository: one image, one engine backend, one or more Workers. A target repository holds at most one Instance per backend, apart from a contract Pool.
 _Avoid_: Agent (ambiguous between the deployment and a running process), Managed Instance (that is one Worker)
 
 **Worker**:
-One running simple-coding-agent container of an Instance, with its own data volume and, when it shares its Worker identity with other Workers or belongs to a contract Pool, its own Worker id.
+One running engine container of an Instance (simple-coding-agent or coding-agent), with its own data volume and, when it shares its Worker identity with other Workers or belongs to a contract Pool, its own Worker id.
 _Avoid_: Replica, agent, node
 
 **Pool**:
@@ -33,7 +33,7 @@ The mark on an issue naming the Worker that holds its Claim; present only while 
 _Avoid_: Lock label
 
 **Queue**:
-The issues of the target repository that Workers may claim, selected by the upstream-defined labels. Workers of several Instances may take from one Queue; the Claim settles between them as it does within a Pool.
+The issues (and, for some backends, pull requests) of the target repository that an Instance's Workers may claim, selected by labels its backend defines. Workers of several Instances of one backend may take from one Queue; the Claim settles between them as it does within a Pool. Instances of different backends may share a target repository; keeping their Queues apart, or deliberately not, is the operator's concern.
 _Avoid_: Backlog
 
 **Conflict requeue**:
