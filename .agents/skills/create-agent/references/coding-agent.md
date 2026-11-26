@@ -411,18 +411,24 @@ the image will use:
        set -e
        w=$(mktemp -d) home=$(mktemp -d) bundle=$(mktemp -d) out=$(mktemp)
        tar -xf - -C "$w"
-       agent prepare-skill-bundle --mode install --config "$w/workflow.yml" \
+       if ! agent prepare-skill-bundle --mode install --config "$w/workflow.yml" \
          --policy /etc/coding-agent/skill-policy.json \
-         --bundle-dir "$bundle" --home "$home" >&2 || true
+         --bundle-dir "$bundle" --home "$home" 2>"$w.err" >&2; then
+         cat "$w.err" >&2
+         if grep FAILED "$w.err" | grep -qv "has no matching approved review"; then
+           echo "install failed: see above" >&2; exit 1
+         fi
+       fi
        agent draft-skill-policy --config "$w/workflow.yml" --home "$home" \
          --policy /etc/coding-agent/skill-policy.json --out "$out" >&2
        cat "$out"' \
      >"<scratchpad>/skill-policy.draft.json" 2>"<scratchpad>/skill-policy.report.txt"
    ```
 
-   When `draft-skill-policy` fails (a declared member missing from the
-   store), the prepare output above it in the report file says why the
-   install failed; stop and show it.
+   The only prepare failure tolerated is "has no matching approved
+   review" for a member; any other failure (the install itself) stops the
+   command with "install failed", and so does a failing
+   `draft-skill-policy`. Then stop and show the report file.
 
 3. **Review with the operator.** Show the review report. Every JSON `null`
    in the draft is a placeholder decision; reviews that still match the

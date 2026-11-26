@@ -1627,17 +1627,17 @@ main() {
       fail "env.coding-agent.example.template sets $budget_pattern (budgets stay in the Workflow Configuration)"
     fi
   done
-  # The coding-agent gateway overlay attaches only the worker (the one-off
+  # The coding-agent gateway overlay attaches only Worker services (the one-off
   # `agent` seat is not a Managed Instance) and fixes no project name; the
   # gateway network name always comes from .env, never hard-coded.
   if grep -qE '^name:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
     fail 'compose.coding-agent.litellm.yaml.template sets a project name (the directory is the project)'
   fi
   if grep -qE '^  agent:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
-    fail 'compose.coding-agent.litellm.yaml.template attaches the agent seat (only the worker joins the gateway network)'
+    fail 'compose.coding-agent.litellm.yaml.template attaches the agent seat (only Worker services join the gateway network)'
   fi
   if grep -qE '^  validate:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
-    fail 'compose.coding-agent.litellm.yaml.template attaches the validate seat (only the worker joins the gateway network)'
+    fail 'compose.coding-agent.litellm.yaml.template attaches the validate seat (only Worker services join the gateway network)'
   fi
   for service in worker worker-2; do
     if ! grep -qE "^  $service:" "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then

@@ -21,7 +21,7 @@ The GitHub account (and its token) that a Worker acts as. The Workers of a Pool 
 _Avoid_: Agent name, bot
 
 **Worker id**:
-The name that tells apart Workers: every Worker that shares its Worker identity with another Worker has one, and so does every Worker of a contract Pool, whatever its Worker identity. Unique among all Workers, across Instances.
+The name that tells apart Workers: every simple-coding-agent Worker that shares its Worker identity with another Worker has one, and so does every Worker of a contract Pool, whatever its Worker identity. Unique among all Workers, across Instances. A coding-agent Worker has none: its Managed Instance name tells it apart (`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`).
 _Avoid_: Worker name, replica index
 
 **Claim**:

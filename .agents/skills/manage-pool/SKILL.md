@@ -318,12 +318,6 @@ Done when `pool-status.sh` no longer lists `worker-2`,
 `docker compose config -q` passes, and the report names the volume left
 behind.
 
-**Switch a Worker's Workflow** (both Workflows declared, one Worker):
-drain it (section 2), edit `--workflow` and its model key lines in its
-stanza as in step 3 of "Add a Worker", then `docker compose up -d
---no-build worker`. Its state volume keeps the earlier Workflow's history,
-which is expected.
-
 ## 7. Report
 
 Tell the user, in their language: the Instance and context, the operation,

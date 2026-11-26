@@ -84,9 +84,10 @@ x-agent: &agent
   # (ANTHROPIC_API_KEY or OPENAI_API_KEY for a direct pin,
   # LITELLM_PROXY_API_KEY for a gateway pin — whichever the Workflow
   # Configuration names in `models.<id>.api-key-env`) reach only the
-  # Worker services below, each Worker the keys of its own pins. There is deliberately no `env_file:` (as in upstream's
-  # compose.yaml): it would copy every .env key, the model key included,
-  # into the `agent` and `validate` seats too. Secret-free `config validate`
+  # Worker services below, each Worker the keys of its own pins. There is
+  # deliberately no `env_file:` (as in upstream's compose.yaml): it would
+  # copy every .env key, the model keys included, into the `agent` and
+  # `validate` seats too. Secret-free `config validate`
   # needs no environment, and `startup-check` needs only GITHUB_TOKEN.
   build:
     context: .

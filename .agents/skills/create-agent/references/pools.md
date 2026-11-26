@@ -10,10 +10,10 @@ coding-agent Pool is different and small: at most one Worker per Workflow
 volume and Managed Instance name, no Worker id and no Claim marker, on one
 shared login (`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`;
 `references/coding-agent.md`, "Workflow selection"); none of the Worker
-id, `PEER_LOGINS` or Claim-protocol rules below apply to it. An Instance of another backend
-on the same Target Repository is not part of any Pool either: it never
-refuses a new Instance, and the pairing follows SKILL.md, step 1, "Pairing
-with another backend".
+id, `PEER_LOGINS` or Claim-protocol rules below apply to it. An Instance
+of another backend on the same Target Repository is not part of any Pool
+either: it never refuses a new Instance, and the pairing follows SKILL.md,
+step 1, "Pairing with another backend".
 
 ## Worker identities
 
