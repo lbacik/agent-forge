@@ -5,8 +5,11 @@ another Instance, joins a contract Pool on the same Target Repository from
 another Instance, or has a Worker with its own Worker identity. The rules
 every Instance needs are in SKILL.md, "Pools"; terms are defined in
 `CONTEXT.md`. The coding-agent adapter never renders a Pool — exactly one
-Worker per Target Repository and state volume — so this reference does not
-apply to it; see `references/coding-agent.md` instead.
+Worker per Instance and state volume — so this reference does not apply to
+it; see `references/coding-agent.md` instead. An Instance of another backend
+on the same Target Repository is not part of any Pool either: it never
+refuses a new Instance, and the pairing follows SKILL.md, step 1, "Pairing
+with another backend".
 
 ## Worker identities
 
@@ -43,8 +46,11 @@ A Pool of N ≥ 2 Workers on the contract path requires `pool` in the
 cannot run a Pool here. From `v0.9.0`, `simple-coding-agent` advertises
 `pool` exactly when a Worker id (`WORKER_ID`) is set — a declaration-only
 capability: every Worker of a contract Pool has a Worker id, whatever its
-Worker identity. `coding-agent` does not advertise `pool`, so it never shares
-a Target Repository.
+Worker identity. `coding-agent` does not advertise `pool`, so a Target
+Repository holds at most one coding-agent Instance; it may still share the
+repository with one simple-coding-agent Instance or Pool, because the Fleet
+check refuses only a same-backend match
+(`docs/adr/0003-one-instance-per-backend-without-label-checks.md`).
 
 ## Hard rule and the order to N>=2
 
@@ -61,8 +67,9 @@ Instance has been drained and upgraded. A new Instance joining a contract
 Pool from another Instance follows the same order across Instances: the other
 Instance must already be drained and upgraded to the same Claim protocol
 before the new one starts — even at N=1, and that sole Worker still gets a
-Worker id. Worker ids stay unique across all Workers of the contract Pool,
-across Instances. On different logins there is no shared-identity Claim
+Worker id. All of this concerns Instances of the same backend only.
+Worker ids stay unique across all Workers of the contract Pool, across
+Instances. On different logins there is no shared-identity Claim
 hazard, but `PEER_LOGINS` must list every login working the Queue on both
 Instances. `create-agent` never changes
 existing instances here (its only exception, an explicitly requested

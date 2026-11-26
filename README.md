@@ -63,8 +63,8 @@ derived deployment image, copied verbatim from its template),
 `skills:` block) with its `workflow/prompts/*.md` prompt files and reviewed
 `workflow/skill-policy.json`,
 `.env`/`.env.example` — and no repository profile, no
-`compose.litellm.yaml` and no `.env.worker-<n>` (exactly one Worker per Target
-Repository, so Pools never apply; see the
+`compose.litellm.yaml` and no `.env.worker-<n>` (exactly one Worker per
+instance, so Pools never apply; see the
 [`create-agent`](.agents/skills/create-agent/SKILL.md) skill and its
 `references/coding-agent.md`). The `workflow/` package is baked into the
 derived image and verified there at build time, so any edit under
@@ -110,8 +110,20 @@ target repository and destination. For example:
 
 ```text
 Use create-agent to create an agent for https://github.com/owner/repository
-in agent-instances/agent-repository/.
+in agent-instances/agent-repository-sid/.
 ```
+
+**Instance names.** A new instance is named `agent-<project>-<suffix>`.
+`<project>` is the product name (not always the GitHub repository name),
+confirmed with you when it is not obvious. `<suffix>` is mandatory and names
+the engine backend: `sid` for `simple-coding-agent`, `rex` for
+`coding-agent` (the skill keeps this mapping in one table, in its step 0).
+The short name `<project>-<suffix>` is also the Managed Instance name, and
+Worker ids are `<project>-<suffix>-<n>`: `agent-repository-sid` with two
+Workers runs the Managed Instances `repository-sid` and `repository-sid-2`,
+with the Worker ids `repository-sid-1` and `repository-sid-2`. Existing
+instances without a suffix, such as `agent-battles` or `agent-jsonhub-api`,
+keep their names; nothing is renamed.
 
 The skill first asks which engine backend to deploy: `simple-coding-agent`
 (default) or `coding-agent`. The backend selects the deployment adapter while
@@ -138,14 +150,30 @@ another): it lists the Fleet with `agentfleet ls` and reads `identity` of
 every Managed Instance — including stopped ones through Offline Read inside
 `agentfleet` — comparing each Target Repository case-insensitively, and it
 scans legacy instances' env files for `TARGET_REPO` (file names only, never
-reading or printing tokens). Another instance already targeting the same
-repository refuses the new one unless both sides form a contract Pool: every
-existing Managed Instance on that repository on the target Docker context
-reports `pool` in `identity.capabilities` and the new Instance will advertise it
-(`simple-coding-agent` at an `AGENT_SRC_REF` speaking the contract, minimum
-`v0.9.0`, with a Worker id for every Worker; `coding-agent` never advertises
-it; an unlabelled legacy env-scan match always refuses), and a short name
-already present in the Fleet refuses with a request for another name.
+reading or printing tokens). A repository holds at most one instance per
+engine backend, apart from a contract Pool
+(`docs/adr/0003-one-instance-per-backend-without-label-checks.md`), so only
+an instance of the **same** backend can refuse the new one. Such an instance
+refuses unless both sides form a contract Pool: every existing Managed
+Instance of that backend on that repository on the target Docker context
+reports `pool` in `identity.capabilities` and the new Instance will advertise
+it (`simple-coding-agent` at an `AGENT_SRC_REF` speaking the contract,
+minimum `v0.9.0`, with a Worker id for every Worker). `coding-agent` never
+advertises `pool`, so a second `coding-agent` instance on one repository is
+always refused. An unlabelled legacy env-scan match is a `simple-coding-agent`
+instance (the `coding-agent` adapter always renders discovery labels), so it
+always refuses a new `simple-coding-agent` instance. A short name already
+present in the Fleet refuses with a request for another name.
+
+An instance of a **different** backend on the same repository never refuses,
+on any Docker context: for example a `coding-agent` instance running a
+`triage` Workflow next to a `simple-coding-agent` instance that implements
+the `ready-for-agent` issues. The skill names that instance (name, backend,
+context or path) and asks you once to confirm the pairing. It does not read
+or compare either instance's selection labels: keeping the two Queues
+apart, or deliberately not, is your responsibility, and the creation report
+says so. On one shared GitHub login, overlapping labels can cause double
+work, because the Claim cannot tell the two engines apart.
 
 The skill then inspects the target repository's stack and CI, prepares its Docker
 toolchain, and writes a local profile containing dependency setup and validation
@@ -185,7 +213,9 @@ merges too. It needs an upstream agent that contains the feature
 **Pools (several Workers; simple-coding-agent only).** An instance runs one Worker by default; ask
 `create-agent` for N to get a Pool of N Workers taking issues from the same
 Queue. A `coding-agent` instance always runs exactly one Worker — Pool
-rendering never applies to it and `manage-pool` does not apply. A Pool is one instance and one Compose project, so it runs on one Docker
+rendering never applies to it and `manage-pool` does not apply. A Pool is
+always one backend: an instance of another backend on the same repository is
+a pairing (see the Fleet check above), not a Pool member. A Pool is one instance and one Compose project, so it runs on one Docker
 context with one model backend; Workers on another host or backend are a
 separate instance (see `docs/adr/0002-one-pool-per-docker-context-without-swarm.md`).
 In `compose.yaml` the first Worker is the service `agent` with the volume
@@ -196,11 +226,11 @@ estimate — and 1024 PIDs) that `WORKER_CPUS`, `WORKER_MEM_LIMIT` and
 `WORKER_PIDS_LIMIT` in `.env` override.
 
 Workers sharing one GitHub login are told apart by their Worker id
-(`WORKER_ID`, `<short-name>-<n>`, e.g. `battles-2`), set per Worker in
+(`WORKER_ID`, `<short-name>-<n>`, e.g. `repository-sid-2`), set per Worker in
 `compose.yaml` together with the commit author `Claude Code (<worker-id>)`.
 It is set when the instance has two or more Workers or shares its login with
-another instance on the same repository; `create-agent` looks for such an
-instance and asks. Worker ids need simple-coding-agent v0.7.0 or newer, and
+another instance of the same backend on the same repository; `create-agent`
+looks for such an instance and asks. Worker ids need simple-coding-agent v0.7.0 or newer, and
 two or more Workers on one login need v0.9.0 or newer (the startup recovery
 fix of lbacik/simple-coding-agent#364). Never run Workers
 of different Claim protocol versions on one login: stop and drain every
@@ -235,7 +265,7 @@ other than `starting`); a Pool of N ≥ 2 Workers on the contract path needs
 Run Compose commands from the instance directory:
 
 ```bash
-cd agent-instances/agent-repository
+cd agent-instances/agent-repository-sid
 docker compose config -q
 docker compose build
 ```
@@ -304,7 +334,7 @@ Ask your coding assistant to use the
 Workers of an existing instance. For example:
 
 ```text
-Use manage-pool to add a Worker to agent-instances/agent-repository on the
+Use manage-pool to add a Worker to agent-instances/agent-repository-sid on the
 rpi5 context.
 ```
 
@@ -324,7 +354,7 @@ Ask your coding assistant to use the
 resume a Worker and to read back a committed Operator Command. For example:
 
 ```text
-Use operate-agent to stop agent-instances/agent-repository on the rpi5
+Use operate-agent to stop agent-instances/agent-repository-sid on the rpi5
 context.
 ```
 
@@ -342,7 +372,7 @@ Ask your coding assistant to use the
 issue number when applicable, and Docker context if it runs on another host:
 
 ```text
-Use debug-agent to investigate agent-instances/agent-repository.
+Use debug-agent to investigate agent-instances/agent-repository-sid.
 Check the latest run for issue #42 on the orbstack context.
 ```
 

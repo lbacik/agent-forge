@@ -61,8 +61,10 @@ An Instance runs N Workers (default 1): one image and one profile, each Worker
 its own Compose service with its own `/data` volume. Terms are defined in
 `CONTEXT.md` (Instance, Worker, Pool, Worker identity, Worker id, Claim). Read
 `references/pools.md` when N>=2, when another Instance shares this one's
-Worker identity or targets the same repository, or when a Worker has its
-own identity.
+Worker identity or targets the same repository with the same backend, or
+when a Worker has its own identity. An Instance of another backend on the
+same repository is a pairing, not a Pool (step 1, "Pairing with another
+backend").
 
 - **One context, one backend.** A Pool is one Instance, one Compose project,
   so it runs on one Docker context with one model backend
@@ -76,18 +78,22 @@ own identity.
   settings live in the `x-worker` anchor. Workers are not identical replicas
   (own `/data`, own Worker id), so don't use `--scale` or `container_name`.
 - **Worker id scheme.** `<short-name>-<n>`, where `<short-name>` is the
-  instance directory without `agent-` (`agent-battles` worker 2 →
-  `battles-2`; the first Worker is `<short-name>-1`). Only `[a-z0-9-]`, at
+  instance directory without `agent-` (`agent-jsonhub-api-sid` worker 2 →
+  `jsonhub-api-sid-2`; the first Worker is `<short-name>-1`; an existing
+  Instance named before the backend suffix keeps its unsuffixed short
+  name in its Worker ids). Only `[a-z0-9-]`, at
   most 32 characters (upstream refuses anything else at startup). If
   `<short-name>-<N>` is longer, refuse it and ask the user for a shorter
   short-name; it also names the directory, which keeps ids unique across
   Instances.
 - **When a Worker id is rendered.** For every Worker that shares its Worker
   identity with another Worker: N>=2 on the shared `GITHUB_TOKEN`, or
-  another Instance on the same `TARGET_REPO` that the user says acts as the
-  same login. A Worker joining a contract Pool through an allowed
-  same-repository match gets one too, even as the sole Worker (N=1), whatever
-  its Worker identity. Such a Worker's stanza sets `WORKER_ID` and the commit
+  another Instance of the same backend on the same `TARGET_REPO` that the
+  user says acts as the same login. An Instance of another backend ignores
+  a Worker id's Claim marker, so a pairing with one renders no Worker
+  id. A Worker joining a contract Pool through an allowed same-backend match
+  gets one too, even as the sole Worker (N=1), whatever its Worker
+  identity. Such a Worker's stanza sets `WORKER_ID` and the commit
   author `Claude Code (<worker-id>)`. N=1 on an identity of its own, outside
   any contract Pool, runs without one. Worker ids stay unique across all
   Workers of the contract Pool, across Instances.
@@ -147,6 +153,14 @@ can determine by reading the repository.
   `references/coding-agent.md` ("Model") for `coding-agent`.
 - The backend selects the deployment adapter; target identification, token
   verification and the report stay shared.
+- The backend also fixes the mandatory suffix of the new Instance's short
+  name (step 1). This table is the only place that maps a backend to its
+  suffix; a new backend adds a row:
+
+  | Backend | Suffix |
+  |---|---|
+  | `simple-coding-agent` | `sid` |
+  | `coding-agent` | `rex` |
 - `coding-agent`: continue with the coding-agent adapter in
   `references/coding-agent.md` — a derived-image Dockerfile, no stack block,
   no Forge-owned profile, exactly one Worker. Steps 1–2 and 6 stay shared;
@@ -160,11 +174,19 @@ can determine by reading the repository.
   when the user names none). That is the target context for the Fleet check
   below and for every `agentfleet` and `docker` command in this skill
   (`DOCKER_CONTEXT=<ctx>` on the command's environment).
-- Propose a directory name `agent-instances/agent-<short-name>` (look at how
-  the existing instances, in `agent-instances/` and in
-  `../simple-coding-agent-env/`, are named — they use the product name, not always the GitHub repo name, e.g.
-  `lbacik/globaldb` → `agent-jsonhub-api`). Confirm it with the user if the
-  repo name is not obviously the right short name.
+- Propose a directory name `agent-instances/agent-<short-name>`, where the
+  short name is `<project>-<suffix>`. `<project>` is the product name, not
+  always the GitHub repo name (look at how the existing instances, in
+  `agent-instances/` and in `../simple-coding-agent-env/`, are named, e.g.
+  `lbacik/globaldb` → project `jsonhub-api`). `<suffix>` comes from the
+  backend chosen in step 0 (the table there), e.g. `agent-jsonhub-api-sid`
+  for simple-coding-agent or `agent-jsonhub-api-rex` for coding-agent.
+  Confirm `<project>` with the user if the repo name is not obviously the
+  right one. The user may change `<project>`, never drop or change the
+  suffix. The short name `<project>-<suffix>` is what every rule below
+  calls `<short-name>`: the directory, the Managed Instance name, the Worker
+  ids `<short-name>-<n>` and the commit author. Existing Instances keep
+  their names (no suffix) and are never renamed.
 - Refuse to overwrite an existing `agent-instances/agent-*` directory; ask
   instead. Create `agent-instances/` itself if it doesn't exist yet.
 - Number of Workers N: 1 unless the user asks for more. Check the Worker id
@@ -172,12 +194,19 @@ can determine by reading the repository.
   name (`<short-name>` and `<short-name>-<N>` must each match
   `^[a-z0-9][a-z0-9-]{0,62}$`); refuse a short name that fails either and
   ask for another.
-- Fleet check, before scaffolding anything, on the target context. Two
-  single-instance engines must never compete for one repository. First make
-  sure `agentfleet` is present and speaks the expected contract major, as
-  `../debug-agent/scripts/lib/contract.sh` (`require_agentfleet`) does: if
-  it is missing or speaks another major, stop with its install command and
-  read nothing from the containers.
+- Fleet check, before scaffolding anything, on the target context. A Target
+  Repository holds at most one Instance per engine backend, apart from a
+  contract Pool (`docs/adr/0003-one-instance-per-backend-without-label-checks.md`):
+  only an existing Instance of the **same** backend as the one chosen in
+  step 0 can refuse the new one. An Instance of another backend never
+  refuses, on any Docker context. The Fleet check never reads or compares
+  selection labels: not the label settings in any `.env`, not the Selection
+  or Pickup Labels in any `workflow/workflow.yml`. Keeping two backends'
+  Queues apart, or deliberately not, is the operator's responsibility. First
+  make sure `agentfleet` is present and speaks the expected contract major,
+  as `../debug-agent/scripts/lib/contract.sh` (`require_agentfleet`) does:
+  if it is missing or speaks another major, stop with its install command
+  and read nothing from the containers.
 
   ```bash
   DOCKER_CONTEXT=<ctx> agentfleet ls
@@ -193,11 +222,11 @@ can determine by reading the repository.
 
   (`--json` for machine reading.) Compare each identity's Target Repository
   case-insensitively with `TARGET_REPO` (lowercase both sides before
-  comparing):
+  comparing), and take its engine backend from the same identity:
 
   ```bash
   DOCKER_CONTEXT=<ctx> agentfleet identity <name> --json \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["repository"].lower())'
+    | python3 -c 'import json,sys; r=json.load(sys.stdin)["result"]; print(r["repository"].lower(), r["backend"])'
   ```
 
   Then scan legacy Instances' env files for the same repository — file names
@@ -213,6 +242,22 @@ can determine by reading the repository.
   (The sibling path covers reference instances when that project is
   available; it may match instances that run on another context, so confirm
   with the user before treating such a match as a clash.)
+  Take each env-scan match's backend from the
+  `io.github.lbacik.agent-operator.backend` discovery label in the
+  `compose.yaml` next to it, never from its `.env` settings:
+
+  ```bash
+  grep -hoE 'io\.github\.lbacik\.agent-operator\.backend: *"?[a-z-]+' <dir>/compose.yaml | head -n 1
+  ```
+
+  A labelled match is a Managed Instance: when `agentfleet` already listed
+  it on the target context, its `identity` decides, as above. A match with
+  no discovery label is an unlabelled legacy Instance, and that is always
+  simple-coding-agent, because the coding-agent adapter always renders the
+  labels. For a match in `../simple-coding-agent-env`, confirm the backend
+  read from its files with the user in the same question as its context
+  above; when it is another backend, that one question is also the pairing
+  confirmation below.
   List the Fleet's instance names to check the short name against:
 
   ```bash
@@ -220,17 +265,17 @@ can determine by reading the repository.
     | python3 -c 'import json,sys; [print(i["name"]) for i in json.load(sys.stdin)["instances"]]'
   ```
 
-- Refusals from the Fleet check:
-  - Another instance targeting the same repository — found running or
-    stopped through `agentfleet identity` (Offline Read), or as an
-    unlabelled legacy Instance through the env scan above — refuses the new
-    one: stop and tell the user which instance holds the repository. A
-    same-repository match is allowed only when both sides form a contract
-    Pool:
-    - every existing Managed Instance on that Target Repository on the
-      target Docker context reports `pool` in `identity.capabilities`
-      (`agentfleet identity`, including stopped ones through Offline Read),
-      **and**
+- Refusals from the Fleet check (same backend only):
+  - Another instance of the backend chosen in step 0 targeting the same
+    repository — found running or stopped through `agentfleet identity`
+    (Offline Read), or as an unlabelled legacy Instance through the env
+    scan above — refuses the new one: stop and tell the user which instance
+    holds the repository. A same-backend match is allowed only when both
+    sides form a contract Pool:
+    - every existing Managed Instance of that backend on that Target
+      Repository on the target Docker context reports `pool` in
+      `identity.capabilities` (`agentfleet identity`, including stopped ones
+      through Offline Read), **and**
     - the new Instance will advertise `pool`: the `simple-coding-agent`
       backend at an `AGENT_SRC_REF` that speaks the contract (`main`, a tag
       `v0.9.0` or newer, or a branch/SHA whose checkout contains
@@ -239,20 +284,20 @@ can determine by reading the repository.
       id rendered for every one of its Workers.
     Otherwise refuse as today and name the instance holding the repository.
     An unlabelled legacy match from the `TARGET_REPO` env scan cannot report
-    capabilities, so it always refuses regardless of backend or ref. An
-    existing same-repository Instance that lacks `pool` in
-    `identity.capabilities` refuses too: tell the user to give its Workers
-    Worker ids first with the `manage-pool` skill (upgrading it to `v0.9.0`
-    or newer when needed) — `create-agent` never changes existing Instances
-    (the one exception, an explicitly requested coding-agent upgrade, is in
-    `references/coding-agent.md`).
-    `coding-agent` never advertises `pool`, so a same-repository clash with
-    that backend chosen always refuses.
+    capabilities, so it always refuses a new simple-coding-agent Instance,
+    regardless of ref. An existing same-backend Instance that lacks `pool`
+    in `identity.capabilities` refuses too: tell the user to give its
+    Workers Worker ids first with the `manage-pool` skill (upgrading it to
+    `v0.9.0` or newer when needed) — `create-agent` never changes existing
+    Instances (the one exception, an explicitly requested coding-agent
+    upgrade, is in `references/coding-agent.md`).
+    `coding-agent` never advertises `pool`, so a second coding-agent
+    Instance on a repository that already has one always refuses.
   - A short name already present in the Fleet of the target context is
     refused even for another repository: the Managed Instance name
     (`<short-name>`, or `<short-name>-<n>` for Worker n ≥ 2) must be unique
     there. Ask for another short name.
-  - When a same-repository match is allowed through `pool` above, fall
+  - When a same-backend match is allowed through `pool` above, fall
     through to the shared-login question: for each matching Instance, ask
     the user whether that Instance's `GITHUB_TOKEN` acts as the same GitHub
     login as this one's. Never compare or print the tokens.
@@ -267,6 +312,15 @@ can determine by reading the repository.
       needs the same list.
     N stays 1 unless the user asks for more, also when the new Instance
     joins a contract Pool — and that single Worker still gets a Worker id.
+- Pairing with another backend. When an Instance of a different backend
+  holds the repository (a Managed Instance on any context, an unlabelled
+  legacy Instance, or a sibling-project match), it does not refuse and does
+  not enter the Pool rules or the shared-login question above. Before
+  scaffolding, name each such Instance to the user — instance name,
+  backend, and Docker context (or path, for a match found only on disk) —
+  and ask once (AskUserQuestion) to confirm the pairing. If the user
+  declines, stop. Record the pairing for the report (step 8). Read no
+  tokens and no label configuration for it.
 - Engine ref (which commit the image builds from) defaults to `main`. If the
   user names a tag — e.g. "build it against tag v1.4.0" — use that instead;
   see step 3. It's not a one-time choice: it lands in `.env` as an ordinary
@@ -879,7 +933,16 @@ searched location and revision, toolchain matrix match at the chosen ref, or
 the reported miss / Unsupported Environment with the operator's decision). In
 both cases:
 the target Docker context and the Fleet check result — which Fleet was listed
-and that no other instance holds the repository, or which one does; which
+and that no other instance holds the repository, or which one does (a
+same-backend contract Pool, or a confirmed pairing with another backend);
+for each confirmed pairing, this statement, filled in and translated into
+the user's language without changing its meaning: "Instance `<name>`
+(backend `<backend>`) also works `<owner>/<repo>`. agent-forge does not check
+whether the two Instances' selection labels overlap. Keeping them apart, or
+deliberately not, is your responsibility. On one shared GitHub login,
+overlapping labels can cause double work, because the Claim cannot tell the
+two engines apart." (no token and no label configuration is read to write
+it); which
 engine ref the image builds from (`AGENT_SRC_REF` or `CODING_AGENT_REF`:
 `main`, or the pinned tag — and if pinned, that rebuilds won't pick up new
 agent code until the ref in `.env` is bumped or changed back to `main`, then
