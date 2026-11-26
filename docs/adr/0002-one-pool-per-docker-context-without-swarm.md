@@ -1,6 +1,6 @@
 # A Pool is one Compose project on one Docker context, without Swarm
 
-Every Worker of a Pool needs its own `/data` volume (upstream state is single-slot and has no inter-process locks) and its own Worker id, so Workers cannot be identical replicas. Docker Swarm services (and `docker compose --scale`) can only express identical replicas, so a Pool is one Instance directory and one Compose project with one service per Worker (`agent`, `agent-2..N`), running on one Docker context (plain Docker Engine, local or over SSH) with one model backend. Spreading work over several hosts is done with several Instances working one Queue, not with one Pool spanning hosts.
+Every Worker of a Pool needs its own `/data` volume (upstream state is single-slot and has no inter-process locks) and its own Worker id, so Workers cannot be identical replicas. Docker Swarm services (and `docker compose --scale`) can only express identical replicas, so a Pool is one Instance directory and one Compose project with one service per Worker (`agent`, `agent-2..N`), running on one Docker context (plain Docker Engine, local or over SSH). Spreading work over several hosts is done with several Instances working one Queue, not with one Pool spanning hosts.
 
 ## Considered Options
 
@@ -9,6 +9,6 @@ Every Worker of a Pool needs its own `/data` volume (upstream state is single-sl
 
 ## Consequences
 
-- One Pool has one Docker context and one model backend; `create-agent` and `manage-pool` state it.
+- One Pool has one Docker context; `create-agent` and `manage-pool` state it. A simple-coding-agent Pool has one model backend. A coding-agent Pool may use several model routes, one per pin (each Workflow's pin and each Advisor pin); its `.env` carries the keys of every pin its Workers use, and a pin routed through the LiteLLM gateway puts the whole Instance on that gateway's Docker context.
 - Workers on different hosts or backends belong to different Instances. They may take issues from one Queue (the Claim settles between them), but they are not one Pool and are not managed together.
 - Adding a Worker means adding a service stanza by hand; there is no generator.

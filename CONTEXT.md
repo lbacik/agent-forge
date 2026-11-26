@@ -13,7 +13,7 @@ One running engine container of an Instance (simple-coding-agent or coding-agent
 _Avoid_: Replica, agent, node
 
 **Pool**:
-The set of Workers of one Instance that take issues from the same queue. Its Workers treat each other's attempt results as their own, so any Worker may continue an issue another Worker handed off.
+All the Workers of one Instance. Its Workers treat each other's attempt results as their own, so any Worker that runs the same Workflow may continue an issue another Worker handed off. Workers of one Pool that run different Workflows take from different Queues.
 _Avoid_: Fleet (the contract's term for all Managed Instances on one Docker host), cluster
 
 **Worker identity**:
@@ -32,8 +32,12 @@ _Avoid_: Lock, lease
 The mark on an issue naming the Worker that holds its Claim; present only while the Claim is held.
 _Avoid_: Lock label
 
+**Workflow**:
+A named scenario in a coding-agent Instance's Workflow Configuration, such as `implement` (issue in, pull request out) or `triage` (`needs-triage` in, a triaged issue out). The configuration may declare several; each Worker runs exactly one, chosen in that Worker's own configuration. A simple-coding-agent Worker has no Workflow choice: its backend fixes the scenario.
+_Avoid_: Mode, pipeline, job
+
 **Queue**:
-The issues (and, for some backends, pull requests) of the target repository that an Instance's Workers may claim, selected by labels its backend defines. Workers of several Instances of one backend may take from one Queue; the Claim settles between them as it does within a Pool. Instances of different backends may share a target repository; keeping their Queues apart, or deliberately not, is the operator's concern.
+The issues (and, for some backends, pull requests) of the target repository that a Worker may claim, selected by the labels of its Workflow (coding-agent) or by labels its backend defines (simple-coding-agent). Workers of several Instances of one backend may take from one Queue; the Claim settles between them as it does within a Pool. Instances of different backends may share a target repository; keeping their Queues apart, or deliberately not, is the operator's concern.
 _Avoid_: Backlog
 
 **Conflict requeue**:
