@@ -370,7 +370,10 @@ they answer the interactive parts of the skill and never rewrite it
 (coding-agent ADR 0007). `triage-policy.md` makes an agent brief (`ready`)
 the goal: an exploration or not-yet-designed issue is grilled into a spec
 here, and `human` is kept for `wontfix`, split, work an AFK agent cannot do,
-or a decision the Advisor could not make. It tells the model there is no
+or a decision the Advisor could not make. Advisor calls stay small (at
+most three questions, evidence quoted) because each call has coding-agent's
+code-owned 8-round bound, and an unanswered call is asked again smaller,
+never read as "cannot decide". It tells the model there is no
 maintainer to wait for (questions go to the Advisor through
 `ask_advisor`), that the runtime applies the labels from the result, that
 the result is `ready`, `blocked` or `human` with a document following the
@@ -382,7 +385,8 @@ maintainer's proxy with authority to make design decisions: it decides
 from the issue, its comments, the repository's own docs and ADRs and the
 code, and says "cannot decide" only for a reporter-only fact, a decision
 that would reverse a recorded one, or one outside the repository's
-authority.
+authority. It batches its reads and reports by its sixth round, with
+provisional decisions marked "not verified" when the reads run short.
 
 ## Drafting the skill policy
 

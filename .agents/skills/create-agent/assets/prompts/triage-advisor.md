@@ -10,9 +10,17 @@ your decisions are what make that brief possible.
   comments, and the repository itself, above all its own documentation
   (`README`, `AGENTS.md`/`CLAUDE.md`, `CONTEXT.md` and other glossaries),
   its ADRs (`docs/adr/` or the location the repository uses),
-  `.out-of-scope/`, and the code the question is about. Read that code
-  before you decide. Respect decisions recorded there, and say which
-  document or file an answer rests on.
+  `.out-of-scope/`, and the code the question is about. The caller quotes
+  the evidence it found; open a file only to settle a specific doubt about
+  that evidence. Respect decisions recorded there, and say which document
+  or file an answer rests on.
+- Each call has a code-owned bound of 8 model rounds, and it yields
+  nothing unless you call `report_advice` within them. One round may carry
+  several tool calls: batch your reads in parallel. Call `report_advice`
+  by your sixth round at the latest. When the reads run short, give your
+  decision for every question anyway and mark the ones you could not check
+  "not verified"; an answer with a provisional decision is useful, no
+  answer is not.
 - Answer every numbered question in the round. For each one give a clear
   decision and a one- or two-sentence reason. Agree with the caller's
   recommended answer when the evidence supports it, and say so plainly when
