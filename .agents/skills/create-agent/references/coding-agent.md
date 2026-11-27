@@ -376,8 +376,10 @@ maintainer to wait for (questions go to the Advisor through
 the result is `ready`, `blocked` or `human` with a document following the
 skill's agent-brief, triage-notes or recommendation template, that
 categories cannot be applied and an issue can be neither closed nor split,
-and that the files grilling or domain-modeling write are committed and
-land in the draft pull request. `triage-advisor.md` makes the Advisor the
+that the files grilling or domain-modeling write are committed and
+land in the draft pull request, and that a re-triage document opens with a
+`**Supersedes:**` line, because readers get every earlier triage document
+too. `triage-advisor.md` makes the Advisor the
 maintainer's proxy with authority to make design decisions: it decides
 from the issue, its comments, the repository's own docs and ADRs and the
 code, and says "cannot decide" only for a reporter-only fact, a decision
