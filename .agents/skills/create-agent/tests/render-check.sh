@@ -610,6 +610,15 @@ ca_handoff_tokens() {
 # workflow_block CONTENT WORKFLOW -- the lines of one Workflow of a rendered
 # workflow.yml: from its `  <id>:` line under `workflows:` to the next
 # Workflow.
+# workflow_needs_contract WORKFLOW_CONTENT ID -- whether Workflow ID needs a
+# Validation Contract, by coding-agent's rule (`Workflow.needs_validation_contract`,
+# ADR 0037): an operation step `check-readiness` or `run-validation`, or an
+# agent step whose tools include `tests`.
+workflow_needs_contract() {
+  workflow_block "$1" "$2" |
+    grep -Eq '^ *operation: (check-readiness|run-validation)( |$)|^ *tools: \[.*(\[|, )tests(,|\])'
+}
+
 workflow_block() {
   printf '%s\n' "$1" | awk -v wf="$2" '
     /^workflows:$/ { in_wf = 1; next }
@@ -1118,7 +1127,7 @@ check_coding_agent_instance() {
   assert_contains "$dockerfile_content" '--mode install' \
     "$label: Dockerfile does not prepare with --mode install"
   check_coding_agent_profile "$dir" "$label" "$workflow_content" "$dockerfile_content"
-  assert_no_forge_profile "$dir" "$label"
+  assert_no_simple_agent_profile "$dir" "$label"
 }
 
 # check_coding_agent_profile DIR LABEL WORKFLOW_CONTENT DOCKERFILE_CONTENT --
@@ -1343,19 +1352,19 @@ assert_no_agent_operator() {
   fi
 }
 
-# assert_no_forge_profile DIR LABEL -- a coding-agent instance carries no
+# assert_no_simple_agent_profile DIR LABEL -- a coding-agent instance carries no
 # simple-coding-agent profile: no simple-coding-agent-profile.yml, and no
 # PROFILE_PATH / AGENT_SRC_REF / WORKER_ID in the rendered .env or
 # compose.yaml. Its Project Profile is the repository's, or an
 # Instance-supplied workflow/project-profile.yml named by target.profile
 # (checked in check_coding_agent_profile). It does carry a Dockerfile: the
 # derived deployment image (checked in check_coding_agent_instance).
-assert_no_forge_profile() {
+assert_no_simple_agent_profile() {
   if [ -e "$1/simple-coding-agent-profile.yml" ]; then
-    fail "$2: coding-agent instance must not contain a Forge-owned profile"
+    fail "$2: coding-agent instance must not contain a simple-coding-agent profile"
   fi
   if grep -qF 'PROFILE_PATH' "$1/.env"; then
-    fail "$2: .env sets PROFILE_PATH (no Forge-owned profile on this backend)"
+    fail "$2: .env sets PROFILE_PATH (no simple-coding-agent profile on this backend)"
   fi
   if grep -qF 'AGENT_SRC_REF' "$1/.env"; then
     fail "$2: .env sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)"
@@ -1670,17 +1679,16 @@ check_coding_agent_validate() {
       fail "$2: secret-free 'agent config validate --workflow $workflow' failed"
     }
     printf '%s\n' "$validate_output"
-    # The "profile from the Target Repository" notice belongs only to a
-    # Workflow that needs a Validation Contract and has no target.profile
-    # (coding-agent ADR 0037): `implement` without an Instance-supplied
-    # profile. `triage` needs no contract, and with target.profile the
-    # file is checked here instead.
-    if [ "$workflow" = implement ] && [ "$CA_PROFILE" != 1 ]; then
+    # The "no target.profile" notice belongs only to a Workflow that needs
+    # a Validation Contract and has no target.profile (coding-agent ADR
+    # 0037). With target.profile the file is checked here instead.
+    if [ "$CA_PROFILE" != 1 ] &&
+      workflow_needs_contract "$(cat "$1/workflow/workflow.yml")" "$workflow"; then
       assert_contains "$validate_output" 'no target.profile' \
-        "$2: config validate --workflow $workflow prints no 'profile from the Target Repository' notice"
+        "$2: config validate --workflow $workflow prints no 'no target.profile' notice"
     else
       assert_not_contains "$validate_output" 'no target.profile' \
-        "$2: config validate --workflow $workflow prints the 'profile from the Target Repository' notice"
+        "$2: config validate --workflow $workflow prints the 'no target.profile' notice"
     fi
   done
 }
@@ -1777,7 +1785,7 @@ main() {
     fail 'compose.coding-agent.yaml.template renders an open-ended <n> worker (at most one Worker per Workflow)'
   fi
   if grep -qF 'PROFILE_PATH' "$ASSETS_DIR/env.coding-agent.example.template"; then
-    fail 'env.coding-agent.example.template sets PROFILE_PATH (no Forge-owned profile on this backend)'
+    fail 'env.coding-agent.example.template sets PROFILE_PATH (no simple-coding-agent profile on this backend)'
   fi
   if grep -qF 'AGENT_SRC_REF' "$ASSETS_DIR/env.coding-agent.example.template"; then
     fail 'env.coding-agent.example.template sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)'

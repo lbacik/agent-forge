@@ -485,8 +485,7 @@ Shallow-clone that same ref into the scratchpad and read, at that commit:
   named file must exist next to `workflow.yml`.
 - With `triage` selected, whether the ref is `v0.5.1` or newer
   (`references/coding-agent.md`, "Workflow selection"): refuse `triage` at
-  an older ref and say why (before `v0.5.1` every Attempt needs a Project
-  Profile, so `triage` fails on repositories without one).
+  an older ref and say why.
 - `src/coding_agent/workflow/schema.py` — `Workflow.needs_validation_contract`,
   the rule for which Workflows need a Validation Contract and so a Project
   Profile (an `agent` step with the `tests` tool group, or a
@@ -498,27 +497,13 @@ Shallow-clone that same ref into the scratchpad and read, at that commit:
   which Operator Capabilities the Worker advertises. If the ref documents no
   such directory, drop that tmpfs entry from the rendered `compose.yaml`.
 
-Then run the target checkout checks in `references/coding-agent.md`
-("Project Profile and target checkout checks") against the step-2 checkout
-at its default branch (the revision that becomes `target.base_branch` in
-step 5), before writing anything. They run only when at least one selected
-Workflow needs a Validation Contract (with today's template, `implement`);
-for a `triage`-only Instance they are skipped, nothing about a profile is
-asked, and the report says why. When they run, the report names the
-Workflow(s) that need a profile, and the skill confirms
-`docs/agents/project-profile.yml` exists there. When it is missing, the
-skill reports the searched location and revision and stops to ask
-(AskUserQuestion): (a) the operator commits the profile to the Target
-Repository and the check runs again (recommended), or (b) the skill writes
-an Instance-supplied `workflow/project-profile.yml` that mirrors the
-target's gating CI checks, named by `target.profile`. Scaffolding a
-Workflow that needs a profile without one is never offered. The profile the
-Instance will use — the repository's, or the Instance-supplied one — must
-declare a toolchain inside the Supported Toolchain Matrix at the chosen
-`CODING_AGENT_REF`; a mismatch is reported as an Unsupported Environment
-naming the offending runtime and the supported range. When the profile is
-present and the toolchain matches, proceed without prompting. Write an
-Instance profile only through option (b).
+Then, before writing anything, follow "Project Profile and target checkout
+checks" in `references/coding-agent.md` against the step-2 checkout at its
+default branch (the revision that becomes `target.base_branch` in step 5).
+It decides which selected Workflows need a Project Profile (none for a
+`triage`-only Instance), checks the repository's profile and its toolchain
+for them, and, when the profile is missing, asks the operator to commit one
+(a) or let the skill write an Instance-supplied one (b).
 
 ### 4. Analyze the target stack (simple-coding-agent)
 

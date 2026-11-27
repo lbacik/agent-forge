@@ -5,9 +5,11 @@ or when the operator asks to upgrade an existing coding-agent Instance to
 the derived-image layout ("Upgrading an existing coding-agent Instance"
 below).
 
-Terms are defined in `CONTEXT.md` (Instance, Worker, Worker identity) and in
+Terms are defined in `CONTEXT.md` (Instance, Worker, Worker identity), in
 the operator contract glossary (Managed Instance, Fleet, Target Repository,
-Operator Capability, Status Snapshot).
+Operator Capability, Status Snapshot) and in coding-agent's runtime
+contract (Project Profile, Validation Contract, Startup Refusal, Attempt,
+Supported Toolchain Matrix).
 
 Source facts below were read at coding-agent `v0.4.0` (`2626351`) unless
 noted; the `triage` Workflow, the Advisor, `input.comments` and
@@ -375,8 +377,7 @@ and pins are filled in) takes issues labelled `needs-triage`, runs the
   request carries what the skill wrote (`CONTEXT.md`, ADRs,
   `.out-of-scope/`).
 - No `check-readiness`, no `run-validation` and no `tests` tool group:
-  triage changes no code, so it needs no Validation Contract and, from
-  coding-agent `v0.5.1`, runs without a Project Profile.
+  triage changes no code, so it needs no Validation Contract.
 - `defaults.routes` send `error` and `limit-exceeded` to `hard-handoff`, a
   single `commit-and-push` that ends `unfinished` (and `failed` on its own
   `error` or `limit-exceeded`), as `implement`'s Hard Handoff does. There
@@ -706,9 +707,8 @@ gateway must refuse naming the effort.
 
 ## Project Profile and target checkout checks
 
-There is no Forge-owned profile in the simple-coding-agent sense: no
-`simple-coding-agent-profile.yml` is written and no Dockerfile `STACK` block
-is rendered. A coding-agent Project Profile (the schema-2 format of
+This backend writes no `simple-coding-agent-profile.yml` and renders no
+Dockerfile `STACK` block. A coding-agent Project Profile (the schema-2 format of
 coding-agent's `docs/contract/v1-runtime-contract.md` §7) is the Validation
 Contract of a Workflow that validates, and it comes from one of two places:
 
@@ -1040,8 +1040,7 @@ secrets out of the output: compare `.env` key names, never values.
    branch, the short name, the model and its route, and the Workflow
    settings (Selection Label, Attempt Ceiling, Step Allowances). The old
    Instance declares `implement` alone, so the reference policy and the
-   `implement` prompts apply (an Instance that already declares `triage`
-   needs a new ref of `v0.5.1` or newer, "Workflow selection"); the Worker's Workflow (the old `.env`'s
+   `implement` prompts apply; the Worker's Workflow (the old `.env`'s
    `WORKFLOW`, default `implement`) goes into the `worker` stanza's
    `--workflow`, and the old `WORKFLOW` line is dropped from `.env`. The
    "Workflow Configuration" rules still apply: when an old allowance does
@@ -1052,6 +1051,9 @@ secrets out of the output: compare `.env` key names, never values.
    is, except for keys the new `.env.example` requires that `.env` lacks
    (compare key names only), and point `CODING_AGENT_REF` at the new ref.
    No `{{...}}` may remain.
+
+   An Instance that declares `triage` needs a new `CODING_AGENT_REF` of
+   `v0.5.1` or newer ("Workflow selection"); refuse an older one.
 
    Then check the Project Profile before starting the Worker. Keep an
    existing `target.profile` and its file (both `instance-profile-*`
