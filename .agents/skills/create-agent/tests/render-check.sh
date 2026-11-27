@@ -1115,6 +1115,13 @@ check_coding_agent_implement() {
     "$2: implement process step names no skill"
   assert_contains "$block" 'skill: code-review' \
     "$2: implement self-review step names no skill"
+  # Runtime-only endings need end labels, or the issue leaves every queue
+  # unlabelled.
+  for outcome in 'interrupted: {labels: [ready-for-human]}' \
+    'drift: {labels: [ready-for-human]}'; do
+    assert_contains "$block" "$outcome" \
+      "$2: implement end labels miss '$outcome'"
+  done
   assert_contains "$block" "cost-usd: $PH_LIMIT_COST_USD" \
     "$2: implement Attempt Ceiling cost is incomplete"
   assert_contains "$block" "effective-tokens: $PH_LIMIT_EFFECTIVE_TOKENS" \
@@ -1169,7 +1176,9 @@ check_coding_agent_triage() {
     'blocked: {labels: [needs-info]}' \
     'unfinished: {labels: [ready-for-human]}' \
     'failed: {labels: [ready-for-human]}' \
-    'internal-failure: {labels: [ready-for-human]}'; do
+    'internal-failure: {labels: [ready-for-human]}' \
+    'interrupted: {labels: [ready-for-human]}' \
+    'drift: {labels: [ready-for-human]}'; do
     assert_contains "$block" "$outcome" \
       "$2: triage end labels miss '$outcome'"
   done
