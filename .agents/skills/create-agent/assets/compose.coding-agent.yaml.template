@@ -34,13 +34,14 @@
 # `name:` (coding-agent's own fixed `name: coding-agent` is not copied),
 # because the project name is the Instance identity on this Docker context.
 #
-# Services: `worker` is the one long-running process (`agent run` with the
-# full v3 flags) and the only Managed Instance, so it alone carries the
-# contract discovery labels. `agent` and `validate` are unlabelled one-off
+# Services: `worker` (and `worker-2` in a two-Worker Pool) is a
+# long-running process (`agent run` with the full v3 flags) and a Managed
+# Instance, so the Worker services alone carry the contract discovery
+# labels. `agent` and `validate` are unlabelled one-off
 # seats (`docker compose run --rm ...`) on the same derived image, so
 # `validate` and `startup-check` see the same toolchains and the same baked
-# package as the Worker. `engine` is the build-only base image (never run,
-# never labelled). So that a bare `docker compose up -d` starts the Worker
+# package as the Workers. `engine` is the build-only base image (never run,
+# never labelled). So that a bare `docker compose up -d` starts the Workers
 # alone, `engine` has `scale: 0` and `agent` and `validate` sit in the
 # `tools` profile. Naming a service (`docker compose run --rm validate`)
 # enables its profile, so the one-off commands need no `--profile` flag.
@@ -48,36 +49,45 @@
 # from the model, the `service:engine` build context no longer resolves, and
 # every command fails, even `docker compose config`. `scale: 0` keeps it in
 # the model, so it is still built, but Compose creates no container for it.
-# `docker compose config --services` therefore lists `engine` and `worker`;
-# add `--profile '*'` to see all four.
+# `docker compose config --services` therefore lists `engine` and the
+# Worker services; add `--profile '*'` to see the one-off seats too.
 #
-# Exactly one Worker per Instance and state volume: Pool rendering never
-# applies, because this backend never advertises the `pool` Operator
-# Capability, so there is no `agent-2..N` stanza here and `manage-pool` does
-# not apply. A Target Repository holds at most one coding-agent Instance; an
-# Instance of another backend may share it (docs/adr/0003).
+# Workers and Workflows: every Worker runs exactly one Workflow of
+# workflow.yml, named by `--workflow` in its own stanza, and has its own
+# state volume (`state`, `state_2`). A Pool holds at most one Worker per
+# Workflow, so at most two Workers (`implement` and `triage`): this backend
+# never advertises the `pool` Operator Capability and leaves no Claim
+# marker, so two Workers on one Workflow would race on one Queue
+# (docs/adr/0005). `manage-pool` adds or removes the second Worker. A
+# Target Repository holds at most one coding-agent Instance; an Instance of
+# another backend may share it (docs/adr/0003).
 #
 # Hardening mirrors coding-agent's own deployment (its compose.yaml at the
 # chosen ref): read-only root filesystem with a writable /tmp on every
-# service, `init: true` plus `restart: "no"` on the worker (a startup refusal
+# service, `init: true` plus `restart: "no"` on every Worker (a startup refusal
 # or a Halt exits non-zero and is never restarted automatically, so a
 # Credential Failure cannot loop), and `stop_grace_period` above the
 # Workflow Configuration's `worker.shutdown-grace-seconds` (default 30 s),
 # or Docker would SIGKILL the Worker mid-finalisation.
 
 # Everything the derived services share. Each merges it with `<<: *agent`.
+#
+# `build.args.WORKFLOWS` lists the Workflow ids workflow.yml declares
+# (`implement`, `triage`, or both, space-separated): the Dockerfile runs the
+# static `config validate` once per id at build time.
 x-agent: &agent
   # Runtime settings for the container. Values come from the shell or from
   # the .env compose reads beside this file for interpolation. GITHUB_TOKEN
   # is the default the CLI looks for; SANDBOX_TOKEN is passed through so a
   # sandbox credential can be selected with `--token-env SANDBOX_TOKEN`
-  # rather than copied under a second name. The model's key variable
-  # (ANTHROPIC_API_KEY or OPENAI_API_KEY on a direct pin,
-  # LITELLM_PROXY_API_KEY on a gateway pin — whichever the Workflow
-  # Configuration names in `models.<id>.api-key-env`) reaches only the
-  # worker below. There is deliberately no `env_file:` (as in upstream's
-  # compose.yaml): it would copy every .env key, the model key included,
-  # into the `agent` and `validate` seats too. Secret-free `config validate`
+  # rather than copied under a second name. The model key variables
+  # (ANTHROPIC_API_KEY or OPENAI_API_KEY for a direct pin,
+  # LITELLM_PROXY_API_KEY for a gateway pin — whichever the Workflow
+  # Configuration names in `models.<id>.api-key-env`) reach only the
+  # Worker services below, each Worker the keys of its own pins. There is
+  # deliberately no `env_file:` (as in upstream's compose.yaml): it would
+  # copy every .env key, the model keys included, into the `agent` and
+  # `validate` seats too. Secret-free `config validate`
   # needs no environment, and `startup-check` needs only GITHUB_TOKEN.
   build:
     context: .
@@ -87,6 +97,8 @@ x-agent: &agent
     # makes Compose build it as part of building these services.
     additional_contexts:
       engine: service:engine
+    args:
+      WORKFLOWS: "{{WORKFLOWS}}"
   image: coding-agent:{{SHORT_NAME}}
   # The image deliberately declares no entrypoint (its verification scripts
   # run `bash` inside it); compose fixes one so a service's arguments read
@@ -130,7 +142,9 @@ services:
   # subcommand supplied at the command line:
   #
   #   docker compose run --rm agent startup-check --repo {{OWNER}}/{{REPO}}
-  #   docker compose run --rm agent config validate --config /etc/coding-agent/workflow.yml --workflow implement
+  #   docker compose run --rm agent config validate --config /etc/coding-agent/workflow.yml --workflow <id>
+  #
+  # (once per Workflow id workflow.yml declares).
   #
   # The Workflow Configuration and its Skill Bundle are baked into this
   # image (see the Dockerfile), so commands that read them need no mount
@@ -176,29 +190,32 @@ services:
       - /var/lib/coding-agent/artifacts/target
     command: []
 
-  # The Worker (step-workflow contract §4): `agent run` against the baked
-  # `version: 4` Workflow Configuration at /etc/coding-agent/workflow.yml,
-  # with the baked prompts, reviewed skill-policy.json, prepared bundle
-  # records and Supported Toolchain Matrix the derived image carries. It
-  # selects, claims and runs the selected Workflow's inputs one Attempt at
-  # a time until it halts.
+  # The first Worker (step-workflow contract §4): `agent run` against the
+  # baked `version: 4` Workflow Configuration at
+  # /etc/coding-agent/workflow.yml, with the baked prompts, reviewed
+  # skill-policy.json, prepared bundle records and Supported Toolchain
+  # Matrix the derived image carries. It selects, claims and runs its
+  # Workflow's inputs one Attempt at a time until it halts.
   #
   #   docker compose up -d worker
   #
-  # WORKFLOW selects the Workflow id (default `implement`). The token
-  # variable the YAML's `target.token-env` names and the model's
-  # `api-key-env` must be among the names passed below. This is the only
-  # labelled service: the deployment labels make this container — and only
-  # this one — a Managed Instance. They are set through the deployment,
-  # never as an image LABEL: the image is shared with the one-off `agent`
-  # and `validate` services above.
+  # `--workflow` names this Worker's Workflow (`implement` or `triage`, one
+  # that workflow.yml declares): the Worker's own configuration, changed by
+  # editing it here and recreating the container (no rebuild). The token
+  # variable the YAML's `target.token-env` names and the `api-key-env` of
+  # every pin this Worker uses (its Workflow's pin, plus the Advisor pin
+  # for `triage`) must be among the names passed below. Only the Worker
+  # services are labelled: the deployment labels make these containers —
+  # and only these — Managed Instances. They are set through the
+  # deployment, never as an image LABEL: the image is shared with the
+  # one-off `agent` and `validate` services above.
   worker:
     <<: *agent
     restart: "no"
     # Contract discovery labels (operator contract §2.1): contract major 1,
-    # this Instance's Managed Instance name, the non-root exec user the
-    # engine image runs as, and this backend. The name must match
-    # `^[a-z0-9][a-z0-9-]{0,62}$`.
+    # this Worker's Managed Instance name (`<short-name>` for the first
+    # Worker), the non-root exec user the engine image runs as, and this
+    # backend. The name must match `^[a-z0-9][a-z0-9-]{0,62}$`.
     labels:
       io.github.lbacik.agent-operator.contract: "1"
       io.github.lbacik.agent-operator.instance: {{SHORT_NAME}}
@@ -214,24 +231,18 @@ services:
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       SANDBOX_TOKEN: ${SANDBOX_TOKEN:-}
-      # Direct model keys: delete from direct-model-key-begin through
-      # direct-model-key-end for a gateway pin.
-      # direct-model-key-begin
+      # Model keys: keep exactly the variables this Worker's pins name in
+      # `api-key-env` and delete the other lines (no other service gets
+      # them).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # direct-model-key-end
-      # Gateway model key: for a gateway pin, delete the direct keys above
-      # and uncomment the line below (from gateway-model-key-begin through
-      # gateway-model-key-end).
-      # gateway-model-key-begin
-      # LITELLM_PROXY_API_KEY: ${LITELLM_PROXY_API_KEY:-}
-      # gateway-model-key-end
+      LITELLM_PROXY_API_KEY: ${LITELLM_PROXY_API_KEY:-}
     volumes:
       - state:/var/lib/coding-agent
     # The operator control socket directory: a tmpfs mount shadowing the
     # state volume's `operator` subdirectory, so the Unix socket never
-    # touches the named volume. Only the worker carries it; `agent` and
-    # `validate` keep the base `/tmp` tmpfs alone. The listener enforces
+    # touches the named volume. Only the Worker services carry it; `agent`
+    # and `validate` keep the base `/tmp` tmpfs alone. The listener enforces
     # 0700 on the directory and 0600 on the socket; there is no network
     # listener and no published port. If the chosen CODING_AGENT_REF's
     # `agentctl` documents no such socket directory, drop this second entry
@@ -251,7 +262,7 @@ services:
       - --config
       - /etc/coding-agent/workflow.yml
       - --workflow
-      - ${WORKFLOW:-implement}
+      - {{WORKER_WORKFLOW}}
       - --state-dir
       - /var/lib/coding-agent
       - --toolchain-matrix
@@ -262,6 +273,59 @@ services:
       - /opt/coding-agent/skill-bundle
       - --skill-home
       - /home/agent
+  # worker-2-begin
+
+  # The second Worker, only in a two-Worker Pool (one Worker per Workflow,
+  # docs/adr/0005): the same stanza as `worker`, with its own Managed
+  # Instance name `<short-name>-2`, its own state volume `state_2`, its own
+  # `--workflow` (the Workflow `worker` does not run) and the model keys of
+  # its own pins. Delete from worker-2-begin through worker-2-end (and the
+  # `state_2` volume below) for a single Worker. Comments on `worker`
+  # apply here too.
+  #
+  #   docker compose up -d worker-2
+  worker-2:
+    <<: *agent
+    restart: "no"
+    labels:
+      io.github.lbacik.agent-operator.contract: "1"
+      io.github.lbacik.agent-operator.instance: {{SHORT_NAME}}-2
+      io.github.lbacik.agent-operator.exec-user: "agent"
+      io.github.lbacik.agent-operator.backend: "coding-agent"
+    init: true
+    stop_grace_period: 60s
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN:-}
+      # Model keys: keep exactly the variables this Worker's pins name.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LITELLM_PROXY_API_KEY: ${LITELLM_PROXY_API_KEY:-}
+    volumes:
+      - state_2:/var/lib/coding-agent
+    tmpfs:
+      - /tmp
+      - /var/lib/coding-agent/operator:uid=1000,gid=1000,mode=0700
+    command:
+      - run
+      - --config
+      - /etc/coding-agent/workflow.yml
+      - --workflow
+      - {{WORKER_2_WORKFLOW}}
+      - --state-dir
+      - /var/lib/coding-agent
+      - --toolchain-matrix
+      - /opt/coding-agent/toolchain-matrix.json
+      - --policy
+      - /etc/coding-agent/skill-policy.json
+      - --bundle-dir
+      - /opt/coding-agent/skill-bundle
+      - --skill-home
+      - /home/agent
+  # worker-2-end
 
 volumes:
   state:
+  # worker-2-begin
+  state_2:
+  # worker-2-end

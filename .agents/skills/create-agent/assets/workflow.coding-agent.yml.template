@@ -1,33 +1,46 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/lbacik/coding-agent/main/schemas/workflow-v4.schema.json
 # Workflow Configuration (`version: 4`) for the coding-agent instance
-# dedicated to {{OWNER}}/{{REPO}}: one `implement` Workflow (issue in, pull
-# request out). Rendered by the create-agent skill from this template; the
-# operator guide is coding-agent's docs/ops/workflow-configuration.md, and
-# the step-workflow runtime contract is the authority. This file is baked
-# into the derived image (see the instance Dockerfile), never mounted: any
-# edit needs `docker compose build` before the container is recreated, and
-# the build itself re-validates, re-prepares and re-verifies the package.
-# Validate edits with
+# dedicated to {{OWNER}}/{{REPO}}. It declares the Workflows the operator
+# selected: `implement` (issue in, pull request out), `triage`
+# (`needs-triage` in, a triaged issue out), or both. Rendered by the
+# create-agent skill from this template; the operator guide is
+# coding-agent's docs/ops/workflow-configuration.md, and the step-workflow
+# runtime contract is the authority. This file is baked into the derived
+# image (see the instance Dockerfile), never mounted: any edit needs
+# `docker compose build` before the container is recreated, and the build
+# itself re-validates (once per declared Workflow), re-prepares and
+# re-verifies the package. Validate edits once per declared Workflow with
 #   docker compose run --rm agent config validate \
-#     --config /etc/coding-agent/workflow.yml --workflow implement
+#     --config /etc/coding-agent/workflow.yml --workflow <id>
 # with no secrets set: `config validate` is static, it checks the whole file
 # without opening an Attempt or writing to GitHub.
 #
+# Rendering. The skill keeps the blocks of the selected Workflows and
+# deletes the others: every range from `# workflow-implement-begin` through
+# `# workflow-implement-end` (two ranges: the `main` pin and the `implement`
+# Workflow), and likewise every `workflow-triage-*` range (the `triage` and
+# `triage-advisor` pins and the `triage` Workflow). The marker lines
+# themselves are deleted too. No placeholder may remain.
+#
 # `version: 2` and `version: 3` files are refused with a migration
 # diagnostic (coding-agent 0.4.7 made `version: 4` the only accepted
-# format): keep `version: 4` and the `skills:` block below. A missing `skills` field means an empty bundle,
-# so every static `skill:` reference below names a declared member, and every
-# member needs a reviewed entry in the workflow directory's
-# `skill-policy.json` (copied verbatim from the CODING_AGENT_REF checkout's
-# `docker/deployment/skill-policy.json`; the skill never writes or approves
-# policy entries, and a changed membership or source ref means the operator
-# re-reviews the policy first).
+# format): keep `version: 4` and the `skills:` block below. A missing
+# `skills` field means an empty bundle, so every static `skill:` reference
+# below names a declared member, and every member needs a reviewed entry in
+# the workflow directory's `skill-policy.json`. For the reference bundle
+# (`implement` alone) that file is copied verbatim from the
+# CODING_AGENT_REF checkout's `docker/deployment/skill-policy.json`; any
+# other bundle gets a policy drafted with `agent draft-skill-policy` and
+# completed with operator-approved decisions only. The skill writes only
+# the decisions the operator approved and never approves on its own; a
+# changed membership or source ref means drafting and reviewing again.
 #
-# One Worker runs one Workflow. Editing this file affects the next Attempt,
-# never one already open. Values that are credentials never appear here:
-# `target.token-env` and each model's `api-key-env` name environment
-# variables only; the values live in `.env`. A value that looks like a
-# secret where a name belongs fails validation.
+# One Worker runs one Workflow, named by `--workflow` in its own compose.yaml
+# stanza. Editing this file affects the next Attempt, never one already
+# open. Values that are credentials never appear here: `target.token-env`
+# and each model's `api-key-env` name environment variables only; the
+# values live in `.env`. A value that looks like a secret where a name
+# belongs fails validation.
 
 version: 4
 
@@ -38,83 +51,90 @@ target:
   token-env: GITHUB_TOKEN
 
 models:
-  # The Attempt's one Pinned Model: exactly one of a direct `provider` pin or
-  # a `gateway` pin through a Model Gateway (coding-agent
-  # `docs/ops/workflow-configuration.md`, "Gateway pins", at
-  # CODING_AGENT_REF). The skill renders one variant below and deletes the
-  # other; a file carrying both is a duplicate `main` key. Every pin, direct
-  # or gateway, declares its own `context-window-tokens` (the Model Context
-  # Window), `context-threshold-tokens` (the Handoff Threshold) and
+  # Pinned Models, referenced by id. Every pin has exactly one route: its
+  # route placeholder (`MAIN_ROUTE`, `TRIAGE_ROUTE`, `ADVISOR_ROUTE`) renders as either
+  #   provider: <provider>
+  # (a direct pin: the (`provider`, `model`, `endpoint`) triple must come
+  # from the code-owned table in coding-agent's
+  # `src/coding_agent/provider/config.py` at CODING_AGENT_REF — at v0.5.0
+  # `anthropic / claude-sonnet-5 / messages` and
+  # `openai / gpt-5.6-luna / responses`), or as
+  #   gateway: {kind: litellm, url: <url>}
+  # (a Model Gateway pin, coding-agent `docs/ops/workflow-configuration.md`,
+  # "Gateway pins": `model` is the gateway's L1 alias, the name it reports
+  # in `x-litellm-model-group`; `endpoint` is `responses`; prefer the
+  # service name on the shared gateway network, `http://litellm:4000`).
+  # Each pin chooses its own route. `effort` is low, medium or high, and on
+  # a gateway pin it must be the effort the gateway reports (Meta
+  # `muse-spark-1.3-contributor` always runs at `high`). Every pin declares
+  # its own `context-window-tokens` (the Model Context Window),
+  # `context-threshold-tokens` (the Handoff Threshold) and
   # `output-cap-tokens`: `context-threshold-tokens + output-cap-tokens` must
   # not exceed the window, and the threshold must exceed the code-owned
-  # safety margin plus request overhead (1,000 + 1,000). `target.token-env` and each
-  # model's `api-key-env` name environment variables only; the values live in
-  # `.env`. Prices (`prices-usd-per-mtok`: `input`, `output`, `cache-read`,
-  # `cache-write`) come from the operator — confirm them (defaults are the
-  # code-owned table's public list pricing) — because the pin's configured
-  # prices are the Worker's only cost authority.
-  main:
-    # Direct provider pin: delete the lines from direct-pin-begin through
-    # direct-pin-end for a gateway pin. The three token keys default to the
-    # upstream recommendation for the pinned model (workflow-configuration.md
-    # at CODING_AGENT_REF: claude-sonnet-5 1,000,000 / 80,000 / 32,000,
-    # gpt-5.6-luna 1,050,000 / 100,000 / 32,000).
-    # direct-pin-begin
-    provider: {{PROVIDER}}
-    model: {{MODEL}}
-    endpoint: {{ENDPOINT}}
-    effort: medium
-    api-key-env: {{API_KEY_ENV}}
-    prices-usd-per-mtok: {input: {{PRICE_INPUT}}, output: {{PRICE_OUTPUT}}, cache-read: {{PRICE_CACHE_READ}}, cache-write: {{PRICE_CACHE_WRITE}}}
-    context-window-tokens: {{CONTEXT_WINDOW_TOKENS}}
-    context-threshold-tokens: {{CONTEXT_THRESHOLD_TOKENS}}
-    output-cap-tokens: {{OUTPUT_CAP_TOKENS}}
-    # direct-pin-end
-    # Gateway pin variant: for a LiteLLM gateway pin, delete the direct pin
-    # above and uncomment the block from gateway-pin-begin through
-    # gateway-pin-end. `kind` is the gateway kind (today only `litellm`);
-    # `url` is the gateway's literal URL — prefer the service name on the
-    # shared gateway network (`http://litellm:4000`), which stays the same
-    # across Docker contexts; a host URL is also accepted. There is no
-    # `url-env` at the documented ref (proposed upstream, not available), so
-    # the address is baked into the image. `model` is the gateway's L1 alias,
-    # the name the gateway reports in `x-litellm-model-group`. `effort` is
-    # low, medium or high. `context-window-tokens`, `output-cap-tokens` and
-    # `context-threshold-tokens` are the pin's own Model Context Window,
-    # output cap and context-window threshold (the threshold triggers
-    # Context-Window Handoffs, bounded per step by the code-owned handoff
-    # cap): ask the operator for all three. For a Meta model, which has no cache-write premium,
-    # set `cache-write` equal to `input` (a gateway response without
-    # `cache_write_tokens` is priced at max(`input`, `cache-write`)).
-    # gateway-pin-begin
-    # gateway: {kind: litellm, url: {{GATEWAY_URL}}}
-    # model: {{GATEWAY_MODEL}}
-    # endpoint: responses
-    # effort: {{GATEWAY_EFFORT}}
-    # api-key-env: {{GATEWAY_API_KEY_ENV}}
-    # context-window-tokens: {{GATEWAY_CONTEXT_WINDOW_TOKENS}}
-    # output-cap-tokens: {{GATEWAY_OUTPUT_CAP_TOKENS}}
-    # context-threshold-tokens: {{GATEWAY_CONTEXT_THRESHOLD_TOKENS}}
-    # prices-usd-per-mtok: {input: {{GATEWAY_PRICE_INPUT}}, output: {{GATEWAY_PRICE_OUTPUT}}, cache-read: {{GATEWAY_PRICE_CACHE_READ}}, cache-write: {{GATEWAY_PRICE_CACHE_WRITE}}}
-    # gateway-pin-end
+  # safety margin plus request overhead (1,000 + 1,000). A direct pin
+  # defaults them to the upstream recommendation (claude-sonnet-5 1,000,000
+  # / 80,000 / 32,000, gpt-5.6-luna 1,050,000 / 100,000 / 32,000); a
+  # gateway pin's are always asked. Prices (`prices-usd-per-mtok`: `input`,
+  # `output`, `cache-read`, `cache-write`) come from the operator — confirm
+  # them (a direct pin's defaults are the code-owned table's public list
+  # pricing) — because a pin's configured prices are the Worker's only cost
+  # authority. For a Meta model, which has no cache-write premium, set
+  # `cache-write` equal to `input` (a gateway response without
+  # `cache_write_tokens` is priced at max(`input`, `cache-write`)).
+  # workflow-implement-begin
+  main:                                 # the `implement` Workflow's Pinned Model
+    {{MAIN_ROUTE}}
+    model: {{MAIN_MODEL}}
+    endpoint: {{MAIN_ENDPOINT}}
+    effort: {{MAIN_EFFORT}}
+    api-key-env: {{MAIN_API_KEY_ENV}}
+    context-window-tokens: {{MAIN_CONTEXT_WINDOW_TOKENS}}
+    context-threshold-tokens: {{MAIN_CONTEXT_THRESHOLD_TOKENS}}
+    output-cap-tokens: {{MAIN_OUTPUT_CAP_TOKENS}}
+    prices-usd-per-mtok: {input: {{MAIN_PRICE_INPUT}}, output: {{MAIN_PRICE_OUTPUT}}, cache-read: {{MAIN_PRICE_CACHE_READ}}, cache-write: {{MAIN_PRICE_CACHE_WRITE}}}
+  # workflow-implement-end
+  # workflow-triage-begin
+  triage:                               # the `triage` Workflow's Pinned Model
+    {{TRIAGE_ROUTE}}
+    model: {{TRIAGE_MODEL}}
+    endpoint: {{TRIAGE_ENDPOINT}}
+    effort: {{TRIAGE_EFFORT}}
+    api-key-env: {{TRIAGE_API_KEY_ENV}}
+    context-window-tokens: {{TRIAGE_CONTEXT_WINDOW_TOKENS}}
+    context-threshold-tokens: {{TRIAGE_CONTEXT_THRESHOLD_TOKENS}}
+    output-cap-tokens: {{TRIAGE_OUTPUT_CAP_TOKENS}}
+    prices-usd-per-mtok: {input: {{TRIAGE_PRICE_INPUT}}, output: {{TRIAGE_PRICE_OUTPUT}}, cache-read: {{TRIAGE_PRICE_CACHE_READ}}, cache-write: {{TRIAGE_PRICE_CACHE_WRITE}}}
+  triage-advisor:                       # the `triage` step's Advisor pin (the maintainer proxy)
+    {{ADVISOR_ROUTE}}
+    model: {{ADVISOR_MODEL}}
+    endpoint: {{ADVISOR_ENDPOINT}}
+    effort: {{ADVISOR_EFFORT}}
+    api-key-env: {{ADVISOR_API_KEY_ENV}}
+    context-window-tokens: {{ADVISOR_CONTEXT_WINDOW_TOKENS}}
+    context-threshold-tokens: {{ADVISOR_CONTEXT_THRESHOLD_TOKENS}}
+    output-cap-tokens: {{ADVISOR_OUTPUT_CAP_TOKENS}}
+    prices-usd-per-mtok: {input: {{ADVISOR_PRICE_INPUT}}, output: {{ADVISOR_PRICE_OUTPUT}}, cache-read: {{ADVISOR_PRICE_CACHE_READ}}, cache-write: {{ADVISOR_PRICE_CACHE_WRITE}}}
+  # workflow-triage-end
 
-# Skill Bundle membership: the reference deployment's selection
-# (coding-agent's `docker/deployment/workflow.yml` at CODING_AGENT_REF):
-# the four established upstream skills at one recorded commit. The skill
-# copies the matching reviewed `skill-policy.json` verbatim from the same
-# checkout (`docker/deployment/skill-policy.json`) into the instance's
-# `workflow/` directory beside this file. A different membership or source
-# ref means the operator re-reviews the policy first.
+# Skill Bundle membership, one source at one recorded commit. `implement`
+# adds the reference deployment's four skills (`implement, tdd,
+# code-review, codebase-design`, coding-agent's
+# `docker/deployment/workflow.yml` at CODING_AGENT_REF); `triage` adds
+# `triage, grilling, domain-modeling` (the triage skill invokes the other
+# two). With both Workflows the list carries all seven, `implement`'s
+# first. The whole declaration counts as the bundle whatever `--workflow`
+# a Worker selects.
 skills:
   - source: git+https://github.com/mattpocock/skills.git
     ref: 3cca18b368ae95cdbdebbff572ccafa662551015
-    include: [implement, tdd, code-review, codebase-design]
+    include: [{{SKILL_INCLUDE}}]
 
 worker:
   poll-interval-seconds: 60             # idle sleep between sweeps (spends the owner's rate limit)
   shutdown-grace-seconds: 30            # time to finalise after SIGTERM; keep below compose.yaml's stop_grace_period (60s)
 
 workflows:
+  # workflow-implement-begin
 
   # ---------------------------------------------------------------------------
   # Implementation: issue in, pull request out.
@@ -276,3 +296,148 @@ workflows:
           no-changes: {end: unfinished}
           error: {end: failed}
           limit-exceeded: {end: failed}             # must override the default (no self-cycle)
+  # workflow-implement-end
+  # workflow-triage-begin
+
+  # ---------------------------------------------------------------------------
+  # Triage: `needs-triage` in, a triaged issue out (requires CODING_AGENT_REF
+  # v0.5.0 or newer: `input.comments` and the `advisor` tool group).
+  # One agent step runs the `triage` skill with the policy prompt that
+  # answers the skill's interactive parts; the maintainer's questions go to
+  # the Advisor. Every result posts its document, commits and pushes what
+  # the skill wrote (`CONTEXT.md`, ADRs, `.out-of-scope/`), and opens a
+  # draft pull request with the same document, so the runtime writes the
+  # non-closing `Part of #N`. No `check-readiness`, no `run-validation`:
+  # triage changes no code. Re-triage happens when a human swaps
+  # `needs-info` back to `needs-triage`; `input.comments` then carries the
+  # earlier notes and the reporter's answers.
+  # ---------------------------------------------------------------------------
+  triage:
+    model: triage                       # the Attempt's Pinned Model
+    input:
+      type: issue
+      label: needs-triage               # Selection Label (human-applied, checked)
+      exclude: [needs-info, ready-for-human, wontfix]
+    limits:                             # Attempt Ceiling (mandatory, all four meters)
+      # No Reserved Step here, so the Work Pool is the whole ceiling. Each
+      # limit must hold one maximal Admission hold for the triage pin and
+      # for the Advisor pin, whichever needs more (config validate names the
+      # pin it measured).
+      cost-usd: {{TRIAGE_LIMIT_COST_USD}}
+      effective-tokens: {{TRIAGE_LIMIT_EFFECTIVE_TOKENS}}  # excludes prompt-cache reads
+      tool-calls: {{TRIAGE_LIMIT_TOOL_CALLS}}
+      wall-clock-minutes: {{TRIAGE_LIMIT_WALL_CLOCK_MINUTES}}
+    outcomes:                           # end labels per Terminal Outcome (runtime applies them)
+      completed: {labels: [ready-for-agent]}
+      blocked: {labels: [needs-info]}
+      unfinished: {labels: [ready-for-human]}
+      failed: {labels: [ready-for-human]}
+      internal-failure: {labels: [ready-for-human]}
+
+    start: triage
+    defaults:
+      max-executions: 1
+      routes:                           # only runtime-reserved results may appear here
+        error: hard-handoff
+        limit-exceeded: hard-handoff
+
+    steps:
+
+      triage:                                       # role: Process
+        agent:
+          instructions:
+            - skill: triage
+            - prompt: prompts/triage-policy.md
+          tools: [workspace-read, workspace-write, shell, advisor]
+          advisor: {model: triage-advisor, prompt: prompts/triage-advisor.md}
+          inputs:
+            - input.comments                        # Trusted Comments pinned at Claim, oldest first
+          results:
+            ready:                                  # -> ready-for-agent
+              brief: document
+            blocked:                                # -> needs-info
+              notes: document
+            human:                                  # -> ready-for-human (also wontfix / already implemented)
+              recommendation: document
+        routes:
+          ready: post-brief
+          blocked: post-notes
+          human: post-recommendation
+
+      post-brief:
+        operation: post-comment
+        with:
+          body: triage.ready.brief
+        routes:
+          posted: push-brief
+
+      push-brief:
+        operation: commit-and-push
+        routes:
+          pushed: open-brief-pr
+          no-changes: {end: completed}
+
+      open-brief-pr:
+        operation: open-pull-request              # draft: the runtime writes `Part of #N`, never `Closes #N`
+        with:
+          body: triage.ready.brief
+          draft: true
+        routes:
+          opened: {end: completed}
+          already-open: {end: completed}
+
+      post-notes:
+        operation: post-comment
+        with:
+          body: triage.blocked.notes
+        routes:
+          posted: push-notes
+
+      push-notes:
+        operation: commit-and-push
+        routes:
+          pushed: open-notes-pr
+          no-changes: {end: blocked}
+
+      open-notes-pr:
+        operation: open-pull-request
+        with:
+          body: triage.blocked.notes
+          draft: true
+        routes:
+          opened: {end: blocked}
+          already-open: {end: blocked}
+
+      post-recommendation:
+        operation: post-comment
+        with:
+          body: triage.human.recommendation
+        routes:
+          posted: push-recommendation
+
+      push-recommendation:
+        operation: commit-and-push
+        routes:
+          pushed: open-recommendation-pr
+          no-changes: {end: unfinished}
+
+      open-recommendation-pr:
+        operation: open-pull-request
+        with:
+          body: triage.human.recommendation
+          draft: true
+        routes:
+          opened: {end: unfinished}
+          already-open: {end: unfinished}
+
+      hard-handoff:                                 # role: Handoff (Hard, no model)
+        # Every `error` and `limit-exceeded` above lands here: push whatever
+        # the skill wrote and end `unfinished` (ready-for-human). There is no
+        # AI-assisted Handoff in this Workflow, so no Reserved Step.
+        operation: commit-and-push
+        routes:
+          pushed: {end: unfinished}
+          no-changes: {end: unfinished}
+          error: {end: failed}
+          limit-exceeded: {end: failed}             # must override the default (no self-cycle)
+  # workflow-triage-end

@@ -10,8 +10,10 @@ the operator contract glossary (Managed Instance, Fleet, Target Repository,
 Operator Capability, Status Snapshot).
 
 Source facts below were read at coding-agent `v0.4.0` (`2626351`) unless
-noted; the skill re-checks the HOWTOs against the chosen `CODING_AGENT_REF`
-clone (step 3b) before scaffolding.
+noted; the `triage` Workflow, the Advisor, `input.comments` and
+`draft-skill-policy` were read at `v0.5.0` (`38fa92e`). The skill re-checks
+the HOWTOs against the chosen `CODING_AGENT_REF` clone (step 3b) before
+scaffolding.
 
 ## What this adapter renders
 
@@ -23,9 +25,10 @@ Dockerfile, no stack block, no Forge-owned profile:
 |---|---|
 | `compose.yaml` | `assets/compose.coding-agent.yaml.template` |
 | `Dockerfile` | `assets/Dockerfile.coding-agent.template`, copied verbatim (the derived deployment image) |
-| `workflow/workflow.yml` | `assets/workflow.coding-agent.yml.template` (`version: 4`, with a `skills:` block) |
-| `workflow/prompts/*.md` | copied from the `CODING_AGENT_REF` checkout (see step 3b) |
-| `workflow/skill-policy.json` | copied verbatim from the `CODING_AGENT_REF` checkout's `docker/deployment/` (see step 3b) |
+| `workflow/workflow.yml` | `assets/workflow.coding-agent.yml.template` (`version: 4`, with a `skills:` block and the selected Workflows) |
+| `workflow/prompts/*.md` | `implement`: copied from the `CODING_AGENT_REF` checkout (see step 3b); `triage`: copied verbatim from `assets/prompts/` |
+| `workflow/skill-policy.json` | the reference bundle (`implement` alone): copied verbatim from the `CODING_AGENT_REF` checkout's `docker/deployment/`; any other bundle: drafted and completed with operator-approved decisions ("Drafting the skill policy") |
+| `compose.coding-agent.litellm.yaml` | `assets/compose.coding-agent.litellm.yaml.template`, only when a Worker uses a gateway pin whose `url` names a Docker service |
 | `.env.example` | `assets/env.coding-agent.example.template` |
 | `.env` | same as `.env.example` + real secrets (ignored with all of `agent-instances/`) |
 
@@ -58,23 +61,26 @@ or added, update every reference that names it (`grep -rn` the old name).
 - **Project.** The file sets no `name:`: the Compose project is the directory
   name, because the project name is the Instance identity on the Docker
   context. coding-agent's own fixed `name: coding-agent` is not copied.
-- **Services.** `worker` (labelled with the four discovery labels,
-  `backend` = `coding-agent`) runs `agent run` with the full v3 flags (see
-  "The derived image" below); `agent` and `validate` are unlabelled
-  one-off seats (`docker compose run --rm ...`) on the same derived image,
-  so `validate` and `startup-check` see the same toolchains and the same
-  baked package as the Worker. `engine` is the build-only base image (never
-  run, never labelled). So that a bare `docker compose up -d` starts the
-  Worker alone, `engine` has `scale: 0` and `agent` and `validate` are in
-  the `tools` profile. Naming a service (`docker compose run --rm validate`)
+- **Services.** `worker` and, in a two-Worker Pool, `worker-2` (each
+  labelled with the four discovery labels, `backend` = `coding-agent`) run
+  `agent run` with the full v3 flags (see "The derived image" below);
+  `agent` and `validate` are unlabelled one-off seats
+  (`docker compose run --rm ...`) on the same derived image, so `validate`
+  and `startup-check` see the same toolchains and the same baked package as
+  the Workers. `engine` is the build-only base image (never run, never
+  labelled). So that a bare `docker compose up -d` starts the Workers
+  alone, `engine` has `scale: 0` and `agent` and `validate` are in the
+  `tools` profile. Naming a service (`docker compose run --rm validate`)
   enables its profile, so the one-off commands need no `--profile`. `engine`
   must not take a profile: an inactive profile drops it from the model, and
   then the `service:engine` build context fails to resolve and every
   command fails, `docker compose config` included. `scale: 0` is a plain
   Compose Specification field and needs no swarm.
-  `docker compose config --services` lists `engine` and `worker`; add
-  `--profile '*'` to list all four. All three runtime seats share one state volume at
-  coding-agent's state path (`/var/lib/coding-agent`, read at the ref).
+  `docker compose config --services` lists `engine` and the Worker
+  services; add `--profile '*'` to list the one-off seats too. `worker`,
+  `agent` and `validate` share the state volume `state` at coding-agent's
+  state path (`/var/lib/coding-agent`, read at the ref); `worker-2` has its
+  own, `state_2`.
   `agent` stays a bare seat: the Workflow Configuration is baked into the
   image, so commands that read it need no mount (see "Validation").
 - **Hardening** mirrors coding-agent's deployment at the ref: read-only root
@@ -100,11 +106,21 @@ or added, update every reference that names it (`grep -rn` the old name).
   concern and stays out of the Workflow Configuration: the workflow
   `limits` (cost, effective tokens, tool calls, wall clock) budget an Attempt and do
   not bound host resources.
-- **Exactly one Worker** per Instance and state volume. There is no
-  `agent-2..N` stanza, Pool rendering never applies, and `manage-pool` does
-  not apply to this backend. A second coding-agent Instance for the same
-  repository is refused by the shared Fleet check (step 1): this backend
-  never advertises the `pool` Operator Capability. An Instance of another
+- **At most one Worker per Workflow** (`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`).
+  A single Worker is service `worker`; with both Workflows declared, the
+  operator may run a second Worker, `worker-2` (the template's marked
+  stanza), on the Workflow `worker` does not run. Each Worker has its own
+  state volume (`state`, `state_2`), its own Managed Instance name
+  (`<short-name>`, `<short-name>-2`) and its own `--workflow`; no Worker id
+  and no Claim marker are rendered. Two Workers on one Workflow are
+  refused: this backend never advertises the `pool` Operator Capability and
+  leaves no Claim marker, so they would race on one Queue. Running two
+  Workers departs from the operator contract's rule that an adapter without
+  `pool` refuses a second Managed Instance on the same Target Repository
+  and host; the creation report says so. `manage-pool` adds or removes
+  `worker-2` later ("coding-agent Instances" there). A second coding-agent
+  Instance for the same repository is still refused by the shared Fleet
+  check (step 1). An Instance of another
   backend on that repository (for example a simple-coding-agent Instance
   implementing the issues a coding-agent `triage` Workflow hands it) does
   not refuse: the operator confirms the pairing once, and the report states
@@ -114,7 +130,7 @@ or added, update every reference that names it (`grep -rn` the old name).
 - **Name.** The short name is `<project>-<suffix>`, with this backend's
   suffix from the backend suffix table in SKILL.md, step 0 (for example
   `agent-instances/agent-jsonhub-api-rex/` with the Managed Instance
-  `jsonhub-api-rex`).
+  `jsonhub-api-rex`, and `jsonhub-api-rex-2` for `worker-2`).
 
 ## The derived image
 
@@ -130,9 +146,11 @@ target performs:
    the reference package at `/etc/coding-agent`. The prompts directory is
    replaced wholesale, not merged: the reference package ships
    `review-policy.md` beside `implement-policy.md`, while the instance ships
-   `implement-policy.md` and `handoff.md`.
+   the prompts of its own Workflows.
 2. **Preparation.** As the runtime user (`agent`) with no Worker GitHub or
-   model secret set: `agent config validate`, then
+   model secret set: `agent config validate --workflow <id>` once per
+   Workflow id in the `WORKFLOWS` build argument (compose.yaml's
+   `build.args`, rendered as the declared ids, space-separated), then
    `agent prepare-skill-bundle --mode install --config
    /etc/coding-agent/workflow.yml --policy
    /etc/coding-agent/skill-policy.json --bundle-dir
@@ -147,10 +165,10 @@ target performs:
    --policy … --bundle-dir … --home …` runs after the last relevant `COPY`,
    so the build — not startup — fails on a byte-edited copy or a declared
    member the install cannot provide.
-4. **The rendered `run` invocation.** The `worker` starts with the upstream
-   rendered form:
+4. **The rendered `run` invocation.** Each Worker starts with the upstream
+   rendered form, its own Workflow written into its stanza:
    `agent run --config /etc/coding-agent/workflow.yml --workflow
-   ${WORKFLOW:-implement} --state-dir /var/lib/coding-agent
+   <implement|triage> --state-dir /var/lib/coding-agent
    --toolchain-matrix /opt/coding-agent/toolchain-matrix.json --policy
    /etc/coding-agent/skill-policy.json --bundle-dir
    /opt/coding-agent/skill-bundle --skill-home /home/agent`.
@@ -184,28 +202,39 @@ Workflow Configuration), the prompt files it names, and the reviewed
 - `target.token_env` and each model's `api-key-env` name environment
   variables only; values live only in `.env`. `config validate` refuses a
   value that looks like a secret where a name belongs.
-- `skills:` declares the Skill Bundle membership: the reference
-  deployment's selection (`docker/deployment/workflow.yml` at the ref —
+- `skills:` declares the Skill Bundle membership, one entry from
   `git+https://github.com/mattpocock/skills.git` at
-  `3cca18b368ae95cdbdebbff572ccafa662551015` with `include: [implement,
-  tdd, code-review, codebase-design]`). There is no implicit bundle: a
-  missing `skills` field means an empty bundle, every static `skill:`
-  reference must name a declared member, and every member needs a reviewed
-  entry in `skill-policy.json`. The template keeps the Forge step graph
-  (`preflight → process → validate → self-review → push → open-pr`, plus
-  `explain-blocked`, the reserved `ai-handoff` and `hard-handoff`); it does
-  not adopt the reference's smaller `implement` graph or its `review`
-  workflow.
-- `skill-policy.json` is copied verbatim from the `CODING_AGENT_REF`
-  checkout's `docker/deployment/` into the instance's `workflow/`; Forge
-  keeps no copy of its own. The skill never writes or approves policy
-  entries: a different bundle membership or source ref means the operator
-  re-reviews the policy first. (Secret-free `config validate` passes even
-  when the policy file is missing, but the derived-image build does not:
+  `3cca18b368ae95cdbdebbff572ccafa662551015`. `implement` adds the
+  reference deployment's selection (`docker/deployment/workflow.yml` at the
+  ref: `implement, tdd, code-review, codebase-design`); `triage` adds
+  `triage, grilling, domain-modeling` (all three exist at that commit; the
+  triage skill invokes the other two). The template's `{{SKILL_INCLUDE}}`
+  renders the members of the declared Workflows, `implement`'s first. There
+  is no implicit bundle: a missing `skills` field means an empty bundle,
+  every static `skill:` reference must name a declared member, and every
+  member needs a reviewed entry in `skill-policy.json`. The whole
+  declaration is the bundle whatever `--workflow` a Worker selects. The
+  template keeps the Forge step graph for `implement` (`preflight → process
+  → validate → self-review → push → open-pr`, plus `explain-blocked`, the
+  reserved `ai-handoff` and `hard-handoff`); it does not adopt the
+  reference's smaller `implement` graph or its `review` workflow.
+- `skill-policy.json` covers exactly that bundle. For the reference bundle
+  (`implement` alone) it is copied verbatim from the `CODING_AGENT_REF`
+  checkout's `docker/deployment/` into the instance's `workflow/`, byte for
+  byte; Forge keeps no copy of its own. Any other bundle (one with
+  `triage`) gets a policy drafted with `agent draft-skill-policy` and
+  completed with the operator's decisions ("Drafting the skill policy"
+  below). The skill writes only the decisions the operator approved and
+  never approves on its own (`docs/adr/0004-forge-drafts-skill-policy-operator-approves.md`);
+  a changed bundle membership or source ref means drafting and reviewing
+  again. (Secret-free `config validate` passes even when the policy file
+  is missing, but the derived-image build does not:
   `prepare-skill-bundle --mode install` and the final-root
-  `verify-skill-bundle` fail the build on a missing or mismatched policy —
-  still check the file is there and byte-identical when scaffolding.)
-- One `implement` Workflow with its Selection Label and Attempt Ceiling
+  `verify-skill-bundle` fail the build on a missing, unresolved or
+  mismatched policy — still check the file is there, and byte-identical
+  for the reference bundle, when scaffolding.)
+- The declared Workflows (see "Workflow selection" below). `implement` has
+  its Selection Label and Attempt Ceiling
   (all four meters: `cost-usd`, `effective-tokens`, `tool-calls`,
   `wall-clock-minutes`). The Work Pool is the ceiling minus the reserved
   `ai-handoff` allowance (`cost-usd: 1`, `effective-tokens: 150000` or the
@@ -231,19 +260,217 @@ Workflow Configuration), the prompt files it names, and the reviewed
   when the pin's threshold needs more: 150000 holds a direct pin at the
   recommended 80,000 / 32,000, while a gateway pin at 400,000 / 32,000
   needs 430,000.
-- **Selection Label.** Suggest `agent:implement`. Reject a label that breaks
-  coding-agent's rules and ask for another: `ready-for-human`, `wontfix` or
-  any `wayfinder:*` label (contract W-CFG-12; an input carrying `wontfix` or
-  `wayfinder:*` is never claimed, P-SEL-4). `config validate` additionally
-  refuses a Selection Label that also appears in the same Workflow's filters
-  or as an end label of any Workflow in the file.
-- The prompt files the steps name (`prompts/implement-policy.md` from
+- **Selection Label** (`implement`). Suggest `agent:implement`. Reject a
+  label that breaks coding-agent's rules and ask for another:
+  `ready-for-human`, `wontfix` or any `wayfinder:*` label (contract
+  W-CFG-12; an input carrying `wontfix` or `wayfinder:*` is never claimed,
+  P-SEL-4). `config validate` additionally refuses a Selection Label that
+  also appears in the same Workflow's filters or as an end label of any
+  Workflow in the file. With `triage` declared too, that rules out
+  `ready-for-agent` and `needs-info` (its end labels), and the skill also
+  rejects `needs-triage` (`triage`'s own Selection Label, which would put
+  both Workers on one Queue). So a `triage` Worker never hands an issue to
+  the `implement` Worker of the same Instance by label: a human moves a
+  `ready-for-agent` issue to the `implement` label, or a simple-coding-agent
+  Instance paired on the repository takes `ready-for-agent` (ADR 0003).
+- The prompt files the steps name are rendered next to `workflow.yml`:
+  `implement`'s (`prompts/implement-policy.md` from
   `docker/deployment/prompts/`, `prompts/handoff.md` from
   `examples/prompts/` — `handoff.md` lives only there at the documented ref)
   are copied verbatim from the `CODING_AGENT_REF` checkout (step 3b),
-  recording the source path per file: `config validate` stats every prompt
-  file, so a named file must exist next to `workflow.yml`. No `{{...}}` may
-  remain in any rendered file.
+  recording the source path per file; `triage`'s
+  (`prompts/triage-policy.md`, `prompts/triage-advisor.md`) are copied
+  verbatim from this skill's `assets/prompts/`. `config validate` stats
+  every prompt file, so a named file must exist next to `workflow.yml`. No
+  `{{...}}` may remain in any rendered file.
+
+## Workflow selection
+
+Ask the operator (AskUserQuestion, recommended option first) which
+Workflows the Workflow Configuration declares — `implement` (default),
+`triage`, or both — and which Workflow each Worker runs:
+
+- one Workflow: one Worker, `worker`, running it;
+- both Workflows: either one Worker (`worker`, running the Workflow the
+  operator names; the other stays declared for a later `worker-2`) or two
+  Workers (`worker` on `implement`, `worker-2` on `triage`, unless the
+  operator swaps them). Never two Workers on one Workflow
+  (`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`).
+
+`triage` needs `CODING_AGENT_REF` `v0.5.0` or newer, the first release
+with `input.comments` and the `advisor` tool group. `main` qualifies; a
+release tag qualifies by semantic version comparison; any other branch or
+SHA qualifies when its checkout's `docs/ops/workflow-configuration.md`
+documents both `input.comments` and the `advisor` tool group. Otherwise
+refuse `triage` and say why: that ref's `config validate` refuses
+`input.comments` and the `advisor` group, so the image would not build.
+Offer `v0.5.0` (or `main`) instead, or `implement` alone.
+
+The choices fix what gets rendered:
+
+| Choice | Rendered |
+|---|---|
+| Workflows declared | The `workflow-implement-*` and `workflow-triage-*` ranges of the Workflow Configuration template kept or deleted (markers deleted either way); `{{SKILL_INCLUDE}}`; the `WORKFLOWS` build argument (`{{WORKFLOWS}}` in compose.yaml: the declared ids, space-separated, `implement` first) |
+| Each Worker's Workflow | `{{WORKER_WORKFLOW}}` (and `{{WORKER_2_WORKFLOW}}`) in compose.yaml; for a single Worker every `worker-2-begin` … `worker-2-end` range is deleted (the stanza and the `state_2` volume), for two Workers only the marker lines |
+| Pins | `main` for `implement`; `triage` and `triage-advisor` for `triage` (see "Model") |
+| Keys | Each Worker's model key lines, and every key some pin names in `.env` (see "Model") |
+
+The Workflow is the Worker's own configuration: it is written into the
+Worker's stanza (`--workflow`), not into `.env`. Changing it later means
+editing that stanza and recreating the container (`docker compose up -d
+<service>`); no rebuild is needed while the Workflow stays declared.
+
+## The `triage` Workflow
+
+The template's `triage` Workflow (rendered as is; only its Attempt Ceiling
+and pins are filled in) takes issues labelled `needs-triage`, runs the
+`triage` skill against the checkout, and ends with the issue labelled
+`ready-for-agent`, `needs-info` or `ready-for-human`:
+
+- `input: {type: issue, label: needs-triage, exclude: [needs-info,
+  ready-for-human, wontfix]}`. Re-triage happens when a human swaps
+  `needs-info` back to `needs-triage`.
+- One agent step, `triage`: instructions `skill: triage` and `prompt:
+  prompts/triage-policy.md`; tools `workspace-read`, `workspace-write`,
+  `shell`, `advisor`; `advisor: {model: triage-advisor, prompt:
+  prompts/triage-advisor.md}`; `input.comments` as a required input (the
+  issue's Trusted Comments pinned at Claim, so re-triage sees the earlier
+  notes and the reporter's answers).
+- Three results, each with one `document`: `ready {brief}` ends
+  `completed` (end label `ready-for-agent`), `blocked {notes}` ends
+  `blocked` (`needs-info`), `human {recommendation}` ends `unfinished`
+  (`ready-for-human`; also used for a `wontfix`, already-implemented or
+  split recommendation, because coding-agent cannot close, split or
+  categorise an issue). `failed` and `internal-failure` also get
+  `ready-for-human`.
+- Every result path runs `post-comment` of that result's document, then
+  `commit-and-push`, then, on `pushed`, `open-pull-request` with `draft:
+  true` and the same document as the body (a draft gets the non-closing
+  `Part of #N`, never `Closes #N`), then the Workflow End; on
+  `no-changes` it goes straight to the Workflow End. The draft pull
+  request carries what the skill wrote (`CONTEXT.md`, ADRs,
+  `.out-of-scope/`).
+- No `check-readiness` and no `run-validation`: triage changes no code.
+- `defaults.routes` send `error` and `limit-exceeded` to `hard-handoff`, a
+  single `commit-and-push` that ends `unfinished` (and `failed` on its own
+  `error` or `limit-exceeded`), as `implement`'s Hard Handoff does. There
+  is no AI-assisted Handoff and no Reserved Step, so the Work Pool is the
+  whole Attempt Ceiling.
+- **Attempt Ceiling.** Ask the operator for all four meters (suggest
+  `cost-usd: 10`, `effective-tokens: 3000000`, `tool-calls: 300`,
+  `wall-clock-minutes: 45`; placeholders `{{TRIAGE_LIMIT_*}}`). Every limit
+  declaring `effective-tokens` or `cost-usd` must hold one maximal
+  Admission hold of the triage pin **and** of the Advisor pin (Usable
+  Threshold + output cap, and that hold priced at the pin's prices;
+  `config validate` names the Advisor pin when it is the larger one).
+  Check before writing, and stop and ask when the ceiling falls short.
+
+The policy prompts are Forge assets (`assets/prompts/`), copied verbatim:
+they answer the interactive parts of the skill and never rewrite it
+(coding-agent ADR 0007). `triage-policy.md` tells the model there is no
+maintainer to wait for (questions go to the Advisor through
+`ask_advisor`), that the runtime applies the labels from the result, that
+the result is `ready`, `blocked` or `human` with a document following the
+skill's agent-brief, triage-notes or recommendation template, that
+categories cannot be applied and an issue can be neither closed nor split,
+and that the files grilling or domain-modeling write are committed and
+land in the draft pull request. `triage-advisor.md` makes the Advisor the
+maintainer's proxy: it decides from the issue, its comments and the
+repository's own docs and ADRs, and says so when it cannot decide.
+
+## Drafting the skill policy
+
+Any bundle other than the reference one (in practice: one with `triage`)
+needs its own `skill-policy.json`
+(`docs/adr/0004-forge-drafts-skill-policy-operator-approves.md`). Draft it
+after `workflow/workflow.yml` and the prompts are rendered and before the
+derived image builds, against the same `CODING_AGENT_REF` and source ref
+the image will use:
+
+1. **Build the engine base** on the Instance's Docker context (the heavy
+   part of every build; the derived build reuses it):
+
+   ```bash
+   docker compose build engine
+   ```
+
+2. **Install and draft in a one-off container** on that image. The
+   `workflow/` directory goes in through stdin as a tar stream, so this
+   works on a remote context too (a bind mount would name a path on the
+   remote host). The install runs against the reference policy baked into
+   the engine image (`/etc/coding-agent/skill-policy.json` at the same
+   ref) and is expected to end with "has no matching approved review" for
+   the new members: the store is installed by then, and the draft reads it
+   and carries forward every review that still matches. The review report
+   goes to stderr, the draft to stdout; keep both outside the instance
+   directory (in the skill's scratchpad):
+
+   ```bash
+   COPYFILE_DISABLE=1 tar -C workflow -cf - . | docker run --rm -i --entrypoint sh \
+     coding-agent-engine:<short-name> -c '
+       set -e
+       w=$(mktemp -d) home=$(mktemp -d) bundle=$(mktemp -d) out=$(mktemp)
+       tar -xf - -C "$w"
+       if ! agent prepare-skill-bundle --mode install --config "$w/workflow.yml" \
+         --policy /etc/coding-agent/skill-policy.json \
+         --bundle-dir "$bundle" --home "$home" 2>"$w.err" >&2; then
+         cat "$w.err" >&2
+         if grep FAILED "$w.err" | grep -qv "has no matching approved review"; then
+           echo "install failed: see above" >&2; exit 1
+         fi
+       fi
+       agent draft-skill-policy --config "$w/workflow.yml" --home "$home" \
+         --policy /etc/coding-agent/skill-policy.json --out "$out" >&2
+       cat "$out"' \
+     >"<scratchpad>/skill-policy.draft.json" 2>"<scratchpad>/skill-policy.report.txt"
+   ```
+
+   The only prepare failure tolerated is "has no matching approved
+   review" for a member; any other failure (the install itself) stops the
+   command with "install failed", and so does a failing
+   `draft-skill-policy`. Then stop and show the report file.
+
+3. **Review with the operator.** Show the review report. Every JSON `null`
+   in the draft is a placeholder decision; reviews that still match the
+   reference policy (the four `implement` members at the reference commit)
+   carry forward unchanged and need none. For each placeholder, propose a
+   decision with its reason and ask the operator (AskUserQuestion, up to
+   four questions per call, the proposal first). Ask per decision — one per
+   file, one per reference, one per review — never one approval for a
+   whole member or the whole draft: a file's disposition decides what
+   reaches a model's context.
+   - A file's `disposition` and `reason`: `inject` delivers the file with
+     the skill's activation (companion files the skill tells the model to
+     read, such as `AGENT-BRIEF.md`, `OUT-OF-SCOPE.md`, `ADR-FORMAT.md`,
+     `CONTEXT-FORMAT.md`); `not-delivered` installs it but never delivers
+     it (administrative files such as `agents/openai.yaml`).
+   - A reference's `classification` and `reason`: `not-a-skill-reference`
+     for text that only looks like a skill reference (paths, examples) or
+     invokes a declared member (that member then also goes into the
+     review's `requires`); `unavailable-nonrequired-reference` for a skill
+     outside the bundle, such as `/setup-matt-pocock-skills`, which also
+     needs a `target` (the skill's name) and a `notice` the model sees.
+     A report line marked "merge by hand" names a reference whose drafted
+     `text` cuts a shared token: include the corrected text in that
+     reference's decision.
+   - A review's `reason`, and its `requires` when the report lists
+     candidates (the triage skill invokes `grilling` and
+     `domain-modeling`).
+
+   Write a decision into the draft only after the operator approved it, in
+   the form the operator approved; never fill a placeholder on your own.
+4. **Write the policy.** When no `null` remains, save the completed draft
+   as `workflow/skill-policy.json`. The derived-image build proves it:
+   `prepare-skill-bundle --mode install` and the final-root
+   `verify-skill-bundle` refuse an unresolved, inconsistent or mismatched
+   policy ("Validation", step 2). When the operator stops before every
+   placeholder is resolved, write no `workflow/skill-policy.json`, say the
+   image cannot build yet, and keep the draft with the decisions made so
+   far in the report.
+
+The reference bundle needs no drafting: copy
+`docker/deployment/skill-policy.json` from the ref checkout verbatim (the
+command would carry every review forward unchanged).
 
 ## Limits: where simple-coding-agent's settings went
 
@@ -271,7 +498,7 @@ configurable — never copied as configuration), **deployment** (compose),
 | `MAX_RETRIES` | Provider retry, 3 attempts (`DEFAULT_MAX_ATTEMPTS` in `src/coding_agent/provider/retry.py`); GitHub in-place retry, bounded at 3 attempts / 5 minutes (`src/coding_agent/github/errors.py`) | code |
 | `MAX_CONSECUTIVE_ERRORS` | `MAX_CONSECUTIVE_INFRASTRUCTURE_FAILURES = 3` (`src/coding_agent/worker/run.py`): that many consecutive infrastructure failures halt the Worker | code |
 | `MAX_AUTO_CONTINUATIONS` | None by design ("No Continuation across Attempts"): `unfinished` is an end label, not a resume | n/a |
-| `MAX_CONFLICT_ATTEMPTS`, `PR_AUTO_MERGE`, `PR_MERGE_METHOD` | None: the only publishing operation is `open-pull-request` (draft flag fixed `false` in the template), so there is nothing to merge automatically and no conflict requeue | n/a |
+| `MAX_CONFLICT_ATTEMPTS`, `PR_AUTO_MERGE`, `PR_MERGE_METHOD` | None: the only publishing operation is `open-pull-request` (draft flag `false` for `implement`, `true` for `triage`), so there is nothing to merge automatically and no conflict requeue | n/a |
 | `WORKER_CPUS` / `WORKER_MEM_LIMIT` / `WORKER_PIDS_LIMIT` | Compose `x-agent` anchor in `assets/compose.coding-agent.yaml.template` (#103) | deployment |
 
 Every **code** value above is a constant at the stated ref, to be re-read
@@ -301,11 +528,20 @@ when `CODING_AGENT_REF` moves — not a setting to copy anywhere.
 
 ## Model
 
-The Attempt's one Pinned Model is either a direct `provider:` pin or a
-`gateway:` pin through a Model Gateway (coding-agent
-`docs/ops/workflow-configuration.md`, "Gateway pins", at the ref): exactly
-one of `provider` or `gateway` is present. `MODEL_*` / `MODEL_BASE_URL` do
-not apply on this backend — for the simple-coding-agent routes see
+Every declared Workflow brings its pins: `implement` the `main` pin (the
+Attempt's one Pinned Model), `triage` the `triage` pin and the
+`triage-advisor` pin its step's Advisor answers on (the maintainer proxy,
+typically a stronger model, for example muse for `triage` and Opus as the
+Advisor). Ask the operator for each pin as below — its model and route,
+its prices and its three token keys — and confirm each separately. Each
+pin is either a direct `provider:` pin or a `gateway:` pin through a Model
+Gateway (coding-agent `docs/ops/workflow-configuration.md`, "Gateway
+pins", at the ref): exactly one of `provider` or `gateway` is present, and
+each pin chooses its own route, so one Instance may use both
+(`docs/adr/0002-one-pool-per-docker-context-without-swarm.md`). A pin
+routed through the LiteLLM gateway puts the whole Instance on the
+gateway's Docker context. `MODEL_*` / `MODEL_BASE_URL` do not apply on
+this backend — for the simple-coding-agent routes see
 `references/model-backend.md` instead.
 
 A direct pin's (`provider`, `model`, `endpoint`) triple must come from the
@@ -328,7 +564,7 @@ models:
     gateway: {kind: litellm, url: http://litellm:4000}
     model: muse-spark-1.3-contributor   # the gateway's L1 alias
     endpoint: responses
-    effort: medium
+    effort: high                        # muse always runs at high and reports it
     api-key-env: LITELLM_PROXY_API_KEY
     context-window-tokens: 1000000
     output-cap-tokens: 32000
@@ -348,7 +584,9 @@ models:
   `x-litellm-model-group`. The pin key is the label
   `litellm:<model>@responses`. `endpoint` is `responses` (the endpoint the
   code-owned table admits for the gateway kind) and `effort` is low, medium
-  or high.
+  or high — at `v0.5.0` it must be the effort the gateway reports (Meta
+  `muse-spark-1.3-contributor` runs at `high`; any other effort refuses
+  startup).
 - `context-window-tokens`, `output-cap-tokens` and
   `context-threshold-tokens` are the pin's own Model Context Window, output
   cap and context-window threshold; `context-threshold-tokens +
@@ -370,36 +608,42 @@ models:
   response that reports no `cache_write_tokens` is priced at max(`input`,
   `cache-write`).
 
-The template renders exactly one variant: the skill substitutes the direct
-placeholders and deletes the gateway block, or deletes the direct block and
-uncomments the gateway block (see the markers in
-`assets/workflow.coding-agent.yml.template`). A direct-pin render carries no
-`gateway:` key and a gateway render no `provider:` key; both carry the three
-token keys. No
-`{{...}}` may remain in either variant.
+Every pin has the same placeholders in the template, prefixed by the pin
+(`MAIN_`, `TRIAGE_`, `ADVISOR_`): `ROUTE`, `MODEL`, `ENDPOINT`, `EFFORT`,
+`API_KEY_ENV`, the three token keys and the four prices. `{{<PREFIX>_ROUTE}}`
+renders as the pin's one route line: `provider: <provider>` for a direct
+pin (with `endpoint` `messages` for Anthropic, `responses` for OpenAI), or
+`gateway: {kind: litellm, url: <url>}` for a gateway pin (with `endpoint`
+`responses`). A direct pin carries no `gateway:` key and a gateway pin no
+`provider:` key; both carry the three token keys. Pins of an undeclared
+Workflow are deleted with its `workflow-*` range. No `{{...}}` may remain.
 
-The model's key variable reaches only the `worker` service: on a direct pin
-`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, on a gateway pin
-`LITELLM_PROXY_API_KEY` — whichever the Workflow Configuration names in
-`models.<id>.api-key-env` (see the conditional lines in
-`assets/compose.coding-agent.yaml.template`). It is never added to the
-`agent` or `validate` seats' environment, and the template sets no
-`env_file:` (as in upstream's `compose.yaml`), which would copy every `.env`
-key into every seat. `.env` still feeds Compose interpolation; secret-free
-`config validate` needs no environment and `startup-check` needs only
-`GITHUB_TOKEN`, which the shared anchor passes explicitly. The key is set, commented and
-documented next to the other model keys in
-`assets/env.coding-agent.example.template`.
+Each Worker gets the key variables of its own pins and no others: its
+Workflow's pin, plus the Advisor pin for `triage` — `ANTHROPIC_API_KEY` or
+`OPENAI_API_KEY` for a direct pin, `LITELLM_PROXY_API_KEY` for a gateway
+pin, whichever `models.<id>.api-key-env` names. In each Worker stanza of
+`assets/compose.coding-agent.yaml.template`, keep exactly those model key
+lines and delete the others. No key is added to the `agent` or `validate`
+seats' environment, and the template sets no `env_file:` (as in upstream's
+`compose.yaml`), which would copy every `.env` key into every seat. `.env`
+still feeds Compose interpolation; secret-free `config validate` needs no
+environment and `startup-check` needs only `GITHUB_TOKEN`, which the shared
+anchor passes explicitly. In `.env` (and `.env.example`) every key some pin
+names is set and the others stay commented out, as documented next to the
+model keys in `assets/env.coding-agent.example.template`.
 
 A gateway `url` naming a Docker service needs the gateway network overlay:
-`assets/compose.coding-agent.litellm.yaml.template` attaches `worker` — and
-only `worker` — to the external network named by `GATEWAY_NETWORK`, enabled
-from the env file (`COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml`,
-`GATEWAY_NETWORK` from `.env`, never hard-coded). Do not reuse
-`compose.litellm.yaml` here: it attaches services named `agent` and
-`agent-<n>`, and on this backend `agent` is the unlabelled one-off seat, not
-the Worker. A host-URL `gateway.url` needs no overlay. The skill never starts
-or configures the gateway itself; it only joins its network.
+`assets/compose.coding-agent.litellm.yaml.template` attaches the Workers
+that use such a pin — and only those, never a one-off seat — to the
+external network named by `GATEWAY_NETWORK`, enabled from the env file
+(`COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml`,
+`GATEWAY_NETWORK` from `.env`, never hard-coded). Keep the overlay's
+`worker` entry and `worker-2` block only for a Worker whose pins include a
+gateway pin. Do not reuse `compose.litellm.yaml` here: it attaches services
+named `agent` and `agent-<n>`, and on this backend `agent` is the
+unlabelled one-off seat, not a Worker. A host-URL `gateway.url` needs no
+overlay. The skill never starts or configures the gateway itself; it only
+joins its network.
 
 Recommend the operator configure the gateway so the pinned name has no
 fallbacks or retries (`num_retries: 0`), and set no key's
@@ -499,19 +743,24 @@ which remain unverified:
 
 1. `docker compose config -q` (with no secret set).
 2. `docker compose build` (with no secret set). The derived-image build
-   runs, as the runtime user, `agent config validate`, then
+   runs, as the runtime user, `agent config validate` once per declared
+   Workflow (the `WORKFLOWS` build argument), then
    `agent prepare-skill-bundle --mode install`, then `agent
    verify-skill-bundle` against the final roots — and fails when any of
-   them fails (a byte-edited prompt or an undeclared skill fails here, the
-   same refusal `run` would raise at startup). The build needs network
-   access for the skill install; it needs no Worker GitHub or model secret.
+   them fails (a byte-edited prompt, an undeclared skill or a policy with
+   an unresolved placeholder fails here, the same refusal `run` would
+   raise at startup). The build needs network access for the skill
+   install; it needs no Worker GitHub or model secret.
 3. Secret-free `config validate` through the built `agent` one-off seat,
-   with no secrets set (neither the token variable the YAML names nor the
-   model's key variable is needed — validation is static):
+   once per declared Workflow, with no secrets set (neither the token
+   variable the YAML names nor any model key variable is needed —
+   validation is static):
 
    ```bash
-   docker compose run --rm agent config validate \
-     --config /etc/coding-agent/workflow.yml --workflow implement
+   for workflow in <declared ids>; do
+     docker compose run --rm agent config validate \
+       --config /etc/coding-agent/workflow.yml --workflow "$workflow"
+   done
    ```
 
    Offline and static: no Attempt is opened and no value is printed. No
@@ -540,13 +789,14 @@ TARGET_PROJECT=<checkout> docker compose run --rm validate [--skip-bootstrap] [-
 
 ## Readiness
 
-Build first, then start only the worker (`docker compose up --build -d
-worker`: `agent` exits at once and `validate` needs `TARGET_PROJECT`).
-Any edit under `workflow/` needs `docker compose build` before the
-container is recreated — the package is baked into the image, so a
-recreated container without a rebuild keeps running the old package. Once
-the operator starts it, the creation report carries, for the Managed
-Instance `<short-name>`:
+Build first, then start only the Workers (`docker compose up --build -d
+worker`, plus `worker-2` in a two-Worker Pool: `agent` exits at once and
+`validate` needs `TARGET_PROJECT`). Any edit under `workflow/` needs
+`docker compose build` before the containers are recreated — the package
+is baked into the image, so a recreated container without a rebuild keeps
+running the old package. Once the operator starts them, the creation
+report carries, for each Managed Instance (`<short-name>`, and
+`<short-name>-2` for `worker-2`):
 
 ```bash
 DOCKER_CONTEXT=<ctx> agentfleet identity <short-name>
@@ -641,7 +891,11 @@ secrets out of the output: compare `.env` key names, never values.
    `workflow/skill-policy.json` and `.env.example`. Take the values from
    the old files instead of asking again: the Target Repository and base
    branch, the short name, the model and its route, and the Workflow
-   settings (Selection Label, Attempt Ceiling, Step Allowances). The
+   settings (Selection Label, Attempt Ceiling, Step Allowances). The old
+   Instance declares `implement` alone, so the reference policy and the
+   `implement` prompts apply; the Worker's Workflow (the old `.env`'s
+   `WORKFLOW`, default `implement`) goes into the `worker` stanza's
+   `--workflow`, and the old `WORKFLOW` line is dropped from `.env`. The
    "Workflow Configuration" rules still apply: when an old allowance does
    not fit the Work Pool, stop and ask. The prompts come from the ref:
    `implement-policy.md` from `docker/deployment/prompts/` and `handoff.md`
@@ -656,7 +910,7 @@ secrets out of the output: compare `.env` key names, never values.
 
    1. `docker compose config -q`
    2. `docker compose build` — prepares and verifies the Skill Bundle
-   3. `docker compose run --rm agent config validate --config /etc/coding-agent/workflow.yml --workflow implement`
+   3. `docker compose run --rm agent config validate --config /etc/coding-agent/workflow.yml --workflow <id>`, once per declared Workflow
    4. `docker compose run --rm agent startup-check --repo <owner>/<repo> --token-env GITHUB_TOKEN`
    5. `docker compose up -d --no-build worker`
 
@@ -733,5 +987,10 @@ every other file:
    the operator the resulting Work Pool, and stop and ask if an allowance
    no longer fits.
 
-`skill-policy.json` and the prompts still come byte-identical from the new
-ref; compare them and re-copy a file that changed.
+For the reference bundle, `skill-policy.json` and the `implement` prompts
+still come byte-identical from the new ref; compare them and re-copy a file
+that changed. The `triage` prompts come from this skill's
+`assets/prompts/`. A drafted policy (a bundle with `triage`) is drafted
+again against the new ref ("Drafting the skill policy"): reviews whose
+members did not change carry forward, and only new placeholders go to the
+operator.

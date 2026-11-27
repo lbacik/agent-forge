@@ -39,17 +39,17 @@ backend chosen in step 0:
 | File | Source |
 |---|---|
 | `Dockerfile` | simple-coding-agent only: `assets/Dockerfile.template` + a stack block |
-| `compose.yaml` | `assets/compose.yaml.template` (simple-coding-agent, one service per Worker) or `assets/compose.coding-agent.yaml.template` (coding-agent: build-only `engine` base, labelled `worker`, unlabelled `agent` and `validate` seats on the derived image) |
+| `compose.yaml` | `assets/compose.yaml.template` (simple-coding-agent, one service per Worker) or `assets/compose.coding-agent.yaml.template` (coding-agent: build-only `engine` base, labelled `worker` and optional `worker-2`, unlabelled `agent` and `validate` seats on the derived image) |
 | `Dockerfile` | coding-agent only: `assets/Dockerfile.coding-agent.template`, copied verbatim (the derived deployment image) |
 | `simple-coding-agent-profile.yml` | simple-coding-agent only: written from the target repo's CI |
-| `workflow/workflow.yml` | coding-agent only: `assets/workflow.coding-agent.yml.template` |
-| `workflow/prompts/*.md` | coding-agent only: copied from the `CODING_AGENT_REF` checkout |
-| `workflow/skill-policy.json` | coding-agent only: copied verbatim from the `CODING_AGENT_REF` checkout's `docker/deployment/` |
+| `workflow/workflow.yml` | coding-agent only: `assets/workflow.coding-agent.yml.template`, with the selected Workflows (`implement`, `triage` or both) |
+| `workflow/prompts/*.md` | coding-agent only: `implement`'s copied from the `CODING_AGENT_REF` checkout, `triage`'s copied verbatim from `assets/prompts/` |
+| `workflow/skill-policy.json` | coding-agent only: the reference bundle's copied verbatim from the `CODING_AGENT_REF` checkout's `docker/deployment/`; any other bundle's drafted with `agent draft-skill-policy` and completed with operator-approved decisions |
 | `.env.example` | `assets/env.example.template` (simple-coding-agent) or `assets/env.coding-agent.example.template` (coding-agent) |
 | `.env` | same as `.env.example` + real secrets (ignored with all of `agent-instances/`) |
 | `agent-entrypoint.sh` | only for the bundled-services shape (simple-coding-agent only) |
 | `compose.litellm.yaml` | only for the LiteLLM backend (simple-coding-agent only): `assets/compose.litellm.yaml.template`, every Worker listed |
-| `compose.coding-agent.litellm.yaml` | only for a coding-agent gateway pin (a LiteLLM gateway `url` naming a Docker service): `assets/compose.coding-agent.litellm.yaml.template`, the `worker` only |
+| `compose.coding-agent.litellm.yaml` | only for a coding-agent gateway pin (a LiteLLM gateway `url` naming a Docker service): `assets/compose.coding-agent.litellm.yaml.template`, the Workers using such a pin only |
 | `.env.worker-<n>` | only for a Worker with its own Worker identity (its own `GITHUB_TOKEN`; simple-coding-agent only) |
 
 The whole point of the profile is that the agent's `check:` must be red exactly
@@ -73,8 +73,9 @@ backend").
 - **Layout.** The first Worker is service `agent` with volume `agent_data`,
   the only one with `build:`; Workers 2..N are `agent-2..N` with volumes
   `data_2..N` and `pull_policy: never`, so one build serves all. (A
-  coding-agent Instance instead runs its single Managed Instance as service
-  `worker`; see `references/coding-agent.md`.) Shared
+  coding-agent Instance instead runs at most one Worker per Workflow, as
+  services `worker` and `worker-2`; see `references/coding-agent.md` and
+  `docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`.) Shared
   settings live in the `x-worker` anchor. Workers are not identical replicas
   (own `/data`, own Worker id), so don't use `--scale` or `container_name`.
 - **Worker id scheme.** `<short-name>-<n>`, where `<short-name>` is the
@@ -117,8 +118,9 @@ backend").
   are never labelled (contract consumers ignore one-offs anyway). The legacy
   role image label in the Dockerfile belongs to simple-coding-agent's own
   discovery and is not touched. (The coding-agent adapter in
-  `references/coding-agent.md` labels its single `worker` the same way and
-  never renders a Pool.)
+  `references/coding-agent.md` labels `worker` and `worker-2` the same way,
+  `worker-2` with the instance name `<short-name>-2`, and renders no Worker
+  id.)
 - **Minimum upstream.** A Worker id needs `AGENT_SRC_REF` `v0.7.0` or newer
   (lbacik/simple-coding-agent#302); N>=2 on one identity needs `v0.9.0` or
   newer, the first release with the startup recovery fix of
@@ -163,8 +165,9 @@ can determine by reading the repository.
   | `coding-agent` | `rex` |
 - `coding-agent`: continue with the coding-agent adapter in
   `references/coding-agent.md` — a derived-image Dockerfile, no stack block,
-  no Forge-owned profile, exactly one Worker. Steps 1–2 and 6 stay shared;
-  steps 3, 5, 7 and 8 branch per backend as marked below.
+  no Forge-owned profile, the Workflows the operator selects (`implement`,
+  `triage` or both) and at most one Worker per Workflow. Steps 1–2 and 6
+  stay shared; steps 3, 5, 7 and 8 branch per backend as marked below.
 - `simple-coding-agent`: continue below; the flow is otherwise unchanged.
 
 ### 1. Identify the target
@@ -189,7 +192,10 @@ can determine by reading the repository.
   their names (no suffix) and are never renamed.
 - Refuse to overwrite an existing `agent-instances/agent-*` directory; ask
   instead. Create `agent-instances/` itself if it doesn't exist yet.
-- Number of Workers N: 1 unless the user asks for more. Check the Worker id
+- Number of Workers N: 1 unless the user asks for more. For coding-agent,
+  N follows the Workflow selection in `references/coding-agent.md`
+  ("Workflow selection", asked here): 1, or 2 with both Workflows and one
+  Worker each, never more. Check the Worker id
   scheme and the contract instance-name pattern in "Pools" against the short
   name (`<short-name>` and `<short-name>-<N>` must each match
   `^[a-z0-9][a-z0-9-]{0,62}$`); refuse a short name that fails either and
@@ -331,13 +337,17 @@ can determine by reading the repository.
   its route as `references/model-backend.md` ("Choosing the route") says;
   read it now. Offer the model an existing instance uses as an option. The
   choice decides the `.env` model settings, `MAX_BUDGET_USD` and whether
-  `compose.litellm.yaml` is generated (step 5). For coding-agent, choose the
-  model pin as `references/coding-agent.md` ("Model") says: a direct
-  `provider:` pin (Anthropic, OpenAI at the documented ref) or a LiteLLM
-  `gateway:` pin (the Meta `muse-*` route through the gateway), and confirm
-  its prices with the operator. The choice decides the Workflow Configuration
-  variant, which model key stays active in `compose.yaml`/`.env`, and whether
-  `compose.coding-agent.litellm.yaml` is generated (step 5).
+  `compose.litellm.yaml` is generated (step 5). For coding-agent, choose
+  every pin the declared Workflows use as `references/coding-agent.md`
+  ("Model") says — `main` for `implement`, `triage` and its Advisor pin
+  `triage-advisor` for `triage` — each a direct `provider:` pin (Anthropic,
+  OpenAI at the documented ref) or a LiteLLM `gateway:` pin (the Meta
+  `muse-*` route through the gateway), and confirm each pin's prices and
+  token keys with the operator. The choices decide each pin's route line,
+  which model keys each Worker gets in `compose.yaml` and which stay active
+  in `.env`, and whether `compose.coding-agent.litellm.yaml` is generated
+  (step 5). A gateway pin puts the whole Instance on the gateway's Docker
+  context.
 
 ### 2. Get the target's source
 
@@ -450,18 +460,28 @@ Shallow-clone that same ref into the scratchpad and read, at that commit:
   `hard-handoff`); do not adopt the reference's smaller `implement` graph
   or its `review` workflow.
 - `docker/deployment/skill-policy.json` (or its equivalent at the ref) —
-  the reviewed policy for the reference Skill Bundle selection. Copy it
-  verbatim into the instance's `workflow/` (step 5); Forge keeps no copy of
-  its own. The skill never writes or approves policy entries: a different
-  bundle membership or source ref means the operator re-reviews the policy
-  first.
-- Every prompt file the rendered Workflow Configuration names: at the
-  documented ref that is `docker/deployment/prompts/implement-policy.md`
-  and `examples/prompts/handoff.md` (`handoff.md` lives only under
+  the reviewed policy for the reference Skill Bundle selection. For the
+  reference bundle (`implement` alone), copy it verbatim into the
+  instance's `workflow/` (step 5); Forge keeps no copy of its own. Any
+  other bundle (one with `triage`) gets its policy drafted and completed in
+  step 5 ("Drafting the skill policy" in `references/coding-agent.md`). The
+  skill writes only the decisions the operator approved and never approves
+  on its own (`docs/adr/0004-forge-drafts-skill-policy-operator-approves.md`);
+  a different bundle membership or source ref means drafting and reviewing
+  again.
+- Every prompt file the rendered Workflow Configuration names. For
+  `implement`, at the documented ref that is
+  `docker/deployment/prompts/implement-policy.md` and
+  `examples/prompts/handoff.md` (`handoff.md` lives only under
   `examples/prompts/` at the ref) — copy each verbatim into the instance's
-  `workflow/prompts/` (step 5), recording the source path per file. They
-  carry no placeholders. `config validate` stats every named prompt file,
-  so a named file must exist next to `workflow.yml`.
+  `workflow/prompts/` (step 5), recording the source path per file. For
+  `triage`, copy `assets/prompts/triage-policy.md` and
+  `assets/prompts/triage-advisor.md` verbatim from this skill. They carry
+  no placeholders. `config validate` stats every named prompt file, so a
+  named file must exist next to `workflow.yml`.
+- With `triage` selected, whether the ref is `v0.5.0` or newer
+  (`references/coding-agent.md`, "Workflow selection"): refuse `triage` at
+  an older ref and say why.
 - `src/coding_agent/agentctl.py` (the contract CLI) — whether it documents
   a private-IPC socket directory needing the worker's operator tmpfs, and
   which Operator Capabilities the Worker advertises. If the ref documents no
@@ -523,46 +543,58 @@ For `coding-agent`, generate the deployment from
 `CODING_AGENT_REF` in `.env` — nothing to fill in here), `Dockerfile` copied
 verbatim from `assets/Dockerfile.coding-agent.template`,
 `workflow/workflow.yml`
-from `assets/workflow.coding-agent.yml.template` with the prompt files copied
-from the ref checkout (step 3b) and `workflow/skill-policy.json` copied
-verbatim from the ref checkout's `docker/deployment/`, and
+from `assets/workflow.coding-agent.yml.template` with the prompt files
+(step 3b: `implement`'s from the ref checkout, `triage`'s from
+`assets/prompts/`) and `workflow/skill-policy.json` (the reference
+bundle's copied verbatim from the ref checkout's `docker/deployment/`, any
+other bundle's drafted and completed as "Drafting the skill policy" in
+`references/coding-agent.md` says), and
 `.env`/`.env.example` from
 `assets/env.coding-agent.example.template` with the real secrets —
 plus `compose.coding-agent.litellm.yaml` from
-`assets/compose.coding-agent.litellm.yaml.template` on a gateway pin whose
-`url` names a Docker service (copied verbatim; it carries no placeholders).
+`assets/compose.coding-agent.litellm.yaml.template` when a Worker uses a
+gateway pin whose `url` names a Docker service (no placeholders; keep the
+entries of exactly those Workers).
 Leave
 `WORKER_CPUS`, `WORKER_MEM_LIMIT` and `WORKER_PIDS_LIMIT` commented out (the
 `x-agent` defaults). No
 `{{...}}` or prompt-file gap may remain: every prompt the YAML names must
-exist next to it, and the policy file must be byte-identical to the one at
-the ref. The rest of this step is simple-coding-agent only.
+exist next to it, and a policy copied for the reference bundle must be
+byte-identical to the one at the ref. The rest of this step is
+simple-coding-agent only.
 
 On the `coding-agent` path, fill the template's placeholders from the
-operator's choices: the Target Repository, its default branch, the Selection
-Label, the model pin with its confirmed prices and its three token keys
-(`{{CONTEXT_WINDOW_TOKENS}}`, `{{CONTEXT_THRESHOLD_TOKENS}}`,
-`{{OUTPUT_CAP_TOKENS}}` on a direct pin default to the upstream
-recommendation for the model — 1,000,000 / 80,000 / 32,000 for
-`claude-sonnet-5`, 1,050,000 / 100,000 / 32,000 for `gpt-5.6-luna`; on a
-gateway pin all three are asked, never defaulted), the Attempt Ceiling (all
-four meters, `{{LIMIT_EFFECTIVE_TOKENS}}` for the `effective-tokens` meter),
-the reserved `ai-handoff` effective-tokens allowance
-(`{{HANDOFF_EFFECTIVE_TOKENS}}`, see below), and the two non-reserved Step Allowances (`{{PROCESS_LIMIT_COST_USD}}`
-default 12, `{{SELF_REVIEW_LIMIT_COST_USD}}` default 3; each is shared by all
-executions of its step). Render exactly one model-pin variant (see the
-markers in the templates): on a direct pin, substitute the direct
-placeholders and delete the gateway-pin block (and the gateway model-key
-lines in `compose.yaml`); on a gateway pin, delete the direct-pin block and
-uncomment the gateway-pin block, substituting its `{{GATEWAY_*}}`
-placeholders (gateway `url`, L1 model name, `effort`, the context window,
-threshold, output cap and prices — all asked from the operator, never
-defaulted), and keep only
-`LITELLM_PROXY_API_KEY` in the worker's explicit environment. In
-`.env` (and `.env.example`), leave exactly the chosen model key active and
-the others commented out; on a gateway pin with a service-name `url`,
-additionally uncomment `COMPOSE_FILE` and set `GATEWAY_NETWORK` to the
-gateway's network (a host-URL gateway needs no overlay). The mapping of every
+operator's choices. The Workflow selection (`references/coding-agent.md`,
+"Workflow selection") decides which `workflow-implement-*` and
+`workflow-triage-*` ranges stay in `workflow.yml` (markers deleted either
+way), `{{SKILL_INCLUDE}}`, the `{{WORKFLOWS}}` build argument and each
+Worker's `{{WORKER_WORKFLOW}}` / `{{WORKER_2_WORKFLOW}}` in `compose.yaml`
+(for a single Worker, delete every `worker-2-begin` … `worker-2-end` range).
+Then: the Target Repository, its default branch, and every declared pin
+(`{{MAIN_*}}` for `implement`, `{{TRIAGE_*}}` and `{{ADVISOR_*}}` for
+`triage`): its route line (`{{<PREFIX>_ROUTE}}`: `provider: <provider>` or
+`gateway: {kind: litellm, url: <url>}`), model, endpoint, effort, key
+variable, confirmed prices and its three token keys (on a direct pin they
+default to the upstream recommendation for the model — 1,000,000 / 80,000 /
+32,000 for `claude-sonnet-5`, 1,050,000 / 100,000 / 32,000 for
+`gpt-5.6-luna`; on a gateway pin all three are asked, never defaulted).
+For `implement`: the Selection Label, the Attempt Ceiling (all four
+meters, `{{LIMIT_EFFECTIVE_TOKENS}}` for the `effective-tokens` meter), the
+reserved `ai-handoff` effective-tokens allowance
+(`{{HANDOFF_EFFECTIVE_TOKENS}}`, see below), and the two non-reserved Step
+Allowances (`{{PROCESS_LIMIT_COST_USD}}` default 12,
+`{{SELF_REVIEW_LIMIT_COST_USD}}` default 3; each is shared by all
+executions of its step). For `triage`: its Attempt Ceiling
+(`{{TRIAGE_LIMIT_*}}`, checked against the Admission hold of both the
+triage pin and the Advisor pin, as "The `triage` Workflow" in the reference
+says). In each Worker stanza of `compose.yaml`, keep exactly the model key
+lines of that Worker's own pins (its Workflow's pin, plus the Advisor pin
+for `triage`). In `.env` (and `.env.example`), leave every key some pin
+names active and the others commented out; when a Worker uses a gateway pin
+with a service-name `url`, additionally uncomment `COMPOSE_FILE` and set
+`GATEWAY_NETWORK` to the gateway's network (a host-URL gateway needs no
+overlay). The `implement` limits below apply only when `implement` is
+declared. The mapping of every
 simple-coding-agent `.env` budget, turn, timeout and retry key to its
 coding-agent counterpart lives in `references/coding-agent.md` ("Limits:
 where simple-coding-agent's settings went"): point the operator there when
@@ -597,10 +629,10 @@ with a 400,000 threshold and a 32,000 cap needs 430,000), and tell the
 operator which. Check the same floor on the Attempt Ceiling, the Work Pool
 and every Step Allowance that declares the meter (`process` and
 `self-review` declare only `cost-usd`); when one falls short, stop and ask
-as above. A different Skill Bundle
-membership or source ref than the template's default means the operator
-re-reviews `skill-policy.json` first (the skill never approves a policy
-itself).
+as above. A Skill Bundle other than the reference one (any bundle with
+`triage`) gets its `skill-policy.json` drafted and completed with the
+operator's decisions before the image builds; the skill writes only the
+decisions the operator approved and never approves on its own.
 
 **Dockerfile** — start from `assets/Dockerfile.template`. Replace the
 placeholders, and put the target's toolchain in the `STACK` block (language
@@ -855,10 +887,11 @@ fails body validation (`422`) — nothing is created either way. Never use
 
 For `coding-agent`, validate as `references/coding-agent.md` ("Validation")
 says — `docker compose config -q`, `docker compose build` (which runs
-`config validate`, `prepare-skill-bundle --mode install` and
-`verify-skill-bundle` inside the derived image and fails when any of them
-fails), secret-free `config validate` through the built `agent` seat (no
-secrets set, no mount: the package is baked in), `startup-check --repo`
+`config validate` once per declared Workflow, `prepare-skill-bundle --mode
+install` and `verify-skill-bundle` inside the derived image and fails when
+any of them fails), secret-free `config validate --workflow <id>` through
+the built `agent` seat once per declared Workflow (no secrets set, no
+mount: the package is baked in), `startup-check --repo`
 with the instance's token, the token write-scope check of step 6, and the
 optional `validate` run against a target checkout — and report which passed
 and which remain unverified. The rest of this step is simple-coding-agent
@@ -918,13 +951,25 @@ created, and — for simple-coding-agent — stack decisions and the reasons
 for them (runtime version, included/excluded checks, bundled services), the
 model and its route (and, for LiteLLM, the gateway network), and the Workers
 (N, their Worker ids or why none was rendered, the resource limits);
-for coding-agent — the Workflow Configuration (Target Repository, Selection
-Label, limits, the model pin variant — direct `provider:` pin or LiteLLM
-`gateway:` pin — and confirmed prices, plus the gateway network overlay and
-`GATEWAY_NETWORK` when a service-name `url` was pinned), the derived
-deployment image (`Dockerfile` copied verbatim from the asset, built FROM the
-`deployment` target at the ref, baking and verifying the instance's
-`workflow/` package), that there is exactly one Worker and no Pool, that no
+for coding-agent — the Workflow Configuration (Target Repository, the
+declared Workflows, `implement`'s Selection Label and limits, `triage`'s
+limits, every pin with its route — direct `provider:` pin or LiteLLM
+`gateway:` pin — and confirmed prices, plus the gateway network overlay,
+the Workers it attaches and `GATEWAY_NETWORK` when a service-name `url` was
+pinned), the Skill Bundle and its policy (copied verbatim for the reference
+bundle, or drafted: how many placeholders, each decision the operator
+approved, and whether any remain), the derived deployment image
+(`Dockerfile` copied verbatim from the asset, built FROM the `deployment`
+target at the ref, baking and verifying the instance's `workflow/`
+package), the Workers (`worker` and, in a two-Worker Pool, `worker-2`, each
+with its Workflow, Managed Instance name and model keys), and for two
+Workers this statement, translated into the user's language without
+changing its meaning: "The two Workers are two Managed Instances on one
+Target Repository. coding-agent does not advertise the `pool` capability,
+so this departs from the operator contract's rule that an adapter refuses
+a second instance for the same repository on the host; they run different
+Workflows and take from different Queues (docs/adr/0005)." Also report that
+no
 Forge-owned profile was generated (the repository-owned
 `docs/agents/project-profile.yml` stays the only profile), the rule that any
 edit under `workflow/` needs `docker compose build` before the container is
@@ -954,13 +999,16 @@ branch/SHA checkout does or does not contain the contract adapter; for
 coding-agent, the `worker` is always labelled); token check result, what was
 and wasn't validated, and the start command
 (`cd agent-instances/agent-<name> && docker compose up --build -d` —
-`docker compose up --build -d worker` for coding-agent).
+`docker compose up --build -d worker` for coding-agent, plus `worker-2` in
+a two-Worker Pool).
 The instance is ignored by Git, so there is nothing to commit there.
 Once the operator starts a contract instance, extend the report with
 `agentfleet identity` (engine backend, Target Repository, contract major,
 Operator Capabilities) and readiness from the Status Snapshot
 (`instance.state`: ready when anything other than `starting`) for every
 Managed Instance — `<short-name>` and each `<short-name>-<n>`. Name a Pool
-(N ≥ 2) on the contract path only with `pool` in `identity.capabilities`.
+(N ≥ 2) on the contract path only with `pool` in `identity.capabilities`
+(a coding-agent Pool of one Worker per Workflow is the exception, stated
+as above).
 For coding-agent, report identity and readiness as unverified until the
 contract producer ships (step 4).

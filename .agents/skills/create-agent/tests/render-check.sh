@@ -4,12 +4,13 @@
 # Renders the simple-coding-agent templates (compose.yaml and
 # compose.litellm.yaml, .env/.env.example from the env example template, and
 # the Dockerfile) and the coding-agent templates (compose.yaml,
-# compose.coding-agent.litellm.yaml, Dockerfile, .env/.env.example and
-# workflow/workflow.yml) with placeholder values and no
-# secrets into scratch directories, then runs `docker compose config` on the
-# plain, the LiteLLM, the contract-labels, the contract-labels Pool, the
-# coding-agent direct-pin and the coding-agent gateway variants. Exits
-# non-zero when a rendered result is not a valid Compose model.
+# compose.coding-agent.litellm.yaml, Dockerfile, .env/.env.example,
+# workflow/workflow.yml and the triage prompts) with placeholder values and
+# no secrets into scratch directories, then runs `docker compose config` on
+# the plain, the LiteLLM, the contract-labels, the contract-labels Pool, the
+# coding-agent direct-pin, the coding-agent gateway, the coding-agent
+# `triage` and the coding-agent two-Workflow Pool variants. Exits non-zero
+# when a rendered result is not a valid Compose model.
 #
 # The contract-labels variants render an AGENT_SRC_REF that speaks the
 # operator contract (`main` or a release tag v0.9.0 or newer — see the
@@ -33,19 +34,25 @@
 # worker's explicit environment names `LITELLM_PROXY_API_KEY` (and no other
 # model key), and the `compose.coding-agent.litellm.yaml` overlay attaches
 # the worker — and only the worker — to the external network named by
-# `GATEWAY_NETWORK`.
+# `GATEWAY_NETWORK`. The coding-agent `triage` variant declares the
+# `triage` Workflow alone (a triage pin and an Advisor pin, both through
+# the gateway), and the two-Workflow Pool variant declares `implement` and
+# `triage` with one Worker each (`worker` on a direct pin, `worker-2` through
+# the gateway, each with its own state volume, Managed Instance name and
+# model keys). See check_coding_agent_instance for the shape each must have.
 #
-# The coding-agent variant additionally runs secret-free `agent config
-# validate` against the rendered `workflow/workflow.yml` (with the prompt
-# files the YAML names, before the policy stub is written — validation passes
-# with the policy missing) when the `agent` CLI is on PATH, with no
-# environment set. It invokes the bare `agent` CLI directly (no Docker
+# Every coding-agent variant additionally runs secret-free `agent config
+# validate` against the rendered `workflow/workflow.yml`, once per declared
+# Workflow (with the prompt files the YAML names, before the policy stub is
+# written — validation passes with the policy missing) when the `agent` CLI
+# is on PATH, with no environment set. It invokes the bare `agent` CLI directly (no Docker
 # needed); the operator path in references/coding-agent.md runs the same
 # `config validate` arguments through the compose `agent` seat instead. CI
 # has no coding-agent installed — neither an `agent` CLI at a pinned ref
 # nor a built image — so there the script records the skip and passes;
 # install the CLI at the pinned ref (for example `uv tool
-# install git+https://github.com/lbacik/coding-agent@v0.4.7`) or build the
+# install git+https://github.com/lbacik/coding-agent@v0.5.0`; the `triage`
+# variants need v0.5.0 or newer) or build the
 # image and re-run this script locally to cover validation too.
 #
 # Usage (from anywhere in this repository):
@@ -104,7 +111,7 @@ PH_CONTEXT_THRESHOLD_TOKENS=80000
 PH_OUTPUT_CAP_TOKENS=32000
 PH_GATEWAY_URL=http://litellm:4000
 PH_GATEWAY_MODEL=muse-spark-1.3-contributor
-PH_GATEWAY_EFFORT=medium
+PH_GATEWAY_EFFORT=high
 PH_GATEWAY_API_KEY_ENV=LITELLM_PROXY_API_KEY
 PH_GATEWAY_CONTEXT_WINDOW_TOKENS=1000000
 PH_GATEWAY_OUTPUT_CAP_TOKENS=32000
@@ -113,12 +120,29 @@ PH_GATEWAY_PRICE_INPUT=0.10
 PH_GATEWAY_PRICE_OUTPUT=0.20
 PH_GATEWAY_PRICE_CACHE_READ=0.002
 PH_GATEWAY_PRICE_CACHE_WRITE=0.10
+# The triage Advisor pin: a stronger model behind the same gateway (the
+# maintainer proxy). Its prices and caps are the operator's, never defaulted.
+PH_ADVISOR_MODEL=claude-opus-5-5
+PH_ADVISOR_CONTEXT_WINDOW_TOKENS=1000000
+PH_ADVISOR_CONTEXT_THRESHOLD_TOKENS=150000
+PH_ADVISOR_OUTPUT_CAP_TOKENS=32000
+PH_ADVISOR_PRICE_INPUT=5.00
+PH_ADVISOR_PRICE_OUTPUT=25.00
+PH_ADVISOR_PRICE_CACHE_READ=0.50
+PH_ADVISOR_PRICE_CACHE_WRITE=6.25
 PH_LIMIT_COST_USD=20
 PH_LIMIT_EFFECTIVE_TOKENS=4000000
 PH_LIMIT_TOOL_CALLS=600
 PH_LIMIT_WALL_CLOCK_MINUTES=60
 PH_PROCESS_LIMIT_COST_USD=12
 PH_SELF_REVIEW_LIMIT_COST_USD=3
+# The `triage` Attempt Ceiling (no Reserved Step, so the Work Pool is the
+# whole ceiling). Each limit holds one maximal Admission hold for the
+# triage pin and for the Advisor pin.
+PH_TRIAGE_LIMIT_COST_USD=10
+PH_TRIAGE_LIMIT_EFFECTIVE_TOKENS=3000000
+PH_TRIAGE_LIMIT_TOOL_CALLS=300
+PH_TRIAGE_LIMIT_WALL_CLOCK_MINUTES=45
 # The reserved `ai-handoff` effective-tokens allowance: 150000, raised to one
 # maximal Admission hold (Usable Threshold = threshold - 2000, plus the
 # output cap) when the pin's threshold needs more. Per variant, because the
@@ -127,8 +151,6 @@ handoff_effective_tokens() {
   floor=$(($1 - 2000 + $2))
   if [ "$floor" -gt 150000 ]; then echo "$floor"; else echo 150000; fi
 }
-PH_DIRECT_HANDOFF_EFFECTIVE_TOKENS=$(handoff_effective_tokens "$PH_CONTEXT_THRESHOLD_TOKENS" "$PH_OUTPUT_CAP_TOKENS")
-PH_GATEWAY_HANDOFF_EFFECTIVE_TOKENS=$(handoff_effective_tokens "$PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS" "$PH_GATEWAY_OUTPUT_CAP_TOKENS")
 
 WORK_ROOT=""
 
@@ -398,37 +420,237 @@ check_contract_instance() {
   done
 }
 
+# ca_variant VARIANT -- set the facts of one coding-agent fixture variant:
+# which Workflows workflow.yml declares (CA_WORKFLOWS), which Workflow each
+# Worker runs (CA_W1 for `worker`, CA_W2 for `worker-2`, empty for a single
+# Worker), and which model profile each declared pin uses (CA_MAIN for the
+# `implement` pin `main`, CA_TRIAGE and CA_ADVISOR for the `triage` pin and
+# its Advisor pin; empty when the pin is not rendered). See profile_value.
+#
+#   direct   `implement` alone on a direct pin, one Worker
+#   gateway  `implement` alone on a LiteLLM gateway pin, one Worker
+#   triage   `triage` alone, triage and Advisor pins through the gateway,
+#            one Worker
+#   pool     both Workflows: `worker` runs `implement` on a direct pin,
+#            `worker-2` runs `triage` through the gateway, so the two
+#            Workers use different routes and different model keys
+ca_variant() {
+  CA_MAIN=''
+  CA_TRIAGE=''
+  CA_ADVISOR=''
+  CA_W2=''
+  case "$1" in
+    direct)
+      CA_WORKFLOWS=implement
+      CA_W1=implement
+      CA_MAIN=sonnet
+      ;;
+    gateway)
+      CA_WORKFLOWS=implement
+      CA_W1=implement
+      CA_MAIN=muse
+      ;;
+    triage)
+      CA_WORKFLOWS=triage
+      CA_W1=triage
+      CA_TRIAGE=muse
+      CA_ADVISOR=opus
+      ;;
+    pool)
+      CA_WORKFLOWS='implement triage'
+      CA_W1=implement
+      CA_W2=triage
+      CA_MAIN=sonnet
+      CA_TRIAGE=muse
+      CA_ADVISOR=opus
+      ;;
+    *) fail "ca_variant: unknown VARIANT '$1' (want direct, gateway, triage or pool)" ;;
+  esac
+}
+
+# profile_value PROFILE FIELD -- one fixture value of a model profile.
+# `sonnet` is a direct Anthropic pin (the code-owned table's public list
+# pricing and the upstream token recommendation), `muse` the Meta route
+# through the LiteLLM gateway, `opus` a stronger model behind the same
+# gateway (the triage Advisor). FIELD is the pin placeholder suffix
+# (ROUTE, MODEL, ENDPOINT, EFFORT, API_KEY_ENV, CONTEXT_WINDOW_TOKENS,
+# CONTEXT_THRESHOLD_TOKENS, OUTPUT_CAP_TOKENS, PRICE_INPUT, PRICE_OUTPUT,
+# PRICE_CACHE_READ, PRICE_CACHE_WRITE) or KIND (`direct` or `gateway`).
+profile_value() {
+  case "$1:$2" in
+    sonnet:KIND) echo direct ;;
+    sonnet:ROUTE) echo "provider: $PH_PROVIDER" ;;
+    sonnet:MODEL) echo "$PH_MODEL" ;;
+    sonnet:ENDPOINT) echo "$PH_ENDPOINT" ;;
+    sonnet:EFFORT) echo medium ;;
+    sonnet:API_KEY_ENV) echo "$PH_API_KEY_ENV" ;;
+    sonnet:CONTEXT_WINDOW_TOKENS) echo "$PH_CONTEXT_WINDOW_TOKENS" ;;
+    sonnet:CONTEXT_THRESHOLD_TOKENS) echo "$PH_CONTEXT_THRESHOLD_TOKENS" ;;
+    sonnet:OUTPUT_CAP_TOKENS) echo "$PH_OUTPUT_CAP_TOKENS" ;;
+    sonnet:PRICE_INPUT) echo "$PH_PRICE_INPUT" ;;
+    sonnet:PRICE_OUTPUT) echo "$PH_PRICE_OUTPUT" ;;
+    sonnet:PRICE_CACHE_READ) echo "$PH_PRICE_CACHE_READ" ;;
+    sonnet:PRICE_CACHE_WRITE) echo "$PH_PRICE_CACHE_WRITE" ;;
+    muse:KIND) echo gateway ;;
+    muse:ROUTE) echo "gateway: {kind: litellm, url: $PH_GATEWAY_URL}" ;;
+    muse:MODEL) echo "$PH_GATEWAY_MODEL" ;;
+    muse:ENDPOINT) echo responses ;;
+    muse:EFFORT) echo "$PH_GATEWAY_EFFORT" ;;
+    muse:API_KEY_ENV) echo "$PH_GATEWAY_API_KEY_ENV" ;;
+    muse:CONTEXT_WINDOW_TOKENS) echo "$PH_GATEWAY_CONTEXT_WINDOW_TOKENS" ;;
+    muse:CONTEXT_THRESHOLD_TOKENS) echo "$PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS" ;;
+    muse:OUTPUT_CAP_TOKENS) echo "$PH_GATEWAY_OUTPUT_CAP_TOKENS" ;;
+    muse:PRICE_INPUT) echo "$PH_GATEWAY_PRICE_INPUT" ;;
+    muse:PRICE_OUTPUT) echo "$PH_GATEWAY_PRICE_OUTPUT" ;;
+    muse:PRICE_CACHE_READ) echo "$PH_GATEWAY_PRICE_CACHE_READ" ;;
+    muse:PRICE_CACHE_WRITE) echo "$PH_GATEWAY_PRICE_CACHE_WRITE" ;;
+    opus:KIND) echo gateway ;;
+    opus:ROUTE) echo "gateway: {kind: litellm, url: $PH_GATEWAY_URL}" ;;
+    opus:MODEL) echo "$PH_ADVISOR_MODEL" ;;
+    opus:ENDPOINT) echo responses ;;
+    opus:EFFORT) echo high ;;
+    opus:API_KEY_ENV) echo "$PH_GATEWAY_API_KEY_ENV" ;;
+    opus:CONTEXT_WINDOW_TOKENS) echo "$PH_ADVISOR_CONTEXT_WINDOW_TOKENS" ;;
+    opus:CONTEXT_THRESHOLD_TOKENS) echo "$PH_ADVISOR_CONTEXT_THRESHOLD_TOKENS" ;;
+    opus:OUTPUT_CAP_TOKENS) echo "$PH_ADVISOR_OUTPUT_CAP_TOKENS" ;;
+    opus:PRICE_INPUT) echo "$PH_ADVISOR_PRICE_INPUT" ;;
+    opus:PRICE_OUTPUT) echo "$PH_ADVISOR_PRICE_OUTPUT" ;;
+    opus:PRICE_CACHE_READ) echo "$PH_ADVISOR_PRICE_CACHE_READ" ;;
+    opus:PRICE_CACHE_WRITE) echo "$PH_ADVISOR_PRICE_CACHE_WRITE" ;;
+    *) fail "profile_value: unknown profile field '$1:$2'" ;;
+  esac
+}
+
+# pin_profile PIN -- the model profile the current variant gives a pin id.
+pin_profile() {
+  case "$1" in
+    main) echo "$CA_MAIN" ;;
+    triage) echo "$CA_TRIAGE" ;;
+    triage-advisor) echo "$CA_ADVISOR" ;;
+    *) fail "pin_profile: unknown pin '$1'" ;;
+  esac
+}
+
+# workflow_pins WORKFLOW -- the pin ids a Worker of that Workflow uses: its
+# Workflow's pin, plus the Advisor pin for `triage`.
+workflow_pins() {
+  case "$1" in
+    implement) echo main ;;
+    triage) echo 'triage triage-advisor' ;;
+    *) fail "workflow_pins: unknown Workflow '$1'" ;;
+  esac
+}
+
+# workflow_keys WORKFLOW -- the model key variables a Worker of that
+# Workflow needs, space-separated and sorted.
+workflow_keys() {
+  for pin in $(workflow_pins "$1"); do
+    profile_value "$(pin_profile "$pin")" API_KEY_ENV
+  done | sort -u | tr '\n' ' '
+}
+
+# workflow_uses_gateway WORKFLOW -- true when any pin a Worker of that
+# Workflow uses goes through the LiteLLM gateway (the Worker then joins the
+# gateway network overlay).
+workflow_uses_gateway() {
+  for pin in $(workflow_pins "$1"); do
+    if [ "$(profile_value "$(pin_profile "$pin")" KIND)" = gateway ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ca_workers -- the Worker services of the current variant with their
+# Workflows, one `service:workflow` per line.
+ca_workers() {
+  echo "worker:$CA_W1"
+  if [ -n "$CA_W2" ]; then
+    echo "worker-2:$CA_W2"
+  fi
+}
+
+# ca_all_keys -- every model key variable some declared pin names.
+ca_all_keys() {
+  for workflow in $CA_WORKFLOWS; do
+    workflow_keys "$workflow"
+  done | tr ' ' '\n' | sed '/^$/d' | sort -u | tr '\n' ' '
+}
+
+# ca_handoff_tokens -- the reserved `ai-handoff` effective-tokens allowance
+# for the current variant's `main` pin.
+ca_handoff_tokens() {
+  handoff_effective_tokens "$(profile_value "$CA_MAIN" CONTEXT_THRESHOLD_TOKENS)" \
+    "$(profile_value "$CA_MAIN" OUTPUT_CAP_TOKENS)"
+}
+
+# workflow_block CONTENT WORKFLOW -- the lines of one Workflow of a rendered
+# workflow.yml: from its `  <id>:` line under `workflows:` to the next
+# Workflow.
+workflow_block() {
+  printf '%s\n' "$1" | awk -v wf="$2" '
+    /^workflows:$/ { in_wf = 1; next }
+    in_wf && $0 == "  " wf ":" { show = 1; next }
+    in_wf && /^  [a-z0-9-]+:/ { show = 0 }
+    show { print }'
+}
+
+# pin_block CONTENT PIN -- the lines of one pin under `models:` of a
+# rendered workflow.yml.
+pin_block() {
+  printf '%s\n' "$1" | awk -v pin="$2" '
+    /^models:$/ { in_models = 1; next }
+    in_models && /^[^ #]/ { in_models = 0 }
+    in_models && index($0, "  " pin ":") == 1 { show = 1; next }
+    in_models && /^  [a-z0-9-]+:/ { show = 0 }
+    in_models && show { print }'
+}
+
+# worker_workflow_arg CONFIG SERVICE -- the value after `--workflow` in one
+# service's command in the Compose model.
+worker_workflow_arg() {
+  service_block "$1" "$2" | awk '
+    found { sub(/^[[:space:]]*-[[:space:]]*/, ""); print; exit }
+    /^[[:space:]]*-[[:space:]]*--workflow$/ { found = 1 }'
+}
+
 # check_coding_agent_instance DIR LABEL VARIANT -- `docker compose config`
 # must accept the rendered coding-agent directory, and the resulting model
-# must carry the adapter's shape: the build-only `engine` base plus three
-# derived services sharing one state volume and one derived image, a default
-# model (no profile) of `engine` (`scale: 0`) and `worker` only so that a
-# bare `docker compose up` starts the Worker alone, all four
-# discovery labels on the worker and on no one-off service, the worker's
-# hardening (never restarted, init, read-only root filesystem, the full v3
-# `run` invocation with no bind mount at /etc/coding-agent), the exact stop
-# grace on the rendered file, and the Compose project name equal to the
-# instance directory name. The rendered Workflow Configuration must name
-# credentials by environment variable only and carry a Selection Label that
-# satisfies coding-agent's rules. The rendered Dockerfile must derive FROM
-# the engine base and run `config validate`, `prepare-skill-bundle` and
+# must carry the adapter's shape: the build-only `engine` base plus the
+# derived services (`agent`, `validate` and one or two Workers) sharing one
+# derived image, every Worker with its own state volume; a default model
+# (no profile) of `engine` (`scale: 0`) and the Workers only, so that a bare
+# `docker compose up` starts the Workers alone; all four discovery labels on
+# every Worker and on no one-off service; each Worker's hardening (never
+# restarted, init, read-only root filesystem, the full v3 `run` invocation
+# with its own `--workflow` and no bind mount at /etc/coding-agent), the
+# exact stop grace on the rendered file, and the Compose project name equal
+# to the instance directory name. Each Worker gets exactly the model keys of
+# its own pins (its Workflow's pin, plus the Advisor pin for `triage`), no
+# one-off seat gets any, and a Worker using a gateway pin — and only such a
+# Worker — joins GATEWAY_NETWORK through the overlay. The rendered Workflow
+# Configuration must declare exactly the variant's Workflows, name
+# credentials by environment variable only, carry each pin with its own
+# route, and satisfy the per-Workflow rules (`implement`: a lawful Selection
+# Label and Step Allowances that fit the Work Pool; `triage`: its input and
+# exclusions, the three results with their end labels, `input.comments`,
+# the `advisor` group with its mapping, a draft `open-pull-request` behind
+# `commit-and-push` on every result path, and no `check-readiness` or
+# `run-validation`). The rendered Dockerfile must derive FROM the engine
+# base and run `config validate` (once per declared Workflow, from the
+# WORKFLOWS build argument), `prepare-skill-bundle` and
 # `verify-skill-bundle` in that order, with the verification after the last
-# relevant COPY. VARIANT is `direct` (a provider pin: no gateway-only keys
-# anywhere, no LITELLM key on the worker) or `gateway` (a LiteLLM gateway
-# pin: a `gateway:` block and no `provider:` key, the LITELLM key in the
-# worker's explicit environment only, and the overlay attaching the worker
-# — and only the worker — to GATEWAY_NETWORK).
+# relevant COPY. VARIANT is one of ca_variant's.
 #
 # Add new model assertions here; the CI workflow needs no changes.
 check_coding_agent_instance() {
   dir=$1
   label=$2
-  variant=$3
-  if [ "$variant" != direct ] && [ "$variant" != gateway ]; then
-    fail "check_coding_agent_instance: unknown VARIANT '$variant' (want direct or gateway)"
-  fi
+  ca_variant "$3"
   instance_dir_name=$(basename "$dir")
   info "checking $label instance"
+  worker_services=$(ca_workers | cut -d: -f1 | tr '\n' ' ')
+  worker_count=$(ca_workers | wc -l | tr -d ' ')
   # The full model: `agent` and `validate` sit in the `tools` profile, so
   # every per-service assertion below reads the model with all profiles
   # enabled. Without it their blocks would be empty and the "key absent
@@ -436,16 +658,17 @@ check_coding_agent_instance() {
   if ! config_output=$(compose_config "$dir" --profile '*'); then
     fail "$label: 'docker compose --profile * config' failed"
   fi
-  # A bare `docker compose up -d` must start the Worker alone. `engine` must
-  # stay in the default model, because a profile left inactive would drop it
-  # and break the `service:engine` build context; `scale: 0` keeps it out of
-  # `up` instead. The one-off seats are kept out by the `tools` profile.
+  # A bare `docker compose up -d` must start the Workers alone. `engine`
+  # must stay in the default model, because a profile left inactive would
+  # drop it and break the `service:engine` build context; `scale: 0` keeps
+  # it out of `up` instead. The one-off seats are kept out by the `tools`
+  # profile.
   if ! default_services=$(compose_services "$dir"); then
     fail "$label: 'docker compose config --services' failed"
   fi
   default_services=$(printf '%s\n' "$default_services" | sort | tr '\n' ' ')
-  if [ "$default_services" != "engine worker " ]; then
-    fail "$label: default services are '$default_services', want 'engine worker ' (agent and validate belong in the tools profile)"
+  if [ "$default_services" != "engine $worker_services" ]; then
+    fail "$label: default services are '$default_services', want 'engine $worker_services' (agent and validate belong in the tools profile)"
   fi
   assert_contains "$(service_block "$config_output" engine)" 'scale: 0' \
     "$label: engine lacks scale: 0, so a bare 'docker compose up' would start it"
@@ -455,27 +678,37 @@ check_coding_agent_instance() {
     assert_contains "$(service_block "$config_output" "$seat")" '- tools' \
       "$label: $seat seat is not in the tools profile"
   done
-  assert_not_contains "$(service_block "$config_output" worker)" 'profiles:' \
-    "$label: worker must not take a profile (a bare 'docker compose up' starts it)"
   # The Compose project is the directory name: the template sets no `name:`.
   assert_contains "$config_output" "name: $instance_dir_name" \
     "$label: Compose project name is not the instance directory name"
-  for service in worker agent validate engine; do
+  for service in agent validate engine $worker_services; do
     assert_contains "$config_output" "  $service:" \
       "$label: $service service missing from the Compose model"
   done
-  # All three runtime seats share the derived image; the engine base carries
+  if [ -z "$CA_W2" ]; then
+    assert_not_contains "$config_output" '  worker-2:' \
+      "$label: a single-Worker Instance renders worker-2"
+    assert_not_contains "$config_output" 'state_2' \
+      "$label: a single-Worker Instance renders the state_2 volume"
+  fi
+  # Every runtime seat shares the derived image; the engine base carries
   # its own tag and is never run. Count service-level keys only (four-space
   # indent): the model also keeps the top-level `x-agent` extension with its
   # own copy of the image.
+  runtime_seats=$((2 + worker_count))
   derived_image_count=$(printf '%s\n' "$config_output" | grep -cx -- "    image: coding-agent:$PH_CODING_AGENT_SHORT_NAME" || true)
-  if [ "$derived_image_count" != 3 ]; then
-    fail "$label: want the derived image on all three runtime seats (agent, validate, worker), found $derived_image_count"
+  if [ "$derived_image_count" != "$runtime_seats" ]; then
+    fail "$label: want the derived image on all $runtime_seats runtime seats (agent, validate, $worker_services), found $derived_image_count"
   fi
   assert_contains "$config_output" "image: coding-agent-engine:$PH_CODING_AGENT_SHORT_NAME" \
     "$label: engine base image tag missing from the Compose model"
   assert_contains "$config_output" '/var/lib/coding-agent' \
     "$label: state path missing from the Compose model"
+  # The build argument lists the declared Workflows, so the Dockerfile
+  # validates once per Workflow at build time.
+  assert_line_matches "$config_output" \
+    "^ +WORKFLOWS: ['\"]?${CA_WORKFLOWS}['\"]?\$" \
+    "$label: build argument WORKFLOWS is not '$CA_WORKFLOWS'"
   # The Workflow Configuration is baked into the derived image, never
   # bind-mounted: no volume entry may target /etc/coding-agent on any
   # service, and the rendered file must not reference ./workflow or
@@ -486,81 +719,142 @@ check_coding_agent_instance() {
     "$label: compose.yaml still references the ./workflow bind mount"
   assert_not_contains "$(cat "$dir/compose.yaml")" 'WORKFLOW_CONFIG_DIR' \
     "$label: compose.yaml still references WORKFLOW_CONFIG_DIR (the package is baked into the image)"
-  # The worker's full v3 `run` invocation: every flag and value upstream
-  # renders, and none of the removed legacy options (v3 exits 2 on them).
-  for token in '--config' '/etc/coding-agent/workflow.yml' '--workflow' \
-    '--policy' '/etc/coding-agent/skill-policy.json' \
-    '--bundle-dir' '/opt/coding-agent/skill-bundle' \
-    '--skill-home' '/home/agent' \
-    '--state-dir' '/var/lib/coding-agent' \
-    '--toolchain-matrix' '/opt/coding-agent/toolchain-matrix.json'; do
-    assert_contains "$config_output" "$token" \
-      "$label: worker command misses '$token'"
+  # The Workflow is the Worker's own configuration: a literal per stanza,
+  # never an `.env` interpolation shared by the Pool.
+  # shellcheck disable=SC2016 # the literal, unexpanded reference is the point
+  assert_not_contains "$(cat "$dir/compose.yaml")" '${WORKFLOW' \
+    "$label: compose.yaml selects the Workflow through .env, not per Worker"
+  for worker_entry in $(ca_workers); do
+    service=${worker_entry%%:*}
+    workflow=${worker_entry#*:}
+    block=$(service_block "$config_output" "$service")
+    # The Worker's full v3 `run` invocation: every flag and value upstream
+    # renders, and none of the removed legacy options (v3 exits 2 on them).
+    for token in '--config' '/etc/coding-agent/workflow.yml' '--workflow' \
+      '--policy' '/etc/coding-agent/skill-policy.json' \
+      '--bundle-dir' '/opt/coding-agent/skill-bundle' \
+      '--skill-home' '/home/agent' \
+      '--state-dir' '/var/lib/coding-agent' \
+      '--toolchain-matrix' '/opt/coding-agent/toolchain-matrix.json'; do
+      assert_contains "$block" "$token" \
+        "$label: $service command misses '$token'"
+    done
+    actual_workflow=$(worker_workflow_arg "$config_output" "$service")
+    if [ "$actual_workflow" != "$workflow" ]; then
+      fail "$label: $service runs --workflow '$actual_workflow', want '$workflow'"
+    fi
+    assert_not_contains "$block" 'profiles:' \
+      "$label: $service must not take a profile (a bare 'docker compose up' starts it)"
+    assert_contains "$block" '/var/lib/coding-agent/operator:uid=1000,gid=1000,mode=0700' \
+      "$label: $service private-IPC tmpfs missing its ownership and mode options"
+    # Each Worker its own state volume.
+    if [ "$service" = worker ]; then
+      want_volume=state
+    else
+      want_volume=state_${service#worker-}
+    fi
+    assert_line_matches "$block" "source: $want_volume\$" \
+      "$label: $service does not mount its own state volume $want_volume"
+    # Exactly the model keys of this Worker's own pins.
+    want_keys=$(workflow_keys "$workflow")
+    for key in ANTHROPIC_API_KEY OPENAI_API_KEY LITELLM_PROXY_API_KEY; do
+      case " $want_keys " in
+        *" $key "*)
+          assert_contains "$block" "$key" \
+            "$label: $key missing from the $service environment (its pins name it)" ;;
+        *)
+          assert_not_contains "$block" "$key" \
+            "$label: $key reached the $service environment (none of its pins names it)" ;;
+      esac
+    done
+    # A Worker using a gateway pin joins the gateway network; one whose
+    # pins are all direct does not. Match the service's `networks:` entry,
+    # not a bare word: the fixture's build context path may contain
+    # "gateway".
+    if workflow_uses_gateway "$workflow"; then
+      assert_line_matches "$block" '^      gateway:' \
+        "$label: $service uses a gateway pin but is not attached to the gateway network"
+    else
+      assert_not_line_matches "$block" '^      gateway:' \
+        "$label: $service joined the gateway network with direct pins only"
+    fi
   done
   assert_not_contains "$config_output" '--skills-home' \
     "$label: worker command carries the removed --skills-home option (v3 exits 2)"
   assert_not_contains "$config_output" '--skill-bundle-dir' \
     "$label: worker command carries the removed --skill-bundle-dir option (v3 exits 2)"
-  # WORKFLOW still selects the Workflow id through interpolation, so the
-  # rendered file keeps the defaulted reference.
-  # shellcheck disable=SC2016 # the literal, unexpanded reference is the point
-  assert_contains "$(cat "$dir/compose.yaml")" '${WORKFLOW:-implement}' \
-    "$label: compose.yaml lost the WORKFLOW interpolation"
-  assert_contains "$config_output" '/var/lib/coding-agent/operator:uid=1000,gid=1000,mode=0700' \
-    "$label: private-IPC tmpfs missing its ownership and mode options in the Compose model"
+  for seat in agent validate; do
+    for key in ANTHROPIC_API_KEY OPENAI_API_KEY LITELLM_PROXY_API_KEY; do
+      assert_not_contains "$(service_block "$config_output" "$seat")" "$key" \
+        "$label: $key reached the $seat seat's environment"
+    done
+    assert_not_line_matches "$(service_block "$config_output" "$seat")" '^      gateway:' \
+      "$label: $seat seat joined the gateway network"
+  done
   operator_tmpfs_count=$(printf '%s\n' "$config_output" | grep -cF -- '/var/lib/coding-agent/operator' || true)
-  if [ "$operator_tmpfs_count" != 1 ]; then
-    fail "$label: want exactly one operator tmpfs entry (worker only), found $operator_tmpfs_count"
+  if [ "$operator_tmpfs_count" != "$worker_count" ]; then
+    fail "$label: want one operator tmpfs entry per Worker ($worker_count), found $operator_tmpfs_count"
   fi
   assert_contains "$config_output" 'stop_grace_period:' \
     "$label: stop_grace_period missing from the Compose model"
-  # All four discovery labels appear exactly once in the whole model: on the
-  # worker, never on a one-off seat.
+  # All four discovery labels appear once per Worker in the whole model,
+  # never on a one-off seat, and each Worker carries its own Managed
+  # Instance name (`<short-name>`, then `<short-name>-2`).
   for key in contract instance exec-user backend; do
     key_count=$(printf '%s\n' "$config_output" | grep -cF -- "io.github.lbacik.agent-operator.$key" || true)
-    if [ "$key_count" != 1 ]; then
-      fail "$label: discovery label '$key' on $key_count services, want 1 (worker only)"
+    if [ "$key_count" != "$worker_count" ]; then
+      fail "$label: discovery label '$key' on $key_count services, want $worker_count (the Workers only)"
     fi
   done
   assert_line_matches "$config_output" \
     "io\\.github\\.lbacik\\.agent-operator\\.contract: (\"1\"|1)\$" \
     "$label: contract label is not major 1"
-  assert_contains "$config_output" 'io.github.lbacik.agent-operator.instance: '"$PH_CODING_AGENT_SHORT_NAME" \
-    "$label: instance label is not $PH_CODING_AGENT_SHORT_NAME"
+  assert_line_matches "$(service_block "$config_output" worker)" \
+    "io\\.github\\.lbacik\\.agent-operator\\.instance: $PH_CODING_AGENT_SHORT_NAME\$" \
+    "$label: worker instance label is not $PH_CODING_AGENT_SHORT_NAME"
+  if [ -n "$CA_W2" ]; then
+    assert_line_matches "$(service_block "$config_output" worker-2)" \
+      "io\\.github\\.lbacik\\.agent-operator\\.instance: $PH_CODING_AGENT_SHORT_NAME-2\$" \
+      "$label: worker-2 instance label is not $PH_CODING_AGENT_SHORT_NAME-2"
+  fi
+  instances=$(printf '%s\n' "$config_output" | sed -n 's/.*io\.github\.lbacik\.agent-operator\.instance: *//p')
+  if printf '%s\n' "$instances" | grep -Eqv '^[a-z0-9][a-z0-9-]{0,62}$'; then
+    fail "$label: an instance label does not match ^[a-z0-9][a-z0-9-]{0,62}$"
+  fi
   assert_contains "$config_output" 'io.github.lbacik.agent-operator.exec-user: agent' \
     "$label: exec-user label is not agent"
   assert_not_contains "$config_output" 'agent-operator.exec-user: root' \
     "$label: exec-user label must not be root"
   assert_contains "$config_output" 'io.github.lbacik.agent-operator.backend: coding-agent' \
     "$label: backend label is not coding-agent"
-  # Hardening: exactly one restart line (the worker, never restarted), one
-  # init (the worker), and a read-only root filesystem on every runtime
-  # seat. The build-only `engine` service sets none of these.
+  # Hardening: one restart line and one init per Worker (never restarted),
+  # and a read-only root filesystem on every runtime seat. The build-only
+  # `engine` service sets none of these.
   restart_count=$(printf '%s\n' "$config_output" | grep -c -- 'restart:' || true)
-  if [ "$restart_count" != 1 ]; then
-    fail "$label: want exactly one restart: line (worker), found $restart_count"
+  if [ "$restart_count" != "$worker_count" ]; then
+    fail "$label: want one restart: line per Worker ($worker_count), found $restart_count"
   fi
-  assert_line_matches "$config_output" \
-    "restart: ['\"]?no['\"]?\$" \
-    "$label: worker is not restart: no"
+  if printf '%s\n' "$config_output" | grep -- 'restart:' | grep -Eqv "restart: ['\"]?no['\"]?\$"; then
+    fail "$label: a Worker is not restart: no"
+  fi
   init_count=$(printf '%s\n' "$config_output" | grep -c -- 'init: true' || true)
-  if [ "$init_count" != 1 ]; then
-    fail "$label: want exactly one init: true line (worker), found $init_count"
+  if [ "$init_count" != "$worker_count" ]; then
+    fail "$label: want one init: true line per Worker ($worker_count), found $init_count"
   fi
   read_only_count=$(printf '%s\n' "$config_output" | grep -c -- '^    read_only: true$' || true)
-  if [ "$read_only_count" != 3 ]; then
-    fail "$label: want read_only: true on all three runtime seats, found $read_only_count"
+  if [ "$read_only_count" != "$runtime_seats" ]; then
+    fail "$label: want read_only: true on all $runtime_seats runtime seats, found $read_only_count"
   fi
   # Resource limits (Forge addition, not upstream's compose): the x-agent
-  # anchor carries cpus / mem_limit / pids_limit, so all three services
-  # inherit them. Compose normalises mem_limit to bytes (3g -> 3221225472),
+  # anchor carries cpus / mem_limit / pids_limit, so every runtime seat
+  # inherits them. Compose normalises mem_limit to bytes (3g -> 3221225472),
   # so assert the normalised form, not the literal `3g`.
   # Count service-level keys only (four-space indent): the model also keeps
   # the top-level `x-agent` extension, unnormalised, with its own copies.
   for limit_key in 'cpus:' 'mem_limit:' 'pids_limit:'; do
     limit_count=$(printf '%s\n' "$config_output" | grep -c -- "^    $limit_key" || true)
-    if [ "$limit_count" != 3 ]; then
-      fail "$label: want $limit_key on all three services, found $limit_count"
+    if [ "$limit_count" != "$runtime_seats" ]; then
+      fail "$label: want $limit_key on all $runtime_seats runtime seats, found $limit_count"
     fi
   done
   assert_line_matches "$config_output" \
@@ -571,7 +865,9 @@ check_coding_agent_instance() {
   assert_line_matches "$config_output" \
     "pids_limit: ['\"]?1024['\"]?\$" \
     "$label: pids_limit default 1024 missing from the Compose model"
-  # Overrides in the environment change the rendered values.
+  # Overrides in the environment change the rendered values. The gateway
+  # overlay is left out here (no COMPOSE_FILE in the hermetic environment),
+  # so this reads compose.yaml alone.
   if ! override_output=$(cd "$dir" && env -i PATH="$PATH" HOME="$HOME" WORKER_CPUS=2 WORKER_MEM_LIMIT=4g WORKER_PIDS_LIMIT=2048 docker compose config); then
     fail "$label: 'docker compose config' with WORKER_* overrides failed"
   fi
@@ -586,34 +882,87 @@ check_coding_agent_instance() {
   assert_not_contains "$override_output" '3221225472' \
     "$label: WORKER_MEM_LIMIT override left the default in the Compose model"
   # The rendered file (not the model: durations may normalise) keeps the
-  # grace above the Workflow Configuration's shutdown grace.
-  if ! grep -qF -- 'stop_grace_period: 60s' "$dir/compose.yaml"; then
-    fail "$label: compose.yaml lost stop_grace_period: 60s"
+  # grace above the Workflow Configuration's shutdown grace, on every Worker.
+  grace_count=$(grep -cF -- 'stop_grace_period: 60s' "$dir/compose.yaml" || true)
+  if [ "$grace_count" != "$worker_count" ]; then
+    fail "$label: want stop_grace_period: 60s on every Worker ($worker_count), found $grace_count"
   fi
+  # The gateway overlay and the env file: the overlay exists exactly when
+  # some Worker uses a gateway pin, and lists exactly those Workers; .env
+  # activates exactly the model keys some pin names.
+  gateway_workers=''
+  for worker_entry in $(ca_workers); do
+    if workflow_uses_gateway "${worker_entry#*:}"; then
+      gateway_workers="$gateway_workers ${worker_entry%%:*}"
+    fi
+  done
+  env_content=$(cat "$dir/.env")
+  if [ -n "$gateway_workers" ]; then
+    if [ ! -f "$dir/compose.coding-agent.litellm.yaml" ]; then
+      fail "$label: gateway overlay compose.coding-agent.litellm.yaml missing"
+    fi
+    for service in $worker_services; do
+      case " $gateway_workers " in
+        *" $service "*)
+          assert_line_matches "$(cat "$dir/compose.coding-agent.litellm.yaml")" "^  $service:\$" \
+            "$label: gateway overlay does not list $service" ;;
+        *)
+          assert_not_line_matches "$(cat "$dir/compose.coding-agent.litellm.yaml")" "^  $service:\$" \
+            "$label: gateway overlay lists $service, whose pins are all direct" ;;
+      esac
+    done
+    assert_contains "$env_content" \
+      'COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml' \
+      "$label: .env does not load the gateway overlay"
+    assert_contains "$env_content" \
+      "GATEWAY_NETWORK=$PH_GATEWAY_NETWORK" \
+      "$label: .env does not name the gateway network"
+    assert_contains "$config_output" "$PH_GATEWAY_NETWORK" \
+      "$label: gateway network missing from the Compose model"
+    assert_contains "$config_output" 'external: true' \
+      "$label: gateway network is not external in the Compose model"
+  else
+    if [ -e "$dir/compose.coding-agent.litellm.yaml" ]; then
+      fail "$label: gateway overlay rendered with direct pins only"
+    fi
+    assert_not_line_matches "$env_content" '^COMPOSE_FILE=' \
+      "$label: .env loads an overlay with direct pins only"
+  fi
+  all_keys=$(ca_all_keys)
+  for key in ANTHROPIC_API_KEY OPENAI_API_KEY LITELLM_PROXY_API_KEY; do
+    case " $all_keys " in
+      *" $key "*)
+        assert_line_matches "$env_content" "^$key=\$" \
+          "$label: .env does not set $key (a pin names it)" ;;
+      *)
+        assert_not_line_matches "$env_content" "^$key=" \
+          "$label: .env sets $key (no pin names it)" ;;
+    esac
+  done
   # The rendered Workflow Configuration: a version: 4 file with a Skill
   # Bundle, repository, branch, credentials by environment-variable name
-  # only, a lawful Selection Label, the full Attempt Ceiling and Step
-  # Allowances that fit the Work Pool. Every static `skill:` reference must
-  # name a declared bundle member.
+  # only, exactly the variant's Workflows and pins.
   workflow_content=$(cat "$dir/workflow/workflow.yml")
-  assert_contains "$workflow_content" 'version: 4' \
-    "$label: workflow.yml is not a version: 4 file"
   assert_line_matches "$workflow_content" '^version: 4$' \
     "$label: workflow.yml version line is not exactly 'version: 4'"
   assert_contains "$workflow_content" 'workflow-v4.schema.json' \
     "$label: workflow.yml editor schema is not workflow-v4"
-  assert_contains "$workflow_content" 'skills:' \
-    "$label: workflow.yml declares no Skill Bundle"
+  assert_not_line_matches "$workflow_content" '# workflow-(implement|triage)-(begin|end)$' \
+    "$label: workflow.yml still carries a Workflow block marker"
   assert_contains "$workflow_content" 'git+https://github.com/mattpocock/skills.git' \
-    "$label: workflow.yml Skill Bundle is not the reference selection"
+    "$label: workflow.yml Skill Bundle source is not mattpocock/skills"
   assert_contains "$workflow_content" '3cca18b368ae95cdbdebbff572ccafa662551015' \
     "$label: workflow.yml Skill Bundle ref is not the reference pin"
-  assert_contains "$workflow_content" 'include: [implement, tdd, code-review, codebase-design]' \
-    "$label: workflow.yml Skill Bundle membership is not the reference selection"
-  assert_contains "$workflow_content" 'skill: implement' \
-    "$label: workflow.yml process step names no skill"
-  assert_contains "$workflow_content" 'skill: code-review' \
-    "$label: workflow.yml self-review step names no skill"
+  want_include=''
+  for workflow in $CA_WORKFLOWS; do
+    case $workflow in
+      implement) want_include="$want_include, implement, tdd, code-review, codebase-design" ;;
+      triage) want_include="$want_include, triage, grilling, domain-modeling" ;;
+    esac
+  done
+  want_include=${want_include#, }
+  assert_contains "$workflow_content" "include: [$want_include]" \
+    "$label: workflow.yml Skill Bundle membership is not [$want_include]"
   skill_names=$(printf '%s\n' "$workflow_content" |
     sed -n 's/^[[:space:]]*-[[:space:]]*skill:[[:space:]]*\([a-z-]*\).*/\1/p' |
     sort -u)
@@ -631,189 +980,105 @@ check_coding_agent_instance() {
     "$label: workflow.yml base branch is not $PH_BASE_BRANCH"
   assert_contains "$workflow_content" 'token-env: GITHUB_TOKEN' \
     "$label: workflow.yml token-env does not name an environment variable"
-  if [ "$variant" = direct ]; then
-    assert_contains "$workflow_content" "api-key-env: $PH_API_KEY_ENV" \
-      "$label: workflow.yml api-key-env does not name an environment variable"
+  # Exactly the declared Workflows, and exactly their pins.
+  declared=$(printf '%s\n' "$workflow_content" |
+    awk '/^workflows:$/ { in_wf = 1; next } in_wf && /^  [a-z0-9-]+:$/ { sub(/^  /, ""); sub(/:$/, ""); print }' |
+    tr '\n' ' ')
+  if [ "$declared" != "$CA_WORKFLOWS " ]; then
+    fail "$label: workflow.yml declares Workflows '$declared', want '$CA_WORKFLOWS '"
   fi
-  # The model pin: exactly one variant. A direct pin is a `provider:` block
-  # with no `gateway:` key; a gateway pin is a `gateway:` block with no
-  # `provider:` key. Both declare the three token keys (version 4). The anchored patterns tell pin keys apart from the
-  # template's prose comments about the other variant.
-  if [ "$variant" = direct ]; then
-    assert_line_matches "$workflow_content" \
-      "^    provider: $PH_PROVIDER\$" \
-      "$label: workflow.yml direct pin is not a provider pin"
-    assert_not_line_matches "$workflow_content" \
-      '^    gateway:' \
-      "$label: workflow.yml direct pin carries a gateway block"
-    assert_line_matches "$workflow_content" \
-      "^    context-window-tokens: $PH_CONTEXT_WINDOW_TOKENS\$" \
-      "$label: workflow.yml direct pin misses context-window-tokens"
-    assert_line_matches "$workflow_content" \
-      "^    context-threshold-tokens: $PH_CONTEXT_THRESHOLD_TOKENS\$" \
-      "$label: workflow.yml direct pin misses context-threshold-tokens"
-    assert_line_matches "$workflow_content" \
-      "^    output-cap-tokens: $PH_OUTPUT_CAP_TOKENS\$" \
-      "$label: workflow.yml direct pin misses output-cap-tokens"
-    handoff_tokens=$PH_DIRECT_HANDOFF_EFFECTIVE_TOKENS
-    assert_not_line_matches "$(cat "$dir/compose.yaml")" \
-      '^      LITELLM_PROXY_API_KEY:' \
-      "$label: compose.yaml sets LITELLM_PROXY_API_KEY on a direct pin"
-    assert_not_contains "$config_output" 'LITELLM_PROXY_API_KEY' \
-      "$label: Compose model carries LITELLM_PROXY_API_KEY on a direct pin"
-    for seat in agent validate; do
-      for key in ANTHROPIC_API_KEY OPENAI_API_KEY; do
-        assert_not_contains "$(service_block "$config_output" "$seat")" "$key" \
-          "$label: $key reached the $seat seat's environment"
-      done
+  for pin in main triage triage-advisor; do
+    profile=$(pin_profile "$pin")
+    pin_content=$(pin_block "$workflow_content" "$pin")
+    if [ -z "$profile" ]; then
+      if [ -n "$pin_content" ]; then
+        fail "$label: workflow.yml declares pin '$pin' for an undeclared Workflow"
+      fi
+      continue
+    fi
+    if [ -z "$pin_content" ]; then
+      fail "$label: workflow.yml misses pin '$pin'"
+    fi
+    # One route per pin: a direct pin is a `provider:` line with no
+    # `gateway:` key, a gateway pin a `gateway:` block with no `provider:`
+    # key. Every pin declares the three token keys (version 4) and names its
+    # key by environment variable.
+    for field in ROUTE MODEL ENDPOINT EFFORT API_KEY_ENV \
+      CONTEXT_WINDOW_TOKENS CONTEXT_THRESHOLD_TOKENS OUTPUT_CAP_TOKENS; do
+      value=$(profile_value "$profile" "$field")
+      case $field in
+        ROUTE) line="$value" ;;
+        *) line="$(printf '%s' "$field" | tr 'A-Z_' 'a-z-'): $value" ;;
+      esac
+      assert_line_matches "$pin_content" "^    $(printf '%s' "$line" | sed 's/[][{}.*^$|+?()]/\\&/g')\$" \
+        "$label: pin '$pin' misses '$line'"
     done
-    assert_contains "$(service_block "$config_output" worker)" "$PH_API_KEY_ENV" \
-      "$label: $PH_API_KEY_ENV missing from the worker's environment"
-    if [ -e "$dir/compose.coding-agent.litellm.yaml" ]; then
-      fail "$label: gateway overlay rendered for a direct pin"
+    if [ "$(profile_value "$profile" KIND)" = direct ]; then
+      assert_not_line_matches "$pin_content" '^    gateway:' \
+        "$label: direct pin '$pin' carries a gateway block"
+    else
+      assert_not_line_matches "$pin_content" '^    provider:' \
+        "$label: gateway pin '$pin' carries a provider key"
     fi
-    if grep -qE '^LITELLM_PROXY_API_KEY=' "$dir/.env"; then
-      fail "$label: .env sets LITELLM_PROXY_API_KEY on a direct pin"
-    fi
-  else
-    assert_contains "$workflow_content" \
-      "gateway: {kind: litellm, url: $PH_GATEWAY_URL}" \
-      "$label: workflow.yml gateway pin is not a litellm gateway block"
-    assert_contains "$workflow_content" "model: $PH_GATEWAY_MODEL" \
-      "$label: workflow.yml gateway pin model is not the gateway L1 alias"
-    assert_contains "$workflow_content" 'endpoint: responses' \
-      "$label: workflow.yml gateway pin endpoint is not responses"
-    assert_contains "$workflow_content" "api-key-env: $PH_GATEWAY_API_KEY_ENV" \
-      "$label: workflow.yml gateway pin api-key-env is not $PH_GATEWAY_API_KEY_ENV"
-    assert_line_matches "$workflow_content" \
-      "^    context-window-tokens: $PH_GATEWAY_CONTEXT_WINDOW_TOKENS\$" \
-      "$label: workflow.yml gateway pin misses context-window-tokens"
-    handoff_tokens=$PH_GATEWAY_HANDOFF_EFFECTIVE_TOKENS
-    assert_contains "$workflow_content" \
-      "output-cap-tokens: $PH_GATEWAY_OUTPUT_CAP_TOKENS" \
-      "$label: workflow.yml gateway pin misses output-cap-tokens"
-    assert_contains "$workflow_content" \
-      "context-threshold-tokens: $PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS" \
-      "$label: workflow.yml gateway pin misses context-threshold-tokens"
-    assert_not_line_matches "$workflow_content" \
-      '^    provider:' \
-      "$label: workflow.yml gateway pin carries a provider key"
-    # The gateway key reaches the worker's environment only (the template
-    # sets no env_file, which would copy .env into every seat). Whole-model
-    # greps cannot attribute it, so check per service. The empty fixture
-    # value keeps the check secret-free while proving the wiring is live.
-    worker_block=$(service_block "$config_output" worker)
-    agent_block=$(service_block "$config_output" agent)
-    validate_block=$(service_block "$config_output" validate)
-    assert_contains "$worker_block" 'LITELLM_PROXY_API_KEY' \
-      "$label: LITELLM_PROXY_API_KEY missing from the worker's environment"
-    assert_not_contains "$agent_block" 'LITELLM_PROXY_API_KEY' \
-      "$label: LITELLM_PROXY_API_KEY reached the agent seat's environment"
-    assert_not_contains "$validate_block" 'LITELLM_PROXY_API_KEY' \
-      "$label: LITELLM_PROXY_API_KEY reached the validate seat's environment"
-    assert_not_contains "$worker_block" 'ANTHROPIC_API_KEY' \
-      "$label: direct-pin key ANTHROPIC_API_KEY left on the gateway worker"
-    assert_not_contains "$worker_block" 'OPENAI_API_KEY' \
-      "$label: direct-pin key OPENAI_API_KEY left on the gateway worker"
-    assert_line_matches "$(cat "$dir/compose.yaml")" \
-      '^      LITELLM_PROXY_API_KEY: ' \
-      "$label: compose.yaml misses the worker LITELLM_PROXY_API_KEY line"
-    assert_contains "$(cat "$dir/.env")" \
-      'COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml' \
-      "$label: .env does not load the gateway overlay"
-    assert_contains "$(cat "$dir/.env")" \
-      "GATEWAY_NETWORK=$PH_GATEWAY_NETWORK" \
-      "$label: .env does not name the gateway network"
-    if [ ! -f "$dir/compose.coding-agent.litellm.yaml" ]; then
-      fail "$label: gateway overlay compose.coding-agent.litellm.yaml missing"
-    fi
-    # The overlay attaches the worker — and only the worker — to the
-    # external network named by GATEWAY_NETWORK.
-    assert_contains "$config_output" "$PH_GATEWAY_NETWORK" \
-      "$label: gateway network missing from the Compose model"
-    assert_contains "$config_output" 'external: true' \
-      "$label: gateway network is not external in the Compose model"
-    # Match the service's `networks:` entry, not a bare word: the fixture's
-    # build context path itself contains "gateway".
-    assert_line_matches "$worker_block" '^      gateway:' \
-      "$label: worker is not attached to the gateway network"
-    assert_not_line_matches "$agent_block" '^      gateway:' \
-      "$label: agent seat joined the gateway network"
-    assert_not_line_matches "$validate_block" '^      gateway:' \
-      "$label: validate seat joined the gateway network"
-  fi
-  assert_contains "$workflow_content" "label: $PH_SELECTION_LABEL" \
-    "$label: workflow.yml Selection Label is not $PH_SELECTION_LABEL"
-  assert_not_contains "$workflow_content" 'label: ready-for-human' \
-    "$label: workflow.yml Selection Label breaks coding-agent's rules"
-  assert_not_contains "$workflow_content" 'label: wontfix' \
-    "$label: workflow.yml Selection Label breaks coding-agent's rules"
-  assert_not_contains "$workflow_content" 'wayfinder' \
-    "$label: workflow.yml Selection Label breaks coding-agent's rules"
-  assert_contains "$workflow_content" "cost-usd: $PH_LIMIT_COST_USD" \
-    "$label: workflow.yml Attempt Ceiling cost is incomplete"
-  assert_contains "$workflow_content" "effective-tokens: $PH_LIMIT_EFFECTIVE_TOKENS" \
-    "$label: workflow.yml Attempt Ceiling effective-tokens are incomplete"
+    assert_contains "$pin_content" "prices-usd-per-mtok: {input: $(profile_value "$profile" PRICE_INPUT), output: $(profile_value "$profile" PRICE_OUTPUT), cache-read: $(profile_value "$profile" PRICE_CACHE_READ), cache-write: $(profile_value "$profile" PRICE_CACHE_WRITE)}" \
+      "$label: pin '$pin' prices are not the confirmed fixture prices"
+  done
   # Version 4 renamed the token meter: a `tokens` limit is refused as an
   # unknown key, in a block or a flow mapping.
   assert_not_line_matches "$workflow_content" '^ *tokens:' \
     "$label: workflow.yml still names the version 3 tokens meter"
   assert_not_line_matches "$workflow_content" '[{,] *tokens:' \
     "$label: workflow.yml still names the version 3 tokens meter"
-  assert_contains "$workflow_content" "effective-tokens: $handoff_tokens, tool-calls: 30" \
-    "$label: workflow.yml ai-handoff reserve is not $handoff_tokens effective-tokens"
-  assert_contains "$workflow_content" "tool-calls: $PH_LIMIT_TOOL_CALLS" \
-    "$label: workflow.yml Attempt Ceiling tool-calls are incomplete"
-  assert_contains "$workflow_content" "wall-clock-minutes: $PH_LIMIT_WALL_CLOCK_MINUTES" \
-    "$label: workflow.yml Attempt Ceiling wall-clock is incomplete"
-  assert_contains "$workflow_content" "cost-usd: $PH_PROCESS_LIMIT_COST_USD" \
-    "$label: workflow.yml process Step Allowance missing"
-  assert_contains "$workflow_content" "cost-usd: $PH_SELF_REVIEW_LIMIT_COST_USD" \
-    "$label: workflow.yml self-review Step Allowance missing"
-  # The fixture's Step Allowances fit the Work Pool on the cost meter: the
-  # Attempt Ceiling minus the 1 USD `ai-handoff` reserve leaves room for both.
-  # This mirrors the skill's fit check (a 5 USD ceiling with the default 12
-  # USD `process` allowance must never render). The cost meter is the whole
-  # check here: the rendered steps set `limits` only on `cost-usd`, so it is
-  # the only meter an allowance sets.
-  if [ "$((PH_LIMIT_COST_USD - 1))" -lt "$PH_PROCESS_LIMIT_COST_USD" ]; then
-    fail "$label: process allowance $PH_PROCESS_LIMIT_COST_USD does not fit the $((PH_LIMIT_COST_USD - 1)) USD Work Pool"
-  fi
-  if [ "$((PH_LIMIT_COST_USD - 1))" -lt "$PH_SELF_REVIEW_LIMIT_COST_USD" ]; then
-    fail "$label: self-review allowance $PH_SELF_REVIEW_LIMIT_COST_USD does not fit the $((PH_LIMIT_COST_USD - 1)) USD Work Pool"
-  fi
   assert_not_contains "$workflow_content" 'sk-' \
     "$label: workflow.yml names a secret value, not an environment variable"
-  env_content=$(cat "$dir/.env")
+  case " $CA_WORKFLOWS " in
+    *" implement "*) check_coding_agent_implement "$dir" "$label" "$workflow_content" ;;
+  esac
+  case " $CA_WORKFLOWS " in
+    *" triage "*) check_coding_agent_triage "$dir" "$label" "$workflow_content" ;;
+  esac
+  # Every Selection Label is distinct from every end label in the file
+  # (config validate refuses the overlap): `implement`'s label is never one
+  # of `triage`'s end labels.
+  for end_label in ready-for-agent needs-info ready-for-human; do
+    assert_not_line_matches "$workflow_content" "^      label: $end_label\$" \
+      "$label: workflow.yml uses end label $end_label as a Selection Label"
+  done
   assert_contains "$env_content" "TARGET_REPO=$PH_OWNER/$PH_REPO" \
     "$label: .env TARGET_REPO is not $PH_OWNER/$PH_REPO"
   assert_contains "$env_content" "CODING_AGENT_REF=$PH_CODING_AGENT_REF" \
     "$label: .env CODING_AGENT_REF is not $PH_CODING_AGENT_REF"
+  assert_not_line_matches "$env_content" '^#? *WORKFLOW=' \
+    "$label: .env selects a Workflow (each Worker's stanza does)"
   example_content=$(cat "$dir/.env.example")
   for worker_var in 'WORKER_CPUS=1.5' 'WORKER_MEM_LIMIT=3g' 'WORKER_PIDS_LIMIT=1024'; do
     assert_contains "$example_content" "# $worker_var" \
       "$label: .env.example misses commented-out $worker_var"
   done
-  for prompt in implement-policy.md handoff.md; do
-    if [ ! -f "$dir/workflow/prompts/$prompt" ]; then
-      fail "$label: workflow/prompts/$prompt missing"
-    fi
-  done
   if [ ! -f "$dir/workflow/skill-policy.json" ]; then
-    fail "$label: workflow/skill-policy.json missing (the skill copies it verbatim from the CODING_AGENT_REF checkout)"
+    fail "$label: workflow/skill-policy.json missing (copied from the reference or drafted and operator-approved)"
   fi
   # The derived deployment image: the Dockerfile is copied verbatim from
   # the asset (no placeholders), derives FROM the engine base, and runs the
-  # Agent Forge sequence — `config validate`, then `prepare-skill-bundle
-  # --mode install`, then `verify-skill-bundle` against the final roots —
-  # as the runtime user with no secrets. The verification must come after
-  # the last relevant COPY so the build fails on any mismatch.
+  # Agent Forge sequence — `config validate` once per declared Workflow,
+  # then `prepare-skill-bundle --mode install`, then `verify-skill-bundle`
+  # against the final roots — as the runtime user with no secrets. The
+  # verification must come after the last relevant COPY so the build fails
+  # on any mismatch.
   if [ ! -f "$dir/Dockerfile" ]; then
     fail "$label: Dockerfile missing (the derived deployment image)"
   fi
   dockerfile_content=$(cat "$dir/Dockerfile")
   assert_contains "$dockerfile_content" 'FROM engine' \
     "$label: Dockerfile does not derive from the engine base"
+  assert_line_matches "$dockerfile_content" '^ARG WORKFLOWS=' \
+    "$label: Dockerfile takes no WORKFLOWS build argument"
+  # shellcheck disable=SC2016 # the literal, unexpanded Dockerfile text is the point
+  assert_line_matches "$dockerfile_content" 'for workflow in \$WORKFLOWS' \
+    "$label: Dockerfile does not validate once per declared Workflow"
+  # shellcheck disable=SC2016 # the literal, unexpanded Dockerfile text is the point
+  assert_contains "$dockerfile_content" '--workflow "$workflow"' \
+    "$label: Dockerfile does not pass each Workflow id to config validate"
   validate_line=$(printf '%s\n' "$dockerfile_content" | grep -nF 'agent config validate' | cut -d: -f1 | head -n 1)
   prepare_line=$(printf '%s\n' "$dockerfile_content" | grep -nF 'agent prepare-skill-bundle' | cut -d: -f1 | head -n 1)
   verify_line=$(printf '%s\n' "$dockerfile_content" | grep -nF 'agent verify-skill-bundle' | cut -d: -f1 | head -n 1)
@@ -830,6 +1095,150 @@ check_coding_agent_instance() {
   assert_contains "$dockerfile_content" '--mode install' \
     "$label: Dockerfile does not prepare with --mode install"
   assert_no_forge_profile "$dir" "$label"
+}
+
+# check_coding_agent_implement DIR LABEL WORKFLOW_CONTENT -- the `implement`
+# Workflow of a rendered workflow.yml: a lawful Selection Label, the full
+# Attempt Ceiling, the `ai-handoff` reserve for the `main` pin, Step
+# Allowances that fit the Work Pool, and its two prompt files.
+check_coding_agent_implement() {
+  block=$(workflow_block "$3" implement)
+  assert_contains "$block" 'model: main' \
+    "$2: implement does not pin main"
+  assert_contains "$block" "label: $PH_SELECTION_LABEL" \
+    "$2: implement Selection Label is not $PH_SELECTION_LABEL"
+  for forbidden in 'label: ready-for-human' 'label: wontfix' 'wayfinder' 'label: needs-triage'; do
+    assert_not_contains "$block" "$forbidden" \
+      "$2: implement Selection Label breaks the rules ($forbidden)"
+  done
+  assert_contains "$block" 'skill: implement' \
+    "$2: implement process step names no skill"
+  assert_contains "$block" 'skill: code-review' \
+    "$2: implement self-review step names no skill"
+  assert_contains "$block" "cost-usd: $PH_LIMIT_COST_USD" \
+    "$2: implement Attempt Ceiling cost is incomplete"
+  assert_contains "$block" "effective-tokens: $PH_LIMIT_EFFECTIVE_TOKENS" \
+    "$2: implement Attempt Ceiling effective-tokens are incomplete"
+  assert_contains "$block" "tool-calls: $PH_LIMIT_TOOL_CALLS" \
+    "$2: implement Attempt Ceiling tool-calls are incomplete"
+  assert_contains "$block" "wall-clock-minutes: $PH_LIMIT_WALL_CLOCK_MINUTES" \
+    "$2: implement Attempt Ceiling wall-clock is incomplete"
+  assert_contains "$block" "effective-tokens: $(ca_handoff_tokens), tool-calls: 30" \
+    "$2: implement ai-handoff reserve is not $(ca_handoff_tokens) effective-tokens"
+  assert_contains "$block" "cost-usd: $PH_PROCESS_LIMIT_COST_USD" \
+    "$2: implement process Step Allowance missing"
+  assert_contains "$block" "cost-usd: $PH_SELF_REVIEW_LIMIT_COST_USD" \
+    "$2: implement self-review Step Allowance missing"
+  # The fixture's Step Allowances fit the Work Pool on the cost meter: the
+  # Attempt Ceiling minus the 1 USD `ai-handoff` reserve leaves room for both.
+  # This mirrors the skill's fit check (a 5 USD ceiling with the default 12
+  # USD `process` allowance must never render). The cost meter is the whole
+  # check here: the rendered steps set `limits` only on `cost-usd`, so it is
+  # the only meter an allowance sets.
+  if [ "$((PH_LIMIT_COST_USD - 1))" -lt "$PH_PROCESS_LIMIT_COST_USD" ]; then
+    fail "$2: process allowance $PH_PROCESS_LIMIT_COST_USD does not fit the $((PH_LIMIT_COST_USD - 1)) USD Work Pool"
+  fi
+  if [ "$((PH_LIMIT_COST_USD - 1))" -lt "$PH_SELF_REVIEW_LIMIT_COST_USD" ]; then
+    fail "$2: self-review allowance $PH_SELF_REVIEW_LIMIT_COST_USD does not fit the $((PH_LIMIT_COST_USD - 1)) USD Work Pool"
+  fi
+  for prompt in implement-policy.md handoff.md; do
+    if [ ! -f "$1/workflow/prompts/$prompt" ]; then
+      fail "$2: workflow/prompts/$prompt missing"
+    fi
+  done
+}
+
+# check_coding_agent_triage DIR LABEL WORKFLOW_CONTENT -- the `triage`
+# Workflow of a rendered workflow.yml (issue #122): `needs-triage` in with
+# the three exclusions, the triage pin and the Advisor pin, the three
+# results with their end labels, `input.comments` as an input, the
+# `advisor` tool group with its mapping, on every result path a
+# `post-comment` of that result's document, then `commit-and-push`, then a
+# draft `open-pull-request` with the same document, and no
+# `check-readiness` or `run-validation`. Its two policy prompts are the
+# Forge assets, byte for byte, with no placeholder left.
+check_coding_agent_triage() {
+  block=$(workflow_block "$3" triage)
+  assert_contains "$block" 'model: triage' \
+    "$2: triage does not pin the triage model"
+  assert_contains "$block" 'label: needs-triage' \
+    "$2: triage Selection Label is not needs-triage"
+  assert_contains "$block" 'exclude: [needs-info, ready-for-human, wontfix]' \
+    "$2: triage exclusions are not [needs-info, ready-for-human, wontfix]"
+  for outcome in 'completed: {labels: [ready-for-agent]}' \
+    'blocked: {labels: [needs-info]}' \
+    'unfinished: {labels: [ready-for-human]}' \
+    'failed: {labels: [ready-for-human]}' \
+    'internal-failure: {labels: [ready-for-human]}'; do
+    assert_contains "$block" "$outcome" \
+      "$2: triage end labels miss '$outcome'"
+  done
+  for line in '- skill: triage' '- prompt: prompts/triage-policy.md' \
+    'tools: [workspace-read, workspace-write, shell, advisor]' \
+    'advisor: {model: triage-advisor, prompt: prompts/triage-advisor.md}' \
+    '- input.comments' 'brief: document' 'notes: document' \
+    'recommendation: document'; do
+    assert_contains "$block" "$line" \
+      "$2: triage step misses '$line'"
+  done
+  assert_not_contains "$block" 'optional: input.comments' \
+    "$2: triage declares input.comments optional (it is a required input)"
+  for forbidden in check-readiness run-validation 'draft: false' requires:; do
+    assert_not_contains "$block" "$forbidden" \
+      "$2: triage carries '$forbidden'"
+  done
+  for limit in "cost-usd: $PH_TRIAGE_LIMIT_COST_USD" \
+    "effective-tokens: $PH_TRIAGE_LIMIT_EFFECTIVE_TOKENS" \
+    "tool-calls: $PH_TRIAGE_LIMIT_TOOL_CALLS" \
+    "wall-clock-minutes: $PH_TRIAGE_LIMIT_WALL_CLOCK_MINUTES"; do
+    assert_contains "$block" "$limit" \
+      "$2: triage Attempt Ceiling misses '$limit'"
+  done
+  # result:document:end on each of the three paths. Each path posts the
+  # document, pushes, and opens a draft pull request with the same
+  # document; `no-changes` and both pull-request results end the Attempt
+  # with the result's outcome.
+  for path in ready:brief:completed blocked:notes:blocked \
+    human:recommendation:unfinished; do
+    result=${path%%:*}
+    rest=${path#*:}
+    field=${rest%%:*}
+    end=${rest#*:}
+    assert_contains "$block" "$result: post-$field" \
+      "$2: triage result $result does not route to post-$field"
+    step=$(printf '%s\n' "$block" | awk -v id="post-$field" '
+      $0 == "      " id ":" { show = 1; next }
+      /^      [a-z0-9-]+:$/ { show = 0 }
+      show { print }')
+    for line in 'operation: post-comment' "body: triage.$result.$field" \
+      "posted: push-$field"; do
+      assert_contains "$step" "$line" "$2: triage post-$field misses '$line'"
+    done
+    step=$(printf '%s\n' "$block" | awk -v id="push-$field" '
+      $0 == "      " id ":" { show = 1; next }
+      /^      [a-z0-9-]+:$/ { show = 0 }
+      show { print }')
+    for line in 'operation: commit-and-push' "pushed: open-$field-pr" \
+      "no-changes: {end: $end}"; do
+      assert_contains "$step" "$line" "$2: triage push-$field misses '$line'"
+    done
+    step=$(printf '%s\n' "$block" | awk -v id="open-$field-pr" '
+      $0 == "      " id ":" { show = 1; next }
+      /^      [a-z0-9-]+:$/ { show = 0 }
+      show { print }')
+    for line in 'operation: open-pull-request' "body: triage.$result.$field" \
+      'draft: true' "opened: {end: $end}" "already-open: {end: $end}"; do
+      assert_contains "$step" "$line" "$2: triage open-$field-pr misses '$line'"
+    done
+  done
+  for prompt in triage-policy.md triage-advisor.md; do
+    if [ ! -f "$1/workflow/prompts/$prompt" ]; then
+      fail "$2: workflow/prompts/$prompt missing"
+    fi
+    if ! cmp -s "$ASSETS_DIR/prompts/$prompt" "$1/workflow/prompts/$prompt"; then
+      fail "$2: workflow/prompts/$prompt is not the Forge asset byte for byte"
+    fi
+  done
 }
 
 # assert_no_agent_operator FILE MESSAGE -- Forge never bakes discovery labels
@@ -860,7 +1269,7 @@ assert_no_forge_profile() {
     fail "$2: .env sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)"
   fi
   if grep -qF 'WORKER_ID' "$1/compose.yaml"; then
-    fail "$2: compose.yaml sets WORKER_ID (this backend runs one Worker, never a Pool)"
+    fail "$2: compose.yaml sets WORKER_ID (this backend renders no Worker id and no Claim marker)"
   fi
 }
 
@@ -894,186 +1303,238 @@ EOF
 
 # render_coding_agent_compose SRC DST VARIANT -- the coding-agent compose.yaml:
 # owner, repo and short name to substitute (the engine ref lives in .env as
-# CODING_AGENT_REF, read through ${...} interpolation like AGENT_SRC_REF).
-# VARIANT is `direct` (a provider pin: the worker keeps the ANTHROPIC/OPENAI
-# keys, the gateway key is dropped) or `gateway` (a LiteLLM gateway pin: the
-# worker keeps only LITELLM_PROXY_API_KEY).
+# CODING_AGENT_REF, read through ${...} interpolation like AGENT_SRC_REF),
+# the declared Workflows as the WORKFLOWS build argument, and each Worker's
+# own `--workflow`. A single Worker drops the `worker-2` stanza and its
+# `state_2` volume; a two-Worker Pool keeps both and drops the markers. Each
+# Worker then keeps exactly the model keys of its own pins (its Workflow's
+# pin, plus the Advisor pin for `triage`).
 render_coding_agent_compose() {
-  if [ "$3" != direct ] && [ "$3" != gateway ]; then
-    fail "render_coding_agent_compose: unknown VARIANT '$3' (want direct or gateway)"
-  fi
+  ca_variant "$3"
   tmp="$2.tmp"
   sed -e "s|{{OWNER}}|$PH_OWNER|g" \
     -e "s|{{REPO}}|$PH_REPO|g" \
-    -e "s|{{SHORT_NAME}}|$PH_CODING_AGENT_SHORT_NAME|g" "$1" >"$tmp"
-  if [ "$3" = direct ]; then
-    sed -e '/^      # gateway-model-key-begin$/,/^      # gateway-model-key-end$/d' \
-      -e '/^      # direct-model-key-begin$/d' \
-      -e '/^      # direct-model-key-end$/d' "$tmp" >"$2"
+    -e "s|{{SHORT_NAME}}|$PH_CODING_AGENT_SHORT_NAME|g" \
+    -e "s|{{WORKFLOWS}}|$CA_WORKFLOWS|g" \
+    -e "s|{{WORKER_WORKFLOW}}|$CA_W1|g" \
+    -e "s|{{WORKER_2_WORKFLOW}}|$CA_W2|g" "$1" >"$tmp"
+  if [ -z "$CA_W2" ]; then
+    sed -e '/^ *# worker-2-begin$/,/^ *# worker-2-end$/d' "$tmp" >"$tmp.2"
   else
-    sed -e '/^      # direct-model-key-begin$/,/^      # direct-model-key-end$/d' \
-      -e '/^      # gateway-model-key-begin$/d' \
-      -e '/^      # gateway-model-key-end$/d' \
-      -e 's|^      # LITELLM_PROXY_API_KEY:|      LITELLM_PROXY_API_KEY:|' \
-      "$tmp" >"$2"
+    sed -e '/^ *# worker-2-begin$/d' -e '/^ *# worker-2-end$/d' "$tmp" >"$tmp.2"
   fi
-  rm -f "$tmp"
+  keys1=$(workflow_keys "$CA_W1")
+  keys2=''
+  if [ -n "$CA_W2" ]; then
+    keys2=$(workflow_keys "$CA_W2")
+  fi
+  awk -v keep1="$keys1" -v keep2="$keys2" '
+    /^  [A-Za-z0-9_.-]+:$/ { svc = substr($0, 3, length($0) - 3) }
+    /^      (ANTHROPIC_API_KEY|OPENAI_API_KEY|LITELLM_PROXY_API_KEY):/ {
+      key = $1
+      sub(/:$/, "", key)
+      keep = (svc == "worker") ? keep1 : keep2
+      if (index(" " keep " ", " " key " ") == 0) next
+    }
+    { print }' "$tmp.2" >"$2"
+  rm -f "$tmp" "$tmp.2"
 }
 
 # render_coding_agent_env SRC DST VARIANT -- .env/.env.example from the
-# coding-agent env example template. VARIANT is `direct` or `gateway`, as
-# above: only the model key the Workflow Configuration names stays active,
-# the others stay commented out, and the gateway variant additionally enables
-# the gateway network overlay (COMPOSE_FILE plus GATEWAY_NETWORK).
+# coding-agent env example template: exactly the model keys some declared
+# pin names stay active, the others stay commented out, and a variant with
+# a gateway pin additionally enables the gateway network overlay
+# (COMPOSE_FILE plus GATEWAY_NETWORK).
 render_coding_agent_env() {
-  if [ "$3" != direct ] && [ "$3" != gateway ]; then
-    fail "render_coding_agent_env: unknown VARIANT '$3' (want direct or gateway)"
-  fi
+  ca_variant "$3"
   tmp="$2.tmp"
   sed -e "s|{{OWNER}}|$PH_OWNER|g" \
     -e "s|{{REPO}}|$PH_REPO|g" \
     -e "s|{{CODING_AGENT_REF}}|$PH_CODING_AGENT_REF|g" \
+    -e 's|^ANTHROPIC_API_KEY=$|# ANTHROPIC_API_KEY=|' \
     "$1" >"$tmp"
-  if [ "$3" = direct ]; then
-    cp "$tmp" "$2"
-  else
-    sed -e 's|^ANTHROPIC_API_KEY=$|# ANTHROPIC_API_KEY=|' \
-      -e 's|^# LITELLM_PROXY_API_KEY=$|LITELLM_PROXY_API_KEY=|' \
-      -e 's|^# COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml$|COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml|' \
+  for key in $(ca_all_keys); do
+    sed -e "s|^# $key=\$|$key=|" "$tmp" >"$tmp.2"
+    mv "$tmp.2" "$tmp"
+  done
+  gateway=0
+  for worker_entry in $(ca_workers); do
+    if workflow_uses_gateway "${worker_entry#*:}"; then
+      gateway=1
+    fi
+  done
+  if [ "$gateway" = 1 ]; then
+    sed -e 's|^# COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml$|COMPOSE_FILE=compose.yaml:compose.coding-agent.litellm.yaml|' \
       -e "s|^# GATEWAY_NETWORK=$|GATEWAY_NETWORK=$PH_GATEWAY_NETWORK|" \
       "$tmp" >"$2"
+  else
+    cp "$tmp" "$2"
   fi
   rm -f "$tmp"
 }
 
-# render_coding_agent_overlay SRC DST -- compose.coding-agent.litellm.yaml
-# (gateway variant only): the template carries no placeholders, so copy it
-# verbatim, mirroring render_compose_litellm for the simple-coding-agent
-# overlay.
+# render_coding_agent_overlay SRC DST VARIANT -- compose.coding-agent.litellm.yaml
+# (variants with a gateway pin only): the template carries no placeholders;
+# it keeps exactly the Workers that use a gateway pin, mirroring
+# render_compose_litellm for the simple-coding-agent overlay.
 render_coding_agent_overlay() {
-  cp "$1" "$2"
+  ca_variant "$3"
+  cp "$1" "$2.tmp"
+  if [ -z "$CA_W2" ] || ! workflow_uses_gateway "$CA_W2"; then
+    sed -e '/^ *# worker-2-begin$/,/^ *# worker-2-end$/d' "$2.tmp" >"$2.tmp.2"
+    mv "$2.tmp.2" "$2.tmp"
+  fi
+  if ! workflow_uses_gateway "$CA_W1"; then
+    sed -e '/^  worker:$/,/^      - gateway$/d' "$2.tmp" >"$2.tmp.2"
+    mv "$2.tmp.2" "$2.tmp"
+  fi
+  sed -e '/^ *# worker-2-begin$/d' -e '/^ *# worker-2-end$/d' "$2.tmp" >"$2"
+  rm -f "$2.tmp"
 }
 
 # render_coding_agent_workflow SRC DST VARIANT -- workflow/workflow.yml from
-# the coding-agent Workflow Configuration template. VARIANT is `direct` (a
-# provider pin: substitute the direct placeholders and drop the gateway-pin
-# block) or `gateway` (a LiteLLM gateway pin: drop the direct-pin block,
-# uncomment the gateway-pin block and substitute its placeholders).
+# the coding-agent Workflow Configuration template: substitute every
+# rendered pin's placeholders from its fixture profile (its route line
+# included), the Skill Bundle membership and both Workflows' limits, then
+# delete the blocks of the Workflows the variant does not declare and every
+# block marker.
 render_coding_agent_workflow() {
-  if [ "$3" != direct ] && [ "$3" != gateway ]; then
-    fail "render_coding_agent_workflow: unknown VARIANT '$3' (want direct or gateway)"
-  fi
-  if [ "$3" = direct ]; then
-    handoff=$PH_DIRECT_HANDOFF_EFFECTIVE_TOKENS
-  else
-    handoff=$PH_GATEWAY_HANDOFF_EFFECTIVE_TOKENS
-  fi
-  tmp="$2.tmp"
-  sed -e "s|{{OWNER}}|$PH_OWNER|g" \
-    -e "s|{{REPO}}|$PH_REPO|g" \
-    -e "s|{{BASE_BRANCH}}|$PH_BASE_BRANCH|g" \
-    -e "s|{{SELECTION_LABEL}}|$PH_SELECTION_LABEL|g" \
-    -e "s|{{PROVIDER}}|$PH_PROVIDER|g" \
-    -e "s|{{MODEL}}|$PH_MODEL|g" \
-    -e "s|{{ENDPOINT}}|$PH_ENDPOINT|g" \
-    -e "s|{{API_KEY_ENV}}|$PH_API_KEY_ENV|g" \
-    -e "s|{{PRICE_INPUT}}|$PH_PRICE_INPUT|g" \
-    -e "s|{{PRICE_OUTPUT}}|$PH_PRICE_OUTPUT|g" \
-    -e "s|{{PRICE_CACHE_READ}}|$PH_PRICE_CACHE_READ|g" \
-    -e "s|{{PRICE_CACHE_WRITE}}|$PH_PRICE_CACHE_WRITE|g" \
-    -e "s|{{CONTEXT_WINDOW_TOKENS}}|$PH_CONTEXT_WINDOW_TOKENS|g" \
-    -e "s|{{CONTEXT_THRESHOLD_TOKENS}}|$PH_CONTEXT_THRESHOLD_TOKENS|g" \
-    -e "s|{{OUTPUT_CAP_TOKENS}}|$PH_OUTPUT_CAP_TOKENS|g" \
-    -e "s|{{GATEWAY_URL}}|$PH_GATEWAY_URL|g" \
-    -e "s|{{GATEWAY_MODEL}}|$PH_GATEWAY_MODEL|g" \
-    -e "s|{{GATEWAY_EFFORT}}|$PH_GATEWAY_EFFORT|g" \
-    -e "s|{{GATEWAY_API_KEY_ENV}}|$PH_GATEWAY_API_KEY_ENV|g" \
-    -e "s|{{GATEWAY_CONTEXT_WINDOW_TOKENS}}|$PH_GATEWAY_CONTEXT_WINDOW_TOKENS|g" \
-    -e "s|{{GATEWAY_OUTPUT_CAP_TOKENS}}|$PH_GATEWAY_OUTPUT_CAP_TOKENS|g" \
-    -e "s|{{GATEWAY_CONTEXT_THRESHOLD_TOKENS}}|$PH_GATEWAY_CONTEXT_THRESHOLD_TOKENS|g" \
-    -e "s|{{GATEWAY_PRICE_INPUT}}|$PH_GATEWAY_PRICE_INPUT|g" \
-    -e "s|{{GATEWAY_PRICE_OUTPUT}}|$PH_GATEWAY_PRICE_OUTPUT|g" \
-    -e "s|{{GATEWAY_PRICE_CACHE_READ}}|$PH_GATEWAY_PRICE_CACHE_READ|g" \
-    -e "s|{{GATEWAY_PRICE_CACHE_WRITE}}|$PH_GATEWAY_PRICE_CACHE_WRITE|g" \
-    -e "s|{{LIMIT_COST_USD}}|$PH_LIMIT_COST_USD|g" \
-    -e "s|{{LIMIT_EFFECTIVE_TOKENS}}|$PH_LIMIT_EFFECTIVE_TOKENS|g" \
-    -e "s|{{HANDOFF_EFFECTIVE_TOKENS}}|$handoff|g" \
-    -e "s|{{LIMIT_TOOL_CALLS}}|$PH_LIMIT_TOOL_CALLS|g" \
-    -e "s|{{LIMIT_WALL_CLOCK_MINUTES}}|$PH_LIMIT_WALL_CLOCK_MINUTES|g" \
-    -e "s|{{PROCESS_LIMIT_COST_USD}}|$PH_PROCESS_LIMIT_COST_USD|g" \
-    -e "s|{{SELF_REVIEW_LIMIT_COST_USD}}|$PH_SELF_REVIEW_LIMIT_COST_USD|g" \
-    "$1" >"$tmp"
-  if [ "$3" = direct ]; then
-    sed -e '/^    # gateway-pin-begin$/,/^    # gateway-pin-end$/d' \
-      "$tmp" >"$2"
-  else
-    sed -e '/^    # direct-pin-begin$/,/^    # direct-pin-end$/d' \
-      -e '/^    # gateway-pin-begin$/,/^    # gateway-pin-end$/s/^    # /    /' \
-      -e '/^    gateway-pin-begin$/d' \
-      -e '/^    gateway-pin-end$/d' \
-      "$tmp" >"$2"
-  fi
-  rm -f "$tmp"
+  ca_variant "$3"
+  script="$2.sed"
+  {
+    printf 's|{{OWNER}}|%s|g\n' "$PH_OWNER"
+    printf 's|{{REPO}}|%s|g\n' "$PH_REPO"
+    printf 's|{{BASE_BRANCH}}|%s|g\n' "$PH_BASE_BRANCH"
+    printf 's|{{SELECTION_LABEL}}|%s|g\n' "$PH_SELECTION_LABEL"
+    printf 's|{{LIMIT_COST_USD}}|%s|g\n' "$PH_LIMIT_COST_USD"
+    printf 's|{{LIMIT_EFFECTIVE_TOKENS}}|%s|g\n' "$PH_LIMIT_EFFECTIVE_TOKENS"
+    printf 's|{{LIMIT_TOOL_CALLS}}|%s|g\n' "$PH_LIMIT_TOOL_CALLS"
+    printf 's|{{LIMIT_WALL_CLOCK_MINUTES}}|%s|g\n' "$PH_LIMIT_WALL_CLOCK_MINUTES"
+    printf 's|{{PROCESS_LIMIT_COST_USD}}|%s|g\n' "$PH_PROCESS_LIMIT_COST_USD"
+    printf 's|{{SELF_REVIEW_LIMIT_COST_USD}}|%s|g\n' "$PH_SELF_REVIEW_LIMIT_COST_USD"
+    printf 's|{{TRIAGE_LIMIT_COST_USD}}|%s|g\n' "$PH_TRIAGE_LIMIT_COST_USD"
+    printf 's|{{TRIAGE_LIMIT_EFFECTIVE_TOKENS}}|%s|g\n' "$PH_TRIAGE_LIMIT_EFFECTIVE_TOKENS"
+    printf 's|{{TRIAGE_LIMIT_TOOL_CALLS}}|%s|g\n' "$PH_TRIAGE_LIMIT_TOOL_CALLS"
+    printf 's|{{TRIAGE_LIMIT_WALL_CLOCK_MINUTES}}|%s|g\n' "$PH_TRIAGE_LIMIT_WALL_CLOCK_MINUTES"
+    include=''
+    for workflow in $CA_WORKFLOWS; do
+      case $workflow in
+        implement) include="$include, implement, tdd, code-review, codebase-design" ;;
+        triage) include="$include, triage, grilling, domain-modeling" ;;
+      esac
+    done
+    printf 's|{{SKILL_INCLUDE}}|%s|g\n' "${include#, }"
+    if [ -n "$CA_MAIN" ]; then
+      printf 's|{{HANDOFF_EFFECTIVE_TOKENS}}|%s|g\n' "$(ca_handoff_tokens)"
+    fi
+    for pin in main triage triage-advisor; do
+      profile=$(pin_profile "$pin")
+      [ -n "$profile" ] || continue
+      case $pin in
+        main) prefix=MAIN ;;
+        triage) prefix=TRIAGE ;;
+        triage-advisor) prefix=ADVISOR ;;
+      esac
+      for field in ROUTE MODEL ENDPOINT EFFORT API_KEY_ENV \
+        CONTEXT_WINDOW_TOKENS CONTEXT_THRESHOLD_TOKENS OUTPUT_CAP_TOKENS \
+        PRICE_INPUT PRICE_OUTPUT PRICE_CACHE_READ PRICE_CACHE_WRITE; do
+        printf 's|{{%s_%s}}|%s|g\n' "$prefix" "$field" \
+          "$(profile_value "$profile" "$field")"
+      done
+    done
+    for workflow in implement triage; do
+      case " $CA_WORKFLOWS " in
+        *" $workflow "*) ;;
+        *) printf '/^ *# workflow-%s-begin$/,/^ *# workflow-%s-end$/d\n' \
+          "$workflow" "$workflow" ;;
+      esac
+    done
+    printf '/^ *# workflow-implement-begin$/d\n'
+    printf '/^ *# workflow-implement-end$/d\n'
+    printf '/^ *# workflow-triage-begin$/d\n'
+    printf '/^ *# workflow-triage-end$/d\n'
+  } >"$script"
+  sed -f "$script" "$1" >"$2"
+  rm -f "$script"
 }
 
 # render_coding_agent_dockerfile SRC DST -- the coding-agent instance
 # Dockerfile: copied verbatim from the asset (it carries no placeholders;
-# every path and flag is fixed by the adapter).
+# every path and flag is fixed by the adapter, and the declared Workflows
+# arrive as the WORKFLOWS build argument from compose.yaml).
 render_coding_agent_dockerfile() {
   cp "$1" "$2" ||
     fail 'coding-agent: cannot copy the instance Dockerfile'
 }
 
-# render_coding_agent_prompts DIR -- stub prompt files with the names the
-# rendered workflow.yml references. The skill copies the real contents from
-# the CODING_AGENT_REF checkout (step 3b); the check only proves the layout
-# the validation stats exists.
+# render_coding_agent_prompts DIR VARIANT -- the prompt files the rendered
+# workflow.yml references. `implement`'s come from the CODING_AGENT_REF
+# checkout (step 3b of the skill), so the check writes stubs with their
+# names: it only proves the layout the validation stats exists. `triage`'s
+# are Forge assets the skill copies verbatim, so the check copies the real
+# files.
 render_coding_agent_prompts() {
+  ca_variant "$2"
   mkdir -p "$1/workflow/prompts" ||
     fail 'coding-agent: cannot create workflow/prompts directory'
-  for prompt in implement-policy.md handoff.md; do
-    printf '# render-check: prompt stub for %s.\n' "$prompt" \
-      >"$1/workflow/prompts/$prompt"
+  for workflow in $CA_WORKFLOWS; do
+    case $workflow in
+      implement)
+        for prompt in implement-policy.md handoff.md; do
+          printf '# render-check: prompt stub for %s.\n' "$prompt" \
+            >"$1/workflow/prompts/$prompt"
+        done
+        ;;
+      triage)
+        for prompt in triage-policy.md triage-advisor.md; do
+          cp "$ASSETS_DIR/prompts/$prompt" "$1/workflow/prompts/$prompt" ||
+            fail "coding-agent: cannot copy prompts/$prompt"
+        done
+        ;;
+    esac
   done
 }
 
 # render_coding_agent_policy DIR -- stub skill-policy.json. The skill copies
-# the real reviewed policy verbatim from the CODING_AGENT_REF checkout's
-# docker/deployment/ (step 3b of the skill); Forge keeps no copy of its own,
-# so the check only proves the layout the Worker expects exists. The stub is
-# written after the config-validate run below: validation passes with the
-# policy missing, and a stub must never stand in for the reviewed copy.
+# the reviewed reference policy verbatim from the CODING_AGENT_REF
+# checkout's docker/deployment/ for the reference bundle, and otherwise
+# drafts one with `agent draft-skill-policy` and writes only
+# operator-approved decisions; Forge keeps no copy of its own, so the check
+# only proves the layout the Worker expects exists. The stub is written
+# after the config-validate run below: validation passes with the policy
+# missing, and a stub must never stand in for the reviewed copy.
 render_coding_agent_policy() {
   printf '{}\n' >"$1/workflow/skill-policy.json" ||
     fail 'coding-agent: cannot write workflow/skill-policy.json stub'
 }
 
-# check_coding_agent_validate DIR LABEL -- secret-free `agent config validate`
-# against the rendered coding-agent workflow, with no environment set. Runs
-# only when the `agent` CLI is on PATH: CI has no coding-agent installed, so
-# there the check records the skip and passes (see the header). Install the
-# CLI at the pinned ref or build the image and re-run locally to cover it.
+# check_coding_agent_validate DIR LABEL VARIANT -- secret-free `agent config
+# validate` against the rendered coding-agent workflow, once per declared
+# Workflow, with no environment set. Runs only when the `agent` CLI is on
+# PATH: CI has no coding-agent installed, so there the check records the
+# skip and passes (see the header). Install the CLI at the pinned ref or
+# build the image and re-run locally to cover it.
 check_coding_agent_validate() {
+  ca_variant "$3"
   if ! agent_bin=$(command -v agent); then
     info "$2: SKIP secret-free config validate (no agent CLI on PATH; CI has no coding-agent installed)"
     return 0
   fi
-  info "checking $2 secret-free config validate"
-  (cd "$1" && env -i "$agent_bin" config validate \
-    --config ./workflow/workflow.yml --workflow implement) ||
-    fail "$2: secret-free 'agent config validate' failed"
+  for workflow in $CA_WORKFLOWS; do
+    info "checking $2 secret-free config validate --workflow $workflow"
+    (cd "$1" && env -i "$agent_bin" config validate \
+      --config ./workflow/workflow.yml --workflow "$workflow") ||
+      fail "$2: secret-free 'agent config validate --workflow $workflow' failed"
+  done
 }
 
 # render_coding_agent DIR VARIANT -- one scratch coding-agent instance:
-# compose.yaml (plus the gateway network overlay on the gateway variant),
-# Dockerfile, .env/.env.example, workflow/workflow.yml, stub prompt files
-# and the policy stub (written after the secret-free validate run, which
-# needs no policy). VARIANT is `direct` or `gateway` (see
-# render_coding_agent_workflow).
+# compose.yaml (plus the gateway network overlay when a Worker uses a
+# gateway pin), Dockerfile, .env/.env.example, workflow/workflow.yml, the
+# prompt files and the policy stub (written after the secret-free validate
+# run, which needs no policy). VARIANT is one of ca_variant's.
 render_coding_agent() {
-  if [ "$2" != direct ] && [ "$2" != gateway ]; then
-    fail "render_coding_agent: unknown VARIANT '$2' (want direct or gateway)"
-  fi
+  ca_variant "$2"
   render_coding_agent_compose \
     "$ASSETS_DIR/compose.coding-agent.yaml.template" "$1/compose.yaml" "$2"
   render_coding_agent_dockerfile \
@@ -1081,17 +1542,17 @@ render_coding_agent() {
   render_coding_agent_env "$ASSETS_DIR/env.coding-agent.example.template" \
     "$1/.env.example" "$2"
   cp "$1/.env.example" "$1/.env"
-  if [ "$2" = gateway ]; then
+  if grep -qE '^COMPOSE_FILE=' "$1/.env"; then
     render_coding_agent_overlay \
       "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template" \
-      "$1/compose.coding-agent.litellm.yaml"
+      "$1/compose.coding-agent.litellm.yaml" "$2"
   fi
   mkdir -p "$1/workflow" ||
     fail 'coding-agent: cannot create workflow directory'
   render_coding_agent_workflow \
     "$ASSETS_DIR/workflow.coding-agent.yml.template" "$1/workflow/workflow.yml" "$2"
-  render_coding_agent_prompts "$1"
-  check_coding_agent_validate "$1" "coding-agent $2"
+  render_coding_agent_prompts "$1" "$2"
+  check_coding_agent_validate "$1" "coding-agent $2" "$2"
   render_coding_agent_policy "$1"
 }
 
@@ -1110,8 +1571,11 @@ main() {
   contract_pool_dir="$WORK_ROOT/contract-pool"
   coding_agent_dir="$WORK_ROOT/agent-$PH_CODING_AGENT_SHORT_NAME"
   coding_agent_gateway_dir="$WORK_ROOT/agent-gateway-$PH_CODING_AGENT_SHORT_NAME"
+  coding_agent_triage_dir="$WORK_ROOT/agent-triage-$PH_CODING_AGENT_SHORT_NAME"
+  coding_agent_pool_dir="$WORK_ROOT/agent-pool-$PH_CODING_AGENT_SHORT_NAME"
   mkdir -p "$plain_dir" "$litellm_dir" "$contract_dir" \
-    "$contract_pool_dir" "$coding_agent_dir" "$coding_agent_gateway_dir" ||
+    "$contract_pool_dir" "$coding_agent_dir" "$coding_agent_gateway_dir" \
+    "$coding_agent_triage_dir" "$coding_agent_pool_dir" ||
     fail 'cannot create scratch instance directories'
 
   info 'rendering plain instance'
@@ -1126,6 +1590,10 @@ main() {
   render_coding_agent "$coding_agent_dir" direct
   info 'rendering coding-agent gateway instance'
   render_coding_agent "$coding_agent_gateway_dir" gateway
+  info 'rendering coding-agent triage instance'
+  render_coding_agent "$coding_agent_triage_dir" triage
+  info 'rendering coding-agent two-Workflow Pool instance'
+  render_coding_agent "$coding_agent_pool_dir" pool
 
   # Forge never bakes discovery labels into the image; the legacy role image
   # label belongs to simple-coding-agent's own discovery and stays.
@@ -1137,12 +1605,13 @@ main() {
   fi
 
   # The coding-agent template fixes no project name (the directory is the
-  # project) and renders no Pool: an <n> worker must never appear in it.
+  # project) and renders at most one Worker per Workflow: `worker` and the
+  # marked `worker-2`, never an open-ended <n> worker.
   if grep -qE '^name:' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
     fail 'compose.coding-agent.yaml.template sets a project name (the directory is the project)'
   fi
   if grep -qF '<n>' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
-    fail 'compose.coding-agent.yaml.template renders a Pool (this backend runs one Worker)'
+    fail 'compose.coding-agent.yaml.template renders an open-ended <n> worker (at most one Worker per Workflow)'
   fi
   if grep -qF 'PROFILE_PATH' "$ASSETS_DIR/env.coding-agent.example.template"; then
     fail 'env.coding-agent.example.template sets PROFILE_PATH (no Forge-owned profile on this backend)'
@@ -1158,21 +1627,23 @@ main() {
       fail "env.coding-agent.example.template sets $budget_pattern (budgets stay in the Workflow Configuration)"
     fi
   done
-  # The coding-agent gateway overlay attaches only the worker (the one-off
+  # The coding-agent gateway overlay attaches only Worker services (the one-off
   # `agent` seat is not a Managed Instance) and fixes no project name; the
   # gateway network name always comes from .env, never hard-coded.
   if grep -qE '^name:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
     fail 'compose.coding-agent.litellm.yaml.template sets a project name (the directory is the project)'
   fi
   if grep -qE '^  agent:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
-    fail 'compose.coding-agent.litellm.yaml.template attaches the agent seat (only the worker joins the gateway network)'
+    fail 'compose.coding-agent.litellm.yaml.template attaches the agent seat (only Worker services join the gateway network)'
   fi
   if grep -qE '^  validate:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
-    fail 'compose.coding-agent.litellm.yaml.template attaches the validate seat (only the worker joins the gateway network)'
+    fail 'compose.coding-agent.litellm.yaml.template attaches the validate seat (only Worker services join the gateway network)'
   fi
-  if ! grep -qE '^  worker:' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
-    fail 'compose.coding-agent.litellm.yaml.template misses the worker service'
-  fi
+  for service in worker worker-2; do
+    if ! grep -qE "^  $service:" "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
+      fail "compose.coding-agent.litellm.yaml.template misses the $service service"
+    fi
+  done
   if ! grep -qF 'GATEWAY_NETWORK' "$ASSETS_DIR/compose.coding-agent.litellm.yaml.template"; then
     fail 'compose.coding-agent.litellm.yaml.template misses GATEWAY_NETWORK (the gateway network comes from .env)'
   fi
@@ -1221,6 +1692,14 @@ main() {
   assert_no_agent_operator "$ASSETS_DIR/Dockerfile.coding-agent.template" \
     'Dockerfile.coding-agent template mentions agent-operator'
 
+  # The triage policy prompts are rendered verbatim: no placeholder may
+  # survive in the assets themselves.
+  for prompt in triage-policy.md triage-advisor.md; do
+    if grep -qF '{{' "$ASSETS_DIR/prompts/$prompt"; then
+      fail "prompts/$prompt carries a {{PLACEHOLDER}} (it is copied verbatim)"
+    fi
+  done
+
   # The workflow template carries no hard-coded Work Pool numbers: the old
   # comment quoted the pool for the example ceiling only.
   for stale in '19 USD' '3,850,000' '570 tool calls' '55 minutes'; do
@@ -1235,6 +1714,8 @@ main() {
   assert_no_placeholders "$contract_pool_dir" 'contract-pool'
   assert_no_placeholders "$coding_agent_dir" 'coding-agent'
   assert_no_placeholders "$coding_agent_gateway_dir" 'coding-agent gateway'
+  assert_no_placeholders "$coding_agent_triage_dir" 'coding-agent triage'
+  assert_no_placeholders "$coding_agent_pool_dir" 'coding-agent pool'
   assert_no_secrets "$plain_dir/.env" 'plain'
   assert_no_secrets "$plain_dir/.env.example" 'plain'
   assert_no_secrets "$litellm_dir/.env" 'litellm'
@@ -1247,6 +1728,10 @@ main() {
   assert_no_secrets "$coding_agent_dir/.env.example" 'coding-agent'
   assert_no_secrets "$coding_agent_gateway_dir/.env" 'coding-agent gateway'
   assert_no_secrets "$coding_agent_gateway_dir/.env.example" 'coding-agent gateway'
+  assert_no_secrets "$coding_agent_triage_dir/.env" 'coding-agent triage'
+  assert_no_secrets "$coding_agent_triage_dir/.env.example" 'coding-agent triage'
+  assert_no_secrets "$coding_agent_pool_dir/.env" 'coding-agent pool'
+  assert_no_secrets "$coding_agent_pool_dir/.env.example" 'coding-agent pool'
   assert_no_agent_operator "$plain_dir/Dockerfile" \
     'plain: Dockerfile mentions agent-operator'
   assert_no_agent_operator "$contract_dir/Dockerfile" \
@@ -1261,6 +1746,8 @@ main() {
     "$PH_SHORT_NAME" "$PH_SHORT_NAME-2"
   check_coding_agent_instance "$coding_agent_dir" 'coding-agent' direct
   check_coding_agent_instance "$coding_agent_gateway_dir" 'coding-agent gateway' gateway
+  check_coding_agent_instance "$coding_agent_triage_dir" 'coding-agent triage' triage
+  check_coding_agent_instance "$coding_agent_pool_dir" 'coding-agent pool' pool
 
   info 'PASS: all variants render to a valid Compose model with no secrets'
 }

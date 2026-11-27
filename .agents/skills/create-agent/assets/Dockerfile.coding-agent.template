@@ -38,8 +38,10 @@ FROM engine
 # Replace the reference instruction package with the instance's. The prompts
 # directory is removed wholesale first (not merged over): the reference
 # package ships `review-policy.md` beside `implement-policy.md`, while the
-# instance ships `implement-policy.md` and `handoff.md` — a merging COPY
-# would leave the reference-only file behind in the image.
+# instance ships the prompts of its own Workflows (`implement-policy.md` and
+# `handoff.md` for `implement`, `triage-policy.md` and `triage-advisor.md`
+# for `triage`) — a merging COPY would leave the reference-only file behind
+# in the image.
 USER root
 RUN rm -rf /etc/coding-agent/workflow.yml \
     /etc/coding-agent/prompts \
@@ -54,7 +56,11 @@ RUN install -d -o agent -g agent /opt/coding-agent/skill-bundle
 # Build-time preparation, never at startup: the image tag is the Skill
 # Bundle's version. Runs as the runtime `agent` user with no Worker
 # GitHub/model secrets set, exactly like upstream's `deployment` stage.
-# `config validate` is static and offline; `mode install` resolves and
+# `config validate` is static and offline, and runs once per Workflow id in
+# WORKFLOWS (the ids workflow.yml declares, passed from compose.yaml's
+# `build.args`): the whole file is checked every time, and an id the file
+# does not declare fails the build here, not at a Worker's startup;
+# `mode install` resolves and
 # installs the declared subset and publishes requirements.json,
 # manifest.json and validation.json as one completed generation; the final
 # `verify-skill-bundle` re-checks the final roots after the last relevant
@@ -62,9 +68,14 @@ RUN install -d -o agent -g agent /opt/coding-agent/skill-bundle
 # No COPY of the baked roots or the bundle directory may follow this step.
 # A byte-edited copy, or a declared member the install cannot provide,
 # fails the build here.
+ARG WORKFLOWS=implement
 USER agent
-RUN agent config validate --config /etc/coding-agent/workflow.yml \
-    && agent prepare-skill-bundle --mode install \
+RUN set -e; \
+    for workflow in $WORKFLOWS; do \
+      agent config validate --config /etc/coding-agent/workflow.yml \
+        --workflow "$workflow"; \
+    done; \
+    agent prepare-skill-bundle --mode install \
       --config /etc/coding-agent/workflow.yml \
       --policy /etc/coding-agent/skill-policy.json \
       --bundle-dir /opt/coding-agent/skill-bundle \

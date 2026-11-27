@@ -92,7 +92,8 @@ An Instance is one Compose project with one or more Workers. Each Worker's
 Compose service is resolved from the Instance's discovery labels, not
 assumed: service `agent` (first Worker, volume `agent_data`) and
 `agent-2..N` (further Workers, volumes `data_2..N`) for simple-coding-agent,
-service `worker` for a coding-agent Managed Instance. Each Worker has its
+services `worker` and `worker-2` (one per Workflow, volumes `state` and
+`state_2`) for coding-agent. Each Worker has its
 own `/data` volume, its own container, and its own GitHub identity, told
 apart by its worker id `<short-name>-<n>` (the instance directory without
 the `agent-` prefix, e.g. `cli-2` for `agent-cli` worker 2).
@@ -203,7 +204,7 @@ the **compose project = directory name**. From that:
 | Container (first Worker) | `<dir>-agent-1` | `agent-jsonhub-cli-agent-1` |
 | Container (Worker N>=2) | `<dir>-agent-<n>-1` | `agent-jsonhub-cli-agent-2-1` |
 | Compose service (first Worker) | `agent` (simple-coding-agent; `worker` for a coding-agent Managed Instance) | `docker compose -f agent-instances/agent-jsonhub-cli/compose.yaml exec agent …` |
-| Compose service (Worker N>=2, simple-coding-agent; coding-agent has no Worker 2+) | `agent-<n>` | `docker compose -f agent-instances/agent-jsonhub-cli/compose.yaml exec agent-2 …` |
+| Compose service (Worker N>=2; coding-agent: `worker-2` only) | `agent-<n>` | `docker compose -f agent-instances/agent-jsonhub-cli/compose.yaml exec agent-2 …` |
 | Worker id (Worker N>=2) | `<short-name>-<n>` | `jsonhub-cli-2` |
 
 Always match against the `agent-instances/agent-*/` directories on disk, never against
