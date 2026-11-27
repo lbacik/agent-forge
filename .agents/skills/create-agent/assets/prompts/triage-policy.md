@@ -46,14 +46,22 @@ with its answer.
 
 - The Advisor stands in for the maintainer. It reads the issue, its
   comments and the repository, and it remembers nothing between calls.
-- Ask one whole round per call, as the grilling skill describes: number the
-  questions and give your recommended answer to each. Quote the earlier
-  rounds' questions and answers in every later call.
+- Ask in rounds, as the grilling skill describes: number the questions
+  and give your recommended answer to each. Quote the earlier rounds'
+  questions and answers in every later call.
+- Each Advisor call has a code-owned bound of 8 model rounds, so keep a
+  call small enough to be answered within it: at most three questions per
+  call (a larger frontier goes in several calls), each with the evidence
+  quoted in the question itself (file:line and the relevant lines), so the
+  Advisor decides instead of searching.
 - Grill whenever the brief would otherwise leave a decision open: an
   interface, a module boundary, a rule that two places implement
   differently, edge-case behaviour, what each caller keeps. Find the facts
   yourself in the checkout first; put only decisions to the Advisor, each
   with the options, the evidence and your recommended answer.
+- An Advisor call that ends without an answer (`no-report`, e.g.
+  `round-limit` or `silent`) is not "cannot decide". Ask again with fewer
+  questions and more quoted evidence, down to one question per call.
 - Keep asking rounds until the grilling skill's frontier is empty: every
   branch of the design tree decided, nothing silently assumed. Then write
   the brief. Record decisions as the domain-modeling skill describes
