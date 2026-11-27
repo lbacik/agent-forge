@@ -342,7 +342,11 @@ and pins are filled in) takes issues labelled `needs-triage`, runs the
   (`ready-for-human`; also used for a `wontfix`, already-implemented or
   split recommendation, because coding-agent cannot close, split or
   categorise an issue). `failed` and `internal-failure` also get
-  `ready-for-human`.
+  `ready-for-human`, and so do the runtime-only `interrupted` and `drift`
+  (both Workflows declare them: without end labels the runtime removes
+  `needs-triage` and applies nothing, so the issue leaves every queue
+  unlabelled). `withdrawn` stays unlabelled: a human removed the label or
+  closed the issue.
 - Every result path runs `post-comment` of that result's document, then
   `commit-and-push`, then, on `pushed`, `open-pull-request` with `draft:
   true` and the same document as the body (a draft gets the non-closing

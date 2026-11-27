@@ -160,6 +160,14 @@ workflows:
       unfinished: {labels: [ready-for-human]}
       failed: {labels: [ready-for-human]}
       internal-failure: {labels: [ready-for-human]}
+      # Runtime-only endings take end labels too. Without them the runtime
+      # removes the Selection Label and applies nothing, so the issue drops
+      # out of every queue unlabelled. `interrupted` (SIGTERM, process loss
+      # settled by startup recovery, pin violation) and `drift` (the input
+      # or its base moved under the Attempt) need a human; `withdrawn` is a
+      # human's own removal of the label or close, so it gets none.
+      interrupted: {labels: [ready-for-human]}
+      drift: {labels: [ready-for-human]}
 
     start: preflight
     defaults:
@@ -333,6 +341,11 @@ workflows:
       unfinished: {labels: [ready-for-human]}
       failed: {labels: [ready-for-human]}
       internal-failure: {labels: [ready-for-human]}
+      # Runtime-only endings: `interrupted` and `drift` need a human;
+      # `withdrawn` (a human removed the label or closed the issue) gets
+      # none. Without these the issue drops out of every queue unlabelled.
+      interrupted: {labels: [ready-for-human]}
+      drift: {labels: [ready-for-human]}
 
     start: triage
     defaults:
