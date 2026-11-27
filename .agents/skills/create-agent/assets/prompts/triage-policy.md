@@ -128,6 +128,18 @@ document as an issue comment and as the body of a draft pull request, word
 for word, so never write a closing keyword with an issue reference
 (`Closes #N`, `Fixes #N`, `Resolves #N`) in it.
 
+When `input.comments` already holds a triage document (a comment that
+starts with the disclaimer line), the line after your disclaimer reads:
+
+```
+**Supersedes:** every earlier triage document on this issue. This document is the only contract.
+```
+
+Whoever reads the issue next, an implementing agent included, gets every
+comment in order, and nothing else marks the older documents as out of
+date. Make your document self-contained: restate what you keep from an
+earlier document instead of pointing to it.
+
 ## Files you write
 
 The grilling and domain-modeling skills may update `CONTEXT.md` or add ADRs,
