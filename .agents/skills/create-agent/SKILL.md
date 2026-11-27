@@ -40,10 +40,11 @@ backend chosen in step 0:
 |---|---|
 | `Dockerfile` | simple-coding-agent only: `assets/Dockerfile.template` + a stack block |
 | `compose.yaml` | `assets/compose.yaml.template` (simple-coding-agent, one service per Worker) or `assets/compose.coding-agent.yaml.template` (coding-agent: build-only `engine` base, labelled `worker` and optional `worker-2`, unlabelled `agent` and `validate` seats on the derived image) |
-| `Dockerfile` | coding-agent only: `assets/Dockerfile.coding-agent.template`, copied verbatim (the derived deployment image) |
+| `Dockerfile` | coding-agent only: `assets/Dockerfile.coding-agent.template` (the derived deployment image), its `instance-profile-*` range kept only for an Instance-supplied Project Profile |
 | `simple-coding-agent-profile.yml` | simple-coding-agent only: written from the target repo's CI |
 | `workflow/workflow.yml` | coding-agent only: `assets/workflow.coding-agent.yml.template`, with the selected Workflows (`implement`, `triage` or both) |
 | `workflow/prompts/*.md` | coding-agent only: `implement`'s copied from the `CODING_AGENT_REF` checkout, `triage`'s copied verbatim from `assets/prompts/` |
+| `workflow/project-profile.yml` | coding-agent only, and only when the operator chooses an Instance-supplied Project Profile: a schema-2 profile written from the target repo's CI, named by `target.profile` |
 | `workflow/skill-policy.json` | coding-agent only: the reference bundle's copied verbatim from the `CODING_AGENT_REF` checkout's `docker/deployment/`; any other bundle's drafted with `agent draft-skill-policy` and completed with operator-approved decisions |
 | `.env.example` | `assets/env.example.template` (simple-coding-agent) or `assets/env.coding-agent.example.template` (coding-agent) |
 | `.env` | same as `.env.example` + real secrets (ignored with all of `agent-instances/`) |
@@ -165,8 +166,10 @@ can determine by reading the repository.
   | `coding-agent` | `rex` |
 - `coding-agent`: continue with the coding-agent adapter in
   `references/coding-agent.md` — a derived-image Dockerfile, no stack block,
-  no Forge-owned profile, the Workflows the operator selects (`implement`,
-  `triage` or both) and at most one Worker per Workflow. Steps 1–2 and 6
+  the Workflows the operator selects (`implement`, `triage` or both), at
+  most one Worker per Workflow, and a Project Profile only for Workflows
+  that validate: the repository's own, or one the Instance supplies through
+  `target.profile`. Steps 1–2 and 6
   stay shared; steps 3, 5, 7 and 8 branch per backend as marked below.
 - `simple-coding-agent`: continue below; the flow is otherwise unchanged.
 
@@ -414,8 +417,9 @@ since shallow clones can't fetch an arbitrary commit by SHA):
 ### 3b. Get the agent's source (`CODING_AGENT_REF`, coding-agent)
 
 This step is the `coding-agent` deployment adapter (step 0 chose it; the
-rest of steps 3–4 above do not apply — there is no stack block and no
-Forge profile). Generated agents build from
+rest of steps 3–4 above do not apply — there is no stack block, and a
+Project Profile is handled by the target checkout checks below). Generated
+agents build from
 `https://github.com/lbacik/coding-agent.git#<CODING_AGENT_REF>`, not a local
 checkout. `CODING_AGENT_REF` defaults to `main`; if the user names a tag (or
 branch/commit) to pin instead, use that value verbatim — it goes straight
@@ -479,31 +483,49 @@ Shallow-clone that same ref into the scratchpad and read, at that commit:
   `assets/prompts/triage-advisor.md` verbatim from this skill. They carry
   no placeholders. `config validate` stats every named prompt file, so a
   named file must exist next to `workflow.yml`.
-- With `triage` selected, whether the ref is `v0.5.0` or newer
+- With `triage` selected, whether the ref is `v0.5.1` or newer
   (`references/coding-agent.md`, "Workflow selection"): refuse `triage` at
-  an older ref and say why.
+  an older ref and say why (before `v0.5.1` every Attempt needs a Project
+  Profile, so `triage` fails on repositories without one).
+- `src/coding_agent/workflow/schema.py` — `Workflow.needs_validation_contract`,
+  the rule for which Workflows need a Validation Contract and so a Project
+  Profile (an `agent` step with the `tests` tool group, or a
+  `check-readiness` or `run-validation` operation step), and the
+  `target.profile` section of `docs/ops/workflow-configuration.md`
+  ("Instance-supplied Project Profile").
 - `src/coding_agent/agentctl.py` (the contract CLI) — whether it documents
   a private-IPC socket directory needing the worker's operator tmpfs, and
   which Operator Capabilities the Worker advertises. If the ref documents no
   such directory, drop that tmpfs entry from the rendered `compose.yaml`.
 
-Then run the target checkout checks in `references/coding-agent.md` ("Target
-checkout checks") against the step-2 checkout at its default branch (the
-revision that becomes `target.base_branch` in step 5), before
-writing anything: confirm `docs/agents/project-profile.yml` exists there,
-and that its declared toolchain is inside the Supported Toolchain Matrix at
-the chosen `CODING_AGENT_REF`. A missing Project Profile is reported (searched
-location and revision) and scaffolding continues only on the operator's
-explicit decision (AskUserQuestion). An out-of-matrix runtime requirement is
-reported as an Unsupported Environment naming the offending runtime and the
-supported range, and the skill asks before scaffolding anyway. When the
-profile is present and the toolchain matches, proceed without prompting.
-Never write a Forge-owned profile on this path.
+Then run the target checkout checks in `references/coding-agent.md`
+("Project Profile and target checkout checks") against the step-2 checkout
+at its default branch (the revision that becomes `target.base_branch` in
+step 5), before writing anything. They run only when at least one selected
+Workflow needs a Validation Contract (with today's template, `implement`);
+for a `triage`-only Instance they are skipped, nothing about a profile is
+asked, and the report says why. When they run, the report names the
+Workflow(s) that need a profile, and the skill confirms
+`docs/agents/project-profile.yml` exists there. When it is missing, the
+skill reports the searched location and revision and stops to ask
+(AskUserQuestion): (a) the operator commits the profile to the Target
+Repository and the check runs again (recommended), or (b) the skill writes
+an Instance-supplied `workflow/project-profile.yml` that mirrors the
+target's gating CI checks, named by `target.profile`. Scaffolding a
+Workflow that needs a profile without one is never offered. The profile the
+Instance will use — the repository's, or the Instance-supplied one — must
+declare a toolchain inside the Supported Toolchain Matrix at the chosen
+`CODING_AGENT_REF`; a mismatch is reported as an Unsupported Environment
+naming the offending runtime and the supported range. When the profile is
+present and the toolchain matches, proceed without prompting. Write an
+Instance profile only through option (b).
 
 ### 4. Analyze the target stack (simple-coding-agent)
 
-For `coding-agent`, skip this step: there is no stack block and no profile,
-and the target checkout checks already ran in step 3b.
+For `coding-agent`, skip this step: there is no stack block, and the target
+checkout checks already ran in step 3b (an Instance-supplied profile for
+option (b) reads the target's CI the same way, see
+`references/coding-agent.md`, "Writing an Instance-supplied profile").
 
 Read, in roughly this order:
 
@@ -540,15 +562,18 @@ For `coding-agent`, generate the deployment from
 `assets/compose.coding-agent.yaml.template` (the derived image is tagged
 `coding-agent:<short-name>`, the `engine` base
 `coding-agent-engine:<short-name>`; the engine's git URL reads the ref from
-`CODING_AGENT_REF` in `.env` — nothing to fill in here), `Dockerfile` copied
-verbatim from `assets/Dockerfile.coding-agent.template`,
-`workflow/workflow.yml`
+`CODING_AGENT_REF` in `.env` — nothing to fill in here), `Dockerfile` from
+`assets/Dockerfile.coding-agent.template` (no placeholders; its
+`instance-profile-*` range kept only for an Instance-supplied Project
+Profile), `workflow/workflow.yml`
 from `assets/workflow.coding-agent.yml.template` with the prompt files
 (step 3b: `implement`'s from the ref checkout, `triage`'s from
 `assets/prompts/`) and `workflow/skill-policy.json` (the reference
 bundle's copied verbatim from the ref checkout's `docker/deployment/`, any
 other bundle's drafted and completed as "Drafting the skill policy" in
-`references/coding-agent.md` says), and
+`references/coding-agent.md` says), `workflow/project-profile.yml` and
+the `target.profile` range only for option (b) of the target checkout
+checks, and
 `.env`/`.env.example` from
 `assets/env.coding-agent.example.template` with the real secrets —
 plus `compose.coding-agent.litellm.yaml` from
@@ -959,7 +984,7 @@ the Workers it attaches and `GATEWAY_NETWORK` when a service-name `url` was
 pinned), the Skill Bundle and its policy (copied verbatim for the reference
 bundle, or drafted: how many placeholders, each decision the operator
 approved, and whether any remain), the derived deployment image
-(`Dockerfile` copied verbatim from the asset, built FROM the `deployment`
+(`Dockerfile` rendered from the asset, built FROM the `deployment`
 target at the ref, baking and verifying the instance's `workflow/`
 package), the Workers (`worker` and, in a two-Worker Pool, `worker-2`, each
 with its Workflow, Managed Instance name and model keys), and for two
@@ -968,14 +993,17 @@ changing its meaning: "The two Workers are two Managed Instances on one
 Target Repository. coding-agent does not advertise the `pool` capability,
 so this departs from the operator contract's rule that an adapter refuses
 a second instance for the same repository on the host; they run different
-Workflows and take from different Queues (docs/adr/0005)." Also report that
-no
-Forge-owned profile was generated (the repository-owned
-`docs/agents/project-profile.yml` stays the only profile), the rule that any
-edit under `workflow/` needs `docker compose build` before the container is
-recreated, and the target checkout check result (Project Profile found at its
-searched location and revision, toolchain matrix match at the chosen ref, or
-the reported miss / Unsupported Environment with the operator's decision). In
+Workflows and take from different Queues (docs/adr/0005)." Also report
+where the Project Profile comes from: the repository-owned
+`docs/agents/project-profile.yml`, an Instance-supplied
+`workflow/project-profile.yml` named by `target.profile` (option (b)), or
+none because no declared Workflow needs a Validation Contract (the profile
+checks were skipped). Report the rule that any edit under `workflow/` needs
+`docker compose build` before the container is recreated, and the target
+checkout check result: the Workflow(s) that need a profile, the Project
+Profile found at its searched location and revision (or the reported miss
+and the option the operator chose), and the toolchain matrix match at the
+chosen ref (or the Unsupported Environment with the operator's decision). In
 both cases:
 the target Docker context and the Fleet check result — which Fleet was listed
 and that no other instance holds the repository, or which one does (a

@@ -11,8 +11,13 @@
 # reviewed skill-policy.json) over the reference package at /etc/coding-agent,
 # prepares the Skill Bundle from it, and verifies the final roots — so the
 # build fails on any mismatch, the same refusal `agent run` would raise at
-# startup. This file is copied verbatim into the instance (no placeholders):
-# every path and flag below is fixed by the adapter.
+# startup. Every path and flag below is fixed by the adapter, and the file
+# carries no placeholders. It is copied into the instance with one rendered
+# range: the lines from `# instance-profile-begin` through
+# `# instance-profile-end` are kept only when the instance supplies its own
+# Project Profile (`workflow/project-profile.yml`, named by `target.profile`
+# in workflow.yml; coding-agent ADR 0030) and deleted otherwise. The marker
+# lines themselves are deleted either way.
 #
 # Re-preparing over the inherited bundle is deliberately done from empty
 # directories: upstream's own `deployment` stage only ever prepares onto a
@@ -41,16 +46,26 @@ FROM engine
 # instance ships the prompts of its own Workflows (`implement-policy.md` and
 # `handoff.md` for `implement`, `triage-policy.md` and `triage-advisor.md`
 # for `triage`) — a merging COPY would leave the reference-only file behind
-# in the image.
+# in the image. A Project Profile the base image might carry at
+# /etc/coding-agent/project-profile.yml is removed too, so the image never
+# keeps a stale one: the only profile there is the instance's own.
 USER root
 RUN rm -rf /etc/coding-agent/workflow.yml \
     /etc/coding-agent/prompts \
     /etc/coding-agent/skill-policy.json \
+    /etc/coding-agent/project-profile.yml \
     /opt/coding-agent/skill-bundle \
     /home/agent/.agents
 COPY workflow/workflow.yml /etc/coding-agent/workflow.yml
 COPY workflow/prompts /etc/coding-agent/prompts
 COPY workflow/skill-policy.json /etc/coding-agent/skill-policy.json
+# instance-profile-begin
+# The Instance-supplied Project Profile, beside workflow.yml, where its
+# `target.profile: project-profile.yml` resolves it. `config validate` below
+# parses it and checks its toolchain against the image's Supported Toolchain
+# Matrix, so a broken or out-of-matrix profile fails this build.
+COPY workflow/project-profile.yml /etc/coding-agent/project-profile.yml
+# instance-profile-end
 RUN install -d -o agent -g agent /opt/coding-agent/skill-bundle
 
 # Build-time preparation, never at startup: the image tag is the Skill

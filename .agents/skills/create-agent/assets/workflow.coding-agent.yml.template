@@ -19,8 +19,11 @@
 # deletes the others: every range from `# workflow-implement-begin` through
 # `# workflow-implement-end` (two ranges: the `main` pin and the `implement`
 # Workflow), and likewise every `workflow-triage-*` range (the `triage` and
-# `triage-advisor` pins and the `triage` Workflow). The marker lines
-# themselves are deleted too. No placeholder may remain.
+# `triage-advisor` pins and the `triage` Workflow). The range from
+# `# instance-profile-begin` through `# instance-profile-end` (the
+# `target.profile` line) is kept only when the instance supplies its own
+# Project Profile (`workflow/project-profile.yml`) and deleted otherwise.
+# The marker lines themselves are deleted too. No placeholder may remain.
 #
 # `version: 2` and `version: 3` files are refused with a migration
 # diagnostic (coding-agent 0.4.7 made `version: 4` the only accepted
@@ -49,6 +52,16 @@ target:
   repository: {{OWNER}}/{{REPO}}
   base-branch: {{BASE_BRANCH}}
   token-env: GITHUB_TOKEN
+  # instance-profile-begin
+  # Instance-supplied Project Profile (coding-agent ADR 0030): the file
+  # beside workflow.yml replaces the Target Repository's
+  # docs/agents/project-profile.yml for every Workflow in this file. It is
+  # the Validation Contract of every Workflow that needs one; without this
+  # line such a Workflow reads the repository's profile at Worker startup.
+  # `config validate` parses it and checks its toolchain against the image's
+  # Supported Toolchain Matrix.
+  profile: project-profile.yml
+  # instance-profile-end
 
 models:
   # Pinned Models, referenced by id. Every pin has exactly one route: its
@@ -309,16 +322,19 @@ workflows:
 
   # ---------------------------------------------------------------------------
   # Triage: `needs-triage` in, a triaged issue out (requires CODING_AGENT_REF
-  # v0.5.0 or newer: `input.comments` and the `advisor` tool group).
+  # v0.5.1 or newer: `input.comments` and the `advisor` tool group arrived in
+  # v0.5.0, and from v0.5.1 a Workflow that never validates runs without a
+  # Project Profile).
   # One agent step runs the `triage` skill with the policy prompt that
   # answers the skill's interactive parts; the maintainer's questions go to
   # the Advisor. Every result posts its document, commits and pushes what
   # the skill wrote (`CONTEXT.md`, ADRs, `.out-of-scope/`), and opens a
   # draft pull request with the same document, so the runtime writes the
-  # non-closing `Part of #N`. No `check-readiness`, no `run-validation`:
-  # triage changes no code. Re-triage happens when a human swaps
-  # `needs-info` back to `needs-triage`; `input.comments` then carries the
-  # earlier notes and the reporter's answers.
+  # non-closing `Part of #N`. No `check-readiness`, no `run-validation` and
+  # no `tests` tool group: triage changes no code, so it needs no Validation
+  # Contract and runs without a Project Profile. Re-triage happens when a
+  # human swaps `needs-info` back to `needs-triage`; `input.comments` then
+  # carries the earlier notes and the reporter's answers.
   # ---------------------------------------------------------------------------
   triage:
     model: triage                       # the Attempt's Pinned Model
