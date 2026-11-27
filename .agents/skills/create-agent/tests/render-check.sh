@@ -9,8 +9,9 @@
 # no secrets into scratch directories, then runs `docker compose config` on
 # the plain, the LiteLLM, the contract-labels, the contract-labels Pool, the
 # coding-agent direct-pin, the coding-agent gateway, the coding-agent
-# `triage` and the coding-agent two-Workflow Pool variants. Exits non-zero
-# when a rendered result is not a valid Compose model.
+# `triage`, the coding-agent two-Workflow Pool and the coding-agent
+# Instance-supplied profile variants. Exits non-zero when a rendered result
+# is not a valid Compose model.
 #
 # The contract-labels variants render an AGENT_SRC_REF that speaks the
 # operator contract (`main` or a release tag v0.9.0 or newer — see the
@@ -19,8 +20,9 @@
 # variants render an older ref (before v0.9.0) without labels and must stay
 # byte-identical in the Compose model to today's layout.
 # The coding-agent direct-pin variant always carries its four discovery
-# labels on the worker only and carries no Forge-owned profile (see
-# references/coding-agent.md), and its rendered `Dockerfile` derives the
+# labels on the worker only and carries no Project Profile of its own (it
+# reads the repository's; see references/coding-agent.md), and its
+# rendered `Dockerfile` derives the
 # deployment image FROM the `engine` base (the `deployment` target at
 # CODING_AGENT_REF) and runs `config validate`, `prepare-skill-bundle
 # --mode install` and `verify-skill-bundle` in that order, with the
@@ -39,7 +41,15 @@
 # the gateway), and the two-Workflow Pool variant declares `implement` and
 # `triage` with one Worker each (`worker` on a direct pin, `worker-2` through
 # the gateway, each with its own state volume, Managed Instance name and
-# model keys). See check_coding_agent_instance for the shape each must have.
+# model keys). The Instance-supplied profile variant declares `implement`
+# on a direct pin with option (b) of the skill's target checkout checks:
+# its workflow.yml carries `target.profile: project-profile.yml`, its
+# `workflow/project-profile.yml` is a schema-2 Project Profile, and its
+# Dockerfile bakes that file before `config validate`. Only that variant
+# keeps the `instance-profile-*` ranges; every variant removes a stale
+# /etc/coding-agent/project-profile.yml from the base image and drops the
+# range markers. See check_coding_agent_instance and
+# check_coding_agent_profile for the shape each must have.
 #
 # Every coding-agent variant additionally runs secret-free `agent config
 # validate` against the rendered `workflow/workflow.yml`, once per declared
@@ -51,8 +61,8 @@
 # has no coding-agent installed — neither an `agent` CLI at a pinned ref
 # nor a built image — so there the script records the skip and passes;
 # install the CLI at the pinned ref (for example `uv tool
-# install git+https://github.com/lbacik/coding-agent@v0.5.0`; the `triage`
-# variants need v0.5.0 or newer) or build the
+# install git+https://github.com/lbacik/coding-agent@v0.5.1`; the `triage`
+# variants and the profile notice checks need v0.5.1 or newer) or build the
 # image and re-run this script locally to cover validation too.
 #
 # Usage (from anywhere in this repository):
@@ -434,11 +444,18 @@ check_contract_instance() {
 #   pool     both Workflows: `worker` runs `implement` on a direct pin,
 #            `worker-2` runs `triage` through the gateway, so the two
 #            Workers use different routes and different model keys
+#   profile  `implement` alone on a direct pin, one Worker, with an
+#            Instance-supplied Project Profile (CA_PROFILE=1: option (b) of
+#            the skill's target checkout checks)
+#
+# CA_PROFILE is 1 only for the `profile` variant; every other variant reads
+# the Target Repository's profile (or, `triage` alone, needs none).
 ca_variant() {
   CA_MAIN=''
   CA_TRIAGE=''
   CA_ADVISOR=''
   CA_W2=''
+  CA_PROFILE=0
   case "$1" in
     direct)
       CA_WORKFLOWS=implement
@@ -464,7 +481,13 @@ ca_variant() {
       CA_TRIAGE=muse
       CA_ADVISOR=opus
       ;;
-    *) fail "ca_variant: unknown VARIANT '$1' (want direct, gateway, triage or pool)" ;;
+    profile)
+      CA_WORKFLOWS=implement
+      CA_W1=implement
+      CA_MAIN=sonnet
+      CA_PROFILE=1
+      ;;
+    *) fail "ca_variant: unknown VARIANT '$1' (want direct, gateway, triage, pool or profile)" ;;
   esac
 }
 
@@ -587,6 +610,15 @@ ca_handoff_tokens() {
 # workflow_block CONTENT WORKFLOW -- the lines of one Workflow of a rendered
 # workflow.yml: from its `  <id>:` line under `workflows:` to the next
 # Workflow.
+# workflow_needs_contract WORKFLOW_CONTENT ID -- whether Workflow ID needs a
+# Validation Contract, by coding-agent's rule (`Workflow.needs_validation_contract`,
+# ADR 0037): an operation step `check-readiness` or `run-validation`, or an
+# agent step whose tools include `tests`.
+workflow_needs_contract() {
+  workflow_block "$1" "$2" |
+    grep -Eq '^ *operation: (check-readiness|run-validation)( |$)|^ *tools: \[.*(\[|, )tests(,|\])'
+}
+
 workflow_block() {
   printf '%s\n' "$1" | awk -v wf="$2" '
     /^workflows:$/ { in_wf = 1; next }
@@ -1094,7 +1126,66 @@ check_coding_agent_instance() {
   fi
   assert_contains "$dockerfile_content" '--mode install' \
     "$label: Dockerfile does not prepare with --mode install"
-  assert_no_forge_profile "$dir" "$label"
+  check_coding_agent_profile "$dir" "$label" "$workflow_content" "$dockerfile_content"
+  assert_no_simple_agent_profile "$dir" "$label"
+}
+
+# check_coding_agent_profile DIR LABEL WORKFLOW_CONTENT DOCKERFILE_CONTENT --
+# the Project Profile shape (call after ca_variant). Every variant: no
+# `instance-profile-*` marker survives in workflow.yml or the Dockerfile,
+# and the Dockerfile's `rm -rf` (before the first COPY) removes a stale
+# /etc/coding-agent/project-profile.yml from the base image. An
+# Instance-supplied profile (CA_PROFILE=1) renders `target.profile:
+# project-profile.yml` in the target block, writes
+# workflow/project-profile.yml as a schema-2 profile, and COPYs it to
+# /etc/coding-agent/project-profile.yml before `config validate`; any other
+# variant renders none of the three.
+check_coding_agent_profile() {
+  dir=$1
+  label=$2
+  workflow_content=$3
+  dockerfile_content=$4
+  assert_not_line_matches "$workflow_content" '^ *# instance-profile-(begin|end)$' \
+    "$label: workflow.yml still carries an instance-profile marker"
+  assert_not_line_matches "$dockerfile_content" '^ *# instance-profile-(begin|end)$' \
+    "$label: Dockerfile still carries an instance-profile marker"
+  stale_rm="    /etc/coding-agent/project-profile.yml \\"
+  stale_rm_line=$(printf '%s\n' "$dockerfile_content" | grep -nxF -- "$stale_rm" | cut -d: -f1 | head -n 1)
+  rm_line=$(printf '%s\n' "$dockerfile_content" | grep -n '^RUN rm -rf ' | cut -d: -f1 | head -n 1)
+  first_copy_line=$(printf '%s\n' "$dockerfile_content" | grep -n '^COPY ' | cut -d: -f1 | head -n 1)
+  if [ -z "$stale_rm_line" ] || [ -z "$rm_line" ] || [ -z "$first_copy_line" ] ||
+    [ "$stale_rm_line" -le "$rm_line" ] || [ "$stale_rm_line" -ge "$first_copy_line" ]; then
+    fail "$label: Dockerfile does not remove a stale /etc/coding-agent/project-profile.yml before the first COPY"
+  fi
+  profile_copy='COPY workflow/project-profile.yml /etc/coding-agent/project-profile.yml'
+  if [ "$CA_PROFILE" = 1 ]; then
+    target_block=$(printf '%s\n' "$workflow_content" | awk '
+      /^target:$/ { in_block = 1; next }
+      in_block && /^[^ #]/ { exit }
+      in_block { print }')
+    assert_line_matches "$target_block" '^  profile: project-profile\.yml$' \
+      "$label: workflow.yml target block carries no 'profile: project-profile.yml'"
+    if [ ! -f "$dir/workflow/project-profile.yml" ]; then
+      fail "$label: workflow/project-profile.yml missing (named by target.profile)"
+    fi
+    assert_line_matches "$(cat "$dir/workflow/project-profile.yml")" '^schema: 2$' \
+      "$label: workflow/project-profile.yml is not a schema-2 Project Profile"
+    copy_line=$(printf '%s\n' "$dockerfile_content" | grep -nxF -- "$profile_copy" | cut -d: -f1 | head -n 1)
+    validate_line=$(printf '%s\n' "$dockerfile_content" | grep -nF 'agent config validate' | cut -d: -f1 | head -n 1)
+    if [ -z "$copy_line" ]; then
+      fail "$label: Dockerfile does not bake workflow/project-profile.yml"
+    elif [ -z "$validate_line" ] || [ "$copy_line" -ge "$validate_line" ]; then
+      fail "$label: Dockerfile bakes the profile after config validate (validate must check it)"
+    fi
+  else
+    assert_not_line_matches "$workflow_content" '^ *profile:' \
+      "$label: workflow.yml renders target.profile without an Instance-supplied profile"
+    if [ -e "$dir/workflow/project-profile.yml" ]; then
+      fail "$label: workflow/project-profile.yml rendered without an Instance-supplied profile"
+    fi
+    assert_not_contains "$dockerfile_content" "$profile_copy" \
+      "$label: Dockerfile bakes a profile without an Instance-supplied profile"
+  fi
 }
 
 # check_coding_agent_implement DIR LABEL WORKFLOW_CONTENT -- the `implement`
@@ -1261,18 +1352,19 @@ assert_no_agent_operator() {
   fi
 }
 
-# assert_no_forge_profile DIR LABEL -- a coding-agent instance carries no
-# Forge-owned profile: no simple-coding-agent-profile.yml, and no
+# assert_no_simple_agent_profile DIR LABEL -- a coding-agent instance carries no
+# simple-coding-agent profile: no simple-coding-agent-profile.yml, and no
 # PROFILE_PATH / AGENT_SRC_REF / WORKER_ID in the rendered .env or
-# compose.yaml (the repository-owned Project Profile is the only profile).
-# It does carry a Dockerfile: the derived deployment image (checked in
-# check_coding_agent_instance), not a Forge-owned profile.
-assert_no_forge_profile() {
+# compose.yaml. Its Project Profile is the repository's, or an
+# Instance-supplied workflow/project-profile.yml named by target.profile
+# (checked in check_coding_agent_profile). It does carry a Dockerfile: the
+# derived deployment image (checked in check_coding_agent_instance).
+assert_no_simple_agent_profile() {
   if [ -e "$1/simple-coding-agent-profile.yml" ]; then
-    fail "$2: coding-agent instance must not contain a Forge-owned profile"
+    fail "$2: coding-agent instance must not contain a simple-coding-agent profile"
   fi
   if grep -qF 'PROFILE_PATH' "$1/.env"; then
-    fail "$2: .env sets PROFILE_PATH (no Forge-owned profile on this backend)"
+    fail "$2: .env sets PROFILE_PATH (no simple-coding-agent profile on this backend)"
   fi
   if grep -qF 'AGENT_SRC_REF' "$1/.env"; then
     fail "$2: .env sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)"
@@ -1462,18 +1554,68 @@ render_coding_agent_workflow() {
     printf '/^ *# workflow-implement-end$/d\n'
     printf '/^ *# workflow-triage-begin$/d\n'
     printf '/^ *# workflow-triage-end$/d\n'
+    instance_profile_markers
   } >"$script"
   sed -f "$script" "$1" >"$2"
   rm -f "$script"
 }
 
-# render_coding_agent_dockerfile SRC DST -- the coding-agent instance
-# Dockerfile: copied verbatim from the asset (it carries no placeholders;
-# every path and flag is fixed by the adapter, and the declared Workflows
-# arrive as the WORKFLOWS build argument from compose.yaml).
+# instance_profile_markers -- the sed commands for the `instance-profile-*`
+# ranges of the Workflow Configuration and Dockerfile templates (call after
+# ca_variant): an Instance-supplied profile (CA_PROFILE=1) keeps the range,
+# any other variant deletes it, and the marker lines go either way.
+instance_profile_markers() {
+  if [ "$CA_PROFILE" != 1 ]; then
+    printf '/^ *# instance-profile-begin$/,/^ *# instance-profile-end$/d\n'
+  fi
+  printf '/^ *# instance-profile-begin$/d\n'
+  printf '/^ *# instance-profile-end$/d\n'
+}
+
+# render_coding_agent_dockerfile SRC DST VARIANT -- the coding-agent
+# instance Dockerfile: the asset carries no placeholders (every path and
+# flag is fixed by the adapter, and the declared Workflows arrive as the
+# WORKFLOWS build argument from compose.yaml); only its `instance-profile-*`
+# range is kept or deleted, as in workflow.yml.
 render_coding_agent_dockerfile() {
-  cp "$1" "$2" ||
-    fail 'coding-agent: cannot copy the instance Dockerfile'
+  ca_variant "$3"
+  instance_profile_markers >"$2.sed"
+  sed -f "$2.sed" "$1" >"$2" ||
+    fail 'coding-agent: cannot render the instance Dockerfile'
+  rm -f "$2.sed"
+}
+
+# render_coding_agent_profile DIR VARIANT -- workflow/project-profile.yml
+# for an Instance-supplied profile (CA_PROFILE=1) only: a schema-2 Project
+# Profile in the upstream format (coding-agent
+# docs/contract/v1-runtime-contract.md §7). The skill writes it from the
+# target's gating CI checks; the check writes a Python/uv fixture whose
+# toolchain the image's Supported Toolchain Matrix carries.
+render_coding_agent_profile() {
+  ca_variant "$2"
+  [ "$CA_PROFILE" = 1 ] || return 0
+  cat >"$1/workflow/project-profile.yml" <<'PROFILE' ||
+# render-check: Instance-supplied Project Profile fixture (schema 2).
+schema: 2
+language: python
+working_directory: "."
+toolchain:
+  python: "3.13"
+  package_manager: uv
+commands:
+  bootstrap: uv sync --frozen
+  test_all: uv run pytest -q --junit-xml={evidence_dir}/test_all.xml
+  test_targeted: uv run pytest -q --junit-xml={evidence_dir}/test_targeted.xml {path}
+evidence:
+  format: junit-xml
+  test_all: "{evidence_dir}/test_all.xml"
+  test_targeted: "{evidence_dir}/test_targeted.xml"
+checks:
+  - name: lint
+    command: uv run ruff check .
+services: []
+PROFILE
+    fail 'coding-agent: cannot write workflow/project-profile.yml'
 }
 
 # render_coding_agent_prompts DIR VARIANT -- the prompt files the rendered
@@ -1531,23 +1673,38 @@ check_coding_agent_validate() {
   fi
   for workflow in $CA_WORKFLOWS; do
     info "checking $2 secret-free config validate --workflow $workflow"
-    (cd "$1" && env -i "$agent_bin" config validate \
-      --config ./workflow/workflow.yml --workflow "$workflow") ||
+    validate_output=$(cd "$1" && env -i "$agent_bin" config validate \
+      --config ./workflow/workflow.yml --workflow "$workflow" 2>&1) || {
+      printf '%s\n' "$validate_output" >&2
       fail "$2: secret-free 'agent config validate --workflow $workflow' failed"
+    }
+    printf '%s\n' "$validate_output"
+    # The "no target.profile" notice belongs only to a Workflow that needs
+    # a Validation Contract and has no target.profile (coding-agent ADR
+    # 0037). With target.profile the file is checked here instead.
+    if [ "$CA_PROFILE" != 1 ] &&
+      workflow_needs_contract "$(cat "$1/workflow/workflow.yml")" "$workflow"; then
+      assert_contains "$validate_output" 'no target.profile' \
+        "$2: config validate --workflow $workflow prints no 'no target.profile' notice"
+    else
+      assert_not_contains "$validate_output" 'no target.profile' \
+        "$2: config validate --workflow $workflow prints the 'no target.profile' notice"
+    fi
   done
 }
 
 # render_coding_agent DIR VARIANT -- one scratch coding-agent instance:
 # compose.yaml (plus the gateway network overlay when a Worker uses a
 # gateway pin), Dockerfile, .env/.env.example, workflow/workflow.yml, the
-# prompt files and the policy stub (written after the secret-free validate
+# prompt files, the Instance-supplied profile (profile variant only) and
+# the policy stub (written after the secret-free validate
 # run, which needs no policy). VARIANT is one of ca_variant's.
 render_coding_agent() {
   ca_variant "$2"
   render_coding_agent_compose \
     "$ASSETS_DIR/compose.coding-agent.yaml.template" "$1/compose.yaml" "$2"
   render_coding_agent_dockerfile \
-    "$ASSETS_DIR/Dockerfile.coding-agent.template" "$1/Dockerfile"
+    "$ASSETS_DIR/Dockerfile.coding-agent.template" "$1/Dockerfile" "$2"
   render_coding_agent_env "$ASSETS_DIR/env.coding-agent.example.template" \
     "$1/.env.example" "$2"
   cp "$1/.env.example" "$1/.env"
@@ -1561,6 +1718,7 @@ render_coding_agent() {
   render_coding_agent_workflow \
     "$ASSETS_DIR/workflow.coding-agent.yml.template" "$1/workflow/workflow.yml" "$2"
   render_coding_agent_prompts "$1" "$2"
+  render_coding_agent_profile "$1" "$2"
   check_coding_agent_validate "$1" "coding-agent $2" "$2"
   render_coding_agent_policy "$1"
 }
@@ -1582,9 +1740,11 @@ main() {
   coding_agent_gateway_dir="$WORK_ROOT/agent-gateway-$PH_CODING_AGENT_SHORT_NAME"
   coding_agent_triage_dir="$WORK_ROOT/agent-triage-$PH_CODING_AGENT_SHORT_NAME"
   coding_agent_pool_dir="$WORK_ROOT/agent-pool-$PH_CODING_AGENT_SHORT_NAME"
+  coding_agent_profile_dir="$WORK_ROOT/agent-profile-$PH_CODING_AGENT_SHORT_NAME"
   mkdir -p "$plain_dir" "$litellm_dir" "$contract_dir" \
     "$contract_pool_dir" "$coding_agent_dir" "$coding_agent_gateway_dir" \
-    "$coding_agent_triage_dir" "$coding_agent_pool_dir" ||
+    "$coding_agent_triage_dir" "$coding_agent_pool_dir" \
+    "$coding_agent_profile_dir" ||
     fail 'cannot create scratch instance directories'
 
   info 'rendering plain instance'
@@ -1603,6 +1763,8 @@ main() {
   render_coding_agent "$coding_agent_triage_dir" triage
   info 'rendering coding-agent two-Workflow Pool instance'
   render_coding_agent "$coding_agent_pool_dir" pool
+  info 'rendering coding-agent Instance-supplied profile instance'
+  render_coding_agent "$coding_agent_profile_dir" profile
 
   # Forge never bakes discovery labels into the image; the legacy role image
   # label belongs to simple-coding-agent's own discovery and stays.
@@ -1623,7 +1785,7 @@ main() {
     fail 'compose.coding-agent.yaml.template renders an open-ended <n> worker (at most one Worker per Workflow)'
   fi
   if grep -qF 'PROFILE_PATH' "$ASSETS_DIR/env.coding-agent.example.template"; then
-    fail 'env.coding-agent.example.template sets PROFILE_PATH (no Forge-owned profile on this backend)'
+    fail 'env.coding-agent.example.template sets PROFILE_PATH (no simple-coding-agent profile on this backend)'
   fi
   if grep -qF 'AGENT_SRC_REF' "$ASSETS_DIR/env.coding-agent.example.template"; then
     fail 'env.coding-agent.example.template sets AGENT_SRC_REF (this backend names its ref CODING_AGENT_REF)'
@@ -1725,6 +1887,7 @@ main() {
   assert_no_placeholders "$coding_agent_gateway_dir" 'coding-agent gateway'
   assert_no_placeholders "$coding_agent_triage_dir" 'coding-agent triage'
   assert_no_placeholders "$coding_agent_pool_dir" 'coding-agent pool'
+  assert_no_placeholders "$coding_agent_profile_dir" 'coding-agent profile'
   assert_no_secrets "$plain_dir/.env" 'plain'
   assert_no_secrets "$plain_dir/.env.example" 'plain'
   assert_no_secrets "$litellm_dir/.env" 'litellm'
@@ -1741,6 +1904,8 @@ main() {
   assert_no_secrets "$coding_agent_triage_dir/.env.example" 'coding-agent triage'
   assert_no_secrets "$coding_agent_pool_dir/.env" 'coding-agent pool'
   assert_no_secrets "$coding_agent_pool_dir/.env.example" 'coding-agent pool'
+  assert_no_secrets "$coding_agent_profile_dir/.env" 'coding-agent profile'
+  assert_no_secrets "$coding_agent_profile_dir/.env.example" 'coding-agent profile'
   assert_no_agent_operator "$plain_dir/Dockerfile" \
     'plain: Dockerfile mentions agent-operator'
   assert_no_agent_operator "$contract_dir/Dockerfile" \
@@ -1757,6 +1922,7 @@ main() {
   check_coding_agent_instance "$coding_agent_gateway_dir" 'coding-agent gateway' gateway
   check_coding_agent_instance "$coding_agent_triage_dir" 'coding-agent triage' triage
   check_coding_agent_instance "$coding_agent_pool_dir" 'coding-agent pool' pool
+  check_coding_agent_instance "$coding_agent_profile_dir" 'coding-agent profile' profile
 
   info 'PASS: all variants render to a valid Compose model with no secrets'
 }

@@ -59,12 +59,14 @@ A `coding-agent` instance holds a different layout: `compose.yaml` (the
 build-only `engine` base, the labelled `worker` — plus `worker-2` when it
 runs both Workflows with one Worker each — and the unlabelled `agent` and
 `validate` one-off seats on the derived image), `Dockerfile` (the derived
-deployment image, copied verbatim from its template),
+deployment image, rendered from its template),
 `workflow/workflow.yml` (a `version: 4` Workflow Configuration with a
 `skills:` block, declaring the `implement` Workflow, the `triage`
 Workflow, or both) with its `workflow/prompts/*.md` prompt files and
-reviewed `workflow/skill-policy.json`, `.env`/`.env.example` — and no
-repository profile, no `compose.litellm.yaml` and no `.env.worker-<n>`
+reviewed `workflow/skill-policy.json`, `.env`/`.env.example` — plus
+`workflow/project-profile.yml` only when you choose an Instance-supplied
+Project Profile — and no `simple-coding-agent-profile.yml`, no
+`compose.litellm.yaml` and no `.env.worker-<n>`
 (at most one Worker per Workflow, each with its own state volume, and no
 Worker id; see the [`create-agent`](.agents/skills/create-agent/SKILL.md)
 skill, its `references/coding-agent.md` and
@@ -165,10 +167,26 @@ and which one each Worker runs:
   (`CONTEXT.md`, ADRs, `.out-of-scope/`) and opens a draft pull request
   with the same document. Two policy prompts, rendered with the instance
   from the skill's `assets/prompts/`, answer the skill's interactive parts.
-  Needs `CODING_AGENT_REF` `v0.5.0` or newer; the skill refuses an older
-  ref.
+  Needs `CODING_AGENT_REF` `v0.5.1` or newer; the skill refuses an older
+  ref (before `v0.5.1` every Attempt needs a Project Profile, so `triage`
+  fails on repositories without one). `triage` itself needs no Project
+  Profile.
 - both: one Worker for either, or two Workers, `worker` and `worker-2`,
   one per Workflow.
+
+A Workflow that validates (with today's template, `implement`) needs a
+Project Profile, its Validation Contract. By default it is the target
+repository's own `docs/agents/project-profile.yml`; a Worker on such a
+Workflow refuses to start without it. When the repository has none, the
+skill stops and asks you to choose: (a) commit
+`docs/agents/project-profile.yml` to the target repository yourself, after
+which the skill checks again (preferred), or (b) let the skill write an
+Instance-supplied `workflow/project-profile.yml` that mirrors the
+repository's gating CI checks. Option (b) adds `target.profile` to
+`workflow.yml`, the image bakes the file, and the build fails when the
+profile is broken or its toolchain is outside the image's Supported
+Toolchain Matrix. For a `triage`-only instance the skill runs no profile
+check and asks nothing about a profile.
 
 Its Skill Bundle covers the declared Workflows. The reference bundle
 (`implement` alone) keeps coding-agent's reviewed `skill-policy.json`
