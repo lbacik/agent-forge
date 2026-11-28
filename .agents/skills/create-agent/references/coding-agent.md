@@ -527,7 +527,7 @@ configurable — never copied as configuration), **deployment** (compose),
 |---|---|---|
 | `MAX_BUDGET_USD` | Workflow `limits.cost-usd`: the Attempt Ceiling on the Workflow, the Step Allowance on a step | workflow |
 | `MAX_BUDGET_TOKENS` | `limits.effective-tokens`. Effective tokens exclude prompt-cache reads (`src/coding_agent/runtime/ceilings.py`) | workflow |
-| `MAX_TURNS` | `limits.tool-calls`. Plus the code-owned `MAX_AGENT_ITERATIONS = 30` tool-loop backstop per Step Execution (see the caveat below) | workflow + code |
+| `MAX_TURNS` | `limits.tool-calls`. There is no separate model-turn limit: the tool-loop backstop is derived per Step Execution from the remaining `tool-calls` room (see "Tool-loop backstop" below) | workflow + code |
 | `SOFT_THRESHOLD_PERCENTAGE`, `HANDOFF_RESERVE_TURNS` | The Reserved Step `ai-handoff` (`reserved: true`, allowance on all four meters) | workflow |
 | `MODEL_TIMEOUT` | `limits.wall-clock-minutes` (the whole Attempt, operations included) | workflow |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` / `MAX_CONTEXT_TOKENS` | `context-threshold-tokens` / `output-cap-tokens`, with `context-window-tokens` for the window — declared on every pin since `version: 4` (see below). Companion backstop `MAX_HANDOFFS_PER_STEP = 5` (`src/coding_agent/runtime/context_handoff.py`) | workflow + code |
@@ -549,21 +549,28 @@ when `CODING_AGENT_REF` moves — not a setting to copy anywhere.
   in `src/coding_agent/provider/config.py` admits the (`provider`, `model`,
   `endpoint`) triple only and carries no token budget. The safety margin,
   request overhead and handoff cap stay code-owned.
-- **`MAX_AGENT_ITERATIONS` caveat** ([lbacik/coding-agent#427](https://github.com/lbacik/coding-agent/issues/427)).
-  Until that issue is resolved, the backstop of 30 model responses per Step
-  Execution (`MAX_AGENT_ITERATIONS` in
-  `src/coding_agent/runtime/graph/agent_step.py` — "the tool loop exceeded
-  its iteration backstop") ends the step with `error`. The template's
-  `defaults.routes` send `error` to `hard-handoff`, which commits and pushes
-  with no AI note, and the backstop can bind long before `tool-calls` does.
-  The validated workaround is to route `error` to the AI-assisted handoff
-  step on the work step (`routes: {error: ai-handoff}` on `process`), so an
-  exhausted tool loop still leaves a handoff note. The template keeps the
-  `hard-handoff` default — an `error` is also what infrastructure failures
-  produce, and those should not spend the reserved AI-assisted handoff — and
-  the operator opts into the workaround per instance when the workload is
-  tool-loop-heavy. (`MAX_HANDOFFS_PER_STEP = 5`, in
-  `src/coding_agent/runtime/context_handoff.py`, likewise stays code-owned.)
+- **Tool-loop backstop** (read at `v0.5.2`; derived since `v0.4.1`,
+  [lbacik/coding-agent#427](https://github.com/lbacik/coding-agent/issues/427),
+  closed). There is no fixed model-turn limit to configure. The tool loop
+  inside one Step Execution is bounded by the configured meters
+  (`tool-calls`, plus effective tokens, cost and wall clock on every
+  response), the code-owned `MAX_REPORT_CORRECTIONS` and the pin's
+  `context-threshold-tokens`. Its only other bound is a runtime defect
+  guard, `tool_loop_backstop()` in
+  `src/coding_agent/runtime/graph/agent_step.py`: the step's remaining
+  `tool-calls` room at Step Execution open, plus `MAX_REPORT_CORRECTIONS`,
+  plus one, plus `TOOL_LOOP_BACKSTOP_SLACK` (5). The configured meters
+  always end the step first, so the backstop ("the tool loop exceeded its
+  iteration backstop", ending the step `error`) fires only on a runtime
+  defect. (`MAX_AGENT_ITERATIONS = 200` remains only as the fallback for
+  unit-test seams with no bound budgets.) At `v0.4.0` the backstop was a
+  fixed 30 model responses that could end a step long before `tool-calls`
+  did; an Instance still carrying the workaround from that time
+  (`routes: {error: ai-handoff}` on `process`) no longer needs it, and the
+  template keeps `error` on `hard-handoff`. Advisor calls and Sub-agent
+  runs have their own round bound, the answering pin's optional
+  `max-rounds` (default 8, at most 32; coding-agent
+  `docs/ops/workflow-configuration.md`).
 
 ## Model
 
