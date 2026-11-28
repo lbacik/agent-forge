@@ -1776,13 +1776,13 @@ main() {
   fi
 
   # The coding-agent template fixes no project name (the directory is the
-  # project) and renders at most one Worker per Workflow: `worker` and the
-  # marked `worker-2`, never an open-ended <n> worker.
+  # project) and renders at most `worker` and the marked `worker-2`, never
+  # an open-ended <n> worker (manage-pool adds further Workers by hand).
   if grep -qE '^name:' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
     fail 'compose.coding-agent.yaml.template sets a project name (the directory is the project)'
   fi
   if grep -qF '<n>' "$ASSETS_DIR/compose.coding-agent.yaml.template"; then
-    fail 'compose.coding-agent.yaml.template renders an open-ended <n> worker (at most one Worker per Workflow)'
+    fail 'compose.coding-agent.yaml.template renders an open-ended <n> worker (create-agent renders worker and worker-2 only)'
   fi
   if grep -qF 'PROFILE_PATH' "$ASSETS_DIR/env.coding-agent.example.template"; then
     fail 'env.coding-agent.example.template sets PROFILE_PATH (no simple-coding-agent profile on this backend)'

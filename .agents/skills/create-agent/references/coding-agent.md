@@ -112,19 +112,20 @@ or added, update every reference that names it (`grep -rn` the old name).
   concern and stays out of the Workflow Configuration: the workflow
   `limits` (cost, effective tokens, tool calls, wall clock) budget an Attempt and do
   not bound host resources.
-- **At most one Worker per Workflow** (`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`).
+- **One Worker per selected Workflow at creation** (`docs/adr/0005-coding-agent-workers-settle-claims-through-the-claim-comment.md`).
   A single Worker is service `worker`; with both Workflows declared, the
   operator may run a second Worker, `worker-2` (the template's marked
   stanza), on the Workflow `worker` does not run. Each Worker has its own
   state volume (`state`, `state_2`), its own Managed Instance name
   (`<short-name>`, `<short-name>-2`) and its own `--workflow`; no Worker id
-  and no Claim marker are rendered. Two Workers on one Workflow are
-  refused: this backend never advertises the `pool` Operator Capability and
-  leaves no Claim marker, so they would race on one Queue. Running two
-  Workers departs from the operator contract's rule that an adapter without
+  and no `claimed-by:*` Claim marker are rendered: coding-agent's own Claim
+  Comment settles a Claim between Workers on one login (lowest comment id
+  wins), so `manage-pool` may later add more Workers, on the same Workflow
+  too. This backend never advertises the `pool` Operator Capability, so
+  running two or more Workers departs from the operator contract's rule that an adapter without
   `pool` refuses a second Managed Instance on the same Target Repository
   and host; the creation report says so. `manage-pool` adds or removes
-  `worker-2` later ("coding-agent Instances" there). A second coding-agent
+  `worker-<n>` later ("coding-agent Instances" there). A second coding-agent
   Instance for the same repository is still refused by the shared Fleet
   check (step 1). An Instance of another
   backend on that repository (for example a simple-coding-agent Instance
@@ -310,8 +311,9 @@ Workflows the Workflow Configuration declares — `implement` (default),
 - both Workflows: either one Worker (`worker`, running the Workflow the
   operator names; the other stays declared for a later `worker-2`) or two
   Workers (`worker` on `implement`, `worker-2` on `triage`, unless the
-  operator swaps them). Never two Workers on one Workflow
-  (`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`).
+  operator swaps them). create-agent renders no second Worker on one
+  Workflow; `manage-pool` adds one later when the operator wants it
+  (`docs/adr/0005-coding-agent-workers-settle-claims-through-the-claim-comment.md`).
 
 `triage` needs `CODING_AGENT_REF` `v0.5.1` or newer. `v0.5.0` brought
 `input.comments` and the `advisor` tool group, but before `v0.5.1` every

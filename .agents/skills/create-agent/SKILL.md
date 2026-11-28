@@ -74,9 +74,9 @@ backend").
 - **Layout.** The first Worker is service `agent` with volume `agent_data`,
   the only one with `build:`; Workers 2..N are `agent-2..N` with volumes
   `data_2..N` and `pull_policy: never`, so one build serves all. (A
-  coding-agent Instance instead runs at most one Worker per Workflow, as
-  services `worker` and `worker-2`; see `references/coding-agent.md` and
-  `docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`.) Shared
+  coding-agent Instance instead runs services `worker` and `worker-2..N`,
+  each on one Workflow and several possibly on the same one; see `references/coding-agent.md` and
+  `docs/adr/0005-coding-agent-workers-settle-claims-through-the-claim-comment.md`.) Shared
   settings live in the `x-worker` anchor. Workers are not identical replicas
   (own `/data`, own Worker id), so don't use `--scale` or `container_name`.
 - **Worker id scheme.** `<short-name>-<n>`, where `<short-name>` is the
@@ -166,8 +166,8 @@ can determine by reading the repository.
   | `coding-agent` | `rex` |
 - `coding-agent`: continue with the coding-agent adapter in
   `references/coding-agent.md` — a derived-image Dockerfile, no stack block,
-  the Workflows the operator selects (`implement`, `triage` or both), at
-  most one Worker per Workflow, and a Project Profile only for Workflows
+  the Workflows the operator selects (`implement`, `triage` or both), one
+  Worker per selected Workflow at creation, and a Project Profile only for Workflows
   that validate: the repository's own, or one the Instance supplies through
   `target.profile`. Steps 1–2 and 6
   stay shared; steps 3, 5, 7 and 8 branch per backend as marked below.
@@ -198,7 +198,8 @@ can determine by reading the repository.
 - Number of Workers N: 1 unless the user asks for more. For coding-agent,
   N follows the Workflow selection in `references/coding-agent.md`
   ("Workflow selection", asked here): 1, or 2 with both Workflows and one
-  Worker each, never more. Check the Worker id
+  Worker each; further Workers, on either Workflow, are added later with
+  `manage-pool`. Check the Worker id
   scheme and the contract instance-name pattern in "Pools" against the short
   name (`<short-name>` and `<short-name>-<N>` must each match
   `^[a-z0-9][a-z0-9-]{0,62}$`); refuse a short name that fails either and
@@ -1021,7 +1022,6 @@ Operator Capabilities) and readiness from the Status Snapshot
 (`instance.state`: ready when anything other than `starting`) for every
 Managed Instance — `<short-name>` and each `<short-name>-<n>`. Name a Pool
 (N ≥ 2) on the contract path only with `pool` in `identity.capabilities`
-(a coding-agent Pool of one Worker per Workflow is the exception, stated
-as above).
+(a coding-agent Pool is the exception, stated as above).
 For coding-agent, report identity and readiness as unverified until the
 contract producer ships (step 4).
