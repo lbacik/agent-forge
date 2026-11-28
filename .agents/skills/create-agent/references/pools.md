@@ -5,10 +5,10 @@ another Instance, joins a contract Pool on the same Target Repository from
 another Instance, or has a Worker with its own Worker identity. The rules
 every Instance needs are in SKILL.md, "Pools"; terms are defined in
 `CONTEXT.md`. Everything below is about simple-coding-agent Pools. A
-coding-agent Pool is different and small: at most one Worker per Workflow
-(`worker`, and `worker-2` on the other Workflow), each with its own state
-volume and Managed Instance name, no Worker id and no Claim marker, on one
-shared login (`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`;
+coding-agent Pool is different: `worker` and `worker-2..N`, each on one
+Workflow (several may share one), each with its own state volume and
+Managed Instance name, no Worker id and no `claimed-by:*` Claim marker, on
+one shared login, where coding-agent's own Claim Comment settles the Claim (`docs/adr/0005-coding-agent-workers-settle-claims-through-the-claim-comment.md`;
 `references/coding-agent.md`, "Workflow selection"); none of the Worker
 id, `PEER_LOGINS` or Claim-protocol rules below apply to it. An Instance
 of another backend on the same Target Repository is not part of any Pool

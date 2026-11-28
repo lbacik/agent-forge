@@ -54,11 +54,12 @@
 #
 # Workers and Workflows: every Worker runs exactly one Workflow of
 # workflow.yml, named by `--workflow` in its own stanza, and has its own
-# state volume (`state`, `state_2`). A Pool holds at most one Worker per
-# Workflow, so at most two Workers (`implement` and `triage`): this backend
-# never advertises the `pool` Operator Capability and leaves no Claim
-# marker, so two Workers on one Workflow would race on one Queue
-# (docs/adr/0005). `manage-pool` adds or removes the second Worker. A
+# state volume (`state`, `state_2`, ...). This template renders one Worker
+# per selected Workflow; `manage-pool` adds further Workers (`worker-3`
+# with `state_3`, and so on), on any declared Workflow, the same one included:
+# coding-agent's Claim Comment settles a Claim between Workers on one login
+# (lowest comment id wins). This backend never advertises the `pool`
+# Operator Capability (docs/adr/0005). A
 # Target Repository holds at most one coding-agent Instance; an Instance of
 # another backend may share it (docs/adr/0003).
 #
@@ -275,10 +276,10 @@ services:
       - /home/agent
   # worker-2-begin
 
-  # The second Worker, only in a two-Worker Pool (one Worker per Workflow,
-  # docs/adr/0005): the same stanza as `worker`, with its own Managed
-  # Instance name `<short-name>-2`, its own state volume `state_2`, its own
-  # `--workflow` (the Workflow `worker` does not run) and the model keys of
+  # The second Worker, only in a Pool of two or more (docs/adr/0005): the
+  # same stanza as `worker`, with its own Managed Instance name
+  # `<short-name>-2`, its own state volume `state_2`, its own `--workflow`
+  # (at creation, the Workflow `worker` does not run) and the model keys of
   # its own pins. Delete from worker-2-begin through worker-2-end (and the
   # `state_2` volume below) for a single Worker. Comments on `worker`
   # apply here too.

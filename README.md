@@ -67,10 +67,10 @@ reviewed `workflow/skill-policy.json`, `.env`/`.env.example` — plus
 `workflow/project-profile.yml` only when you choose an Instance-supplied
 Project Profile — and no `simple-coding-agent-profile.yml`, no
 `compose.litellm.yaml` and no `.env.worker-<n>`
-(at most one Worker per Workflow, each with its own state volume, and no
-Worker id; see the [`create-agent`](.agents/skills/create-agent/SKILL.md)
+(one Worker per selected Workflow at creation, more added later with
+`manage-pool`, each with its own state volume, and no Worker id; see the [`create-agent`](.agents/skills/create-agent/SKILL.md)
 skill, its `references/coding-agent.md` and
-`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`). Each
+`docs/adr/0005-coding-agent-workers-settle-claims-through-the-claim-comment.md`). Each
 Worker's Workflow is set by `--workflow` in its own stanza. The
 `workflow/` package is baked into the derived image and verified there at
 build time, so any edit under `workflow/` needs `docker compose build`
@@ -266,13 +266,14 @@ merges too. It needs an upstream agent that contains the feature
 
 **Pools (several Workers).** An instance runs one Worker by default; ask
 `create-agent` for N to get a Pool of N Workers taking issues from the same
-Queue. A `coding-agent` instance runs at most one Worker per Workflow:
-with both Workflows declared it can have `worker` and `worker-2`, each on
-its own Workflow and Queue, and nothing below about Worker ids, Claim
-markers or logins applies to it. coding-agent does not advertise `pool`,
-so its two Workers depart from the operator contract's rule for a second
-instance on one repository; the report says so
-(`docs/adr/0005-coding-agent-pool-one-worker-per-workflow.md`). A Pool is
+Queue. A `coding-agent` instance runs `worker` and further Workers
+`worker-<n>`, each on one Workflow; several may share one Workflow,
+because coding-agent's Claim Comment settles a Claim between Workers on
+one login. Nothing below about Worker ids, `claimed-by:*` Claim markers or
+logins applies to it. coding-agent does not advertise `pool`, so every
+Worker beyond the first departs from the operator contract's rule for a
+second instance on one repository; the report says so
+(`docs/adr/0005-coding-agent-workers-settle-claims-through-the-claim-comment.md`). A Pool is
 always one backend: an instance of another backend on the same repository is
 a pairing (see the Fleet check above), not a Pool member. A Pool is one instance and one Compose project, so it runs on one Docker
 context (with one model backend for simple-coding-agent; a coding-agent
